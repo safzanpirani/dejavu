@@ -1,4 +1,0 @@
-interface:
-  display_name: "Deja session recall"
-  short_description: "Search all coding-agent transcripts"
-  default_prompt: "Use deja to find relevant Claude, Codex, Pi, or OpenCode transcripts and answer my question from them."

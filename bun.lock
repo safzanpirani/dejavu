@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "deja",
+      "name": "@safzanpirani/dejavu",
       "devDependencies": {
         "@types/bun": "1.4.0",
         "typescript": "5.9.3",

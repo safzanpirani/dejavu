@@ -157,7 +157,7 @@ async function withClaudeTranscript(
   messages: Array<{ role: "user" | "assistant"; text: string }>,
   run: (path: string) => Promise<void>,
 ): Promise<void> {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "deja-show-"));
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "dejavu-show-"));
   const transcriptDir = join(temporaryRoot, ".claude", "projects", "-tmp-project");
   const transcriptPath = join(transcriptDir, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl");
   await mkdir(transcriptDir, { recursive: true });

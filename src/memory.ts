@@ -83,6 +83,6 @@ export async function showMemory(selector: string, root = defaultMemoryRoot(), d
   if (candidates.length === 0) throw new Error(`no Claude memory matches '${selector}'`);
   const index = candidates.find((file) => file.name === "MEMORY.md");
   const chosen = candidates.length === 1 ? candidates[0]! : index;
-  if (!chosen) throw new Error(`memory selector '${selector}' is ambiguous; use a project/name from 'deja memory list --files'`);
+  if (!chosen) throw new Error(`memory selector '${selector}' is ambiguous; use a project/name from 'dejavu memory list --files'`);
   return { file: chosen, content: await (deps.read ?? defaultRead)(chosen.path) };
 }

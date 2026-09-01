@@ -1,11 +1,12 @@
 {
-  "name": "deja",
-  "version": "0.2.0",
+  "name": "@safzanpirani/dejavu",
+  "version": "0.3.0",
   "devDependencies": {
     "@types/bun": "1.4.0",
     "typescript": "5.9.3"
   },
   "bin": {
+    "dejavu": "./src/cli.ts",
     "deja": "./src/cli.ts"
   },
   "description": "Agent-first local search for coding-agent transcripts and project memory",
@@ -28,13 +29,14 @@
     "bun": ">=1.4.0"
   },
   "scripts": {
+    "dejavu": "bun run src/cli.ts",
     "deja": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
-    "build:local": "bun build --compile src/cli.ts --outfile dist/deja && codesign --force --sign - dist/deja",
-    "build:linux": "bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/deja-linux-x64",
-    "build:linux-arm64": "bun build --compile --target=bun-linux-arm64 src/cli.ts --outfile dist/deja-linux-arm64"
+    "build:local": "bun build --compile src/cli.ts --outfile dist/dejavu && codesign --force --sign - dist/dejavu",
+    "build:linux": "bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/dejavu-linux-x64",
+    "build:linux-arm64": "bun build --compile --target=bun-linux-arm64 src/cli.ts --outfile dist/dejavu-linux-arm64"
   },
   "type": "module"
 }

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { searchSessions } from "../src/core.ts";
 import { loadOpenCodeMessages, openCodeLocator, parseOpenCodeLocator, searchOpenCodeStore } from "../src/opencode-store.ts";
 
-const databasePath = `/tmp/deja-opencode-${crypto.randomUUID()}.db`;
+const databasePath = `/tmp/dejavu-opencode-${crypto.randomUUID()}.db`;
 
 beforeAll(() => {
   const database = new Database(databasePath, { create: true });
@@ -43,7 +43,7 @@ describe("OpenCode SQLite adapter", () => {
     const beforeStat = await stat(nextDatabase);
     const beforeBytes = await readFile(nextDatabase);
 
-    const result = await searchSessions("deja-sqlite-cantopen-regression", { source: "opencode" }, {
+    const result = await searchSessions("dejavu-sqlite-cantopen-regression", { source: "opencode" }, {
       discoverStores: async () => [{ source: "opencode", kind: "sqlite", path: nextDatabase }],
     });
 

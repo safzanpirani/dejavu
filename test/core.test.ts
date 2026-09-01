@@ -139,7 +139,7 @@ describe("visible message extraction", () => {
 
 describe("transcript loading", () => {
   test("loads the active Pi branch", async () => {
-    const path = `/tmp/deja-pi-${crypto.randomUUID()}.jsonl`;
+    const path = `/tmp/dejavu-pi-${crypto.randomUUID()}.jsonl`;
     await writeRows(path, [
       { type: "session", version: 3, id: "session", cwd: "/tmp" },
       message("message", "a", null, "user", "root"),
@@ -151,7 +151,7 @@ describe("transcript loading", () => {
   });
 
   test("loads Claude's recorded leaf branch", async () => {
-    const path = `/tmp/deja-claude-${crypto.randomUUID()}.jsonl`;
+    const path = `/tmp/dejavu-claude-${crypto.randomUUID()}.jsonl`;
     await writeRows(path, [
       claudeMessage("a", null, "user", "root"),
       claudeMessage("old", "a", "assistant", "abandoned"),
@@ -162,7 +162,7 @@ describe("transcript loading", () => {
   });
 
   test("loads only user and assistant Codex response items", async () => {
-    const path = `/tmp/deja-codex-${crypto.randomUUID()}.jsonl`;
+    const path = `/tmp/dejavu-codex-${crypto.randomUUID()}.jsonl`;
     await writeRows(path, [
       { type: "response_item", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "rules" }] } },
       { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "question" }] } },

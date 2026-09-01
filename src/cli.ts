@@ -15,15 +15,15 @@ const colors = {
   bold: (text: string) => `\x1b[1m${text}\x1b[0m`,
 };
 
-const HELP = `${colors.bold("deja")} — search and query coding-agent transcripts
+const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcripts
 
-  ${colors.bold("deja")} <token-or-exact-phrase> [flags]
-  ${colors.bold("deja find")} <term> [term...] [flags]
-  ${colors.bold("deja show")} <transcript-locator> [flags]
-  ${colors.bold("deja query")} <transcript-locator> <question> [flags]
-  ${colors.bold("deja memory list")} [--files] [--root DIR] [--json]
-  ${colors.bold("deja memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
-  ${colors.bold("deja memory show")} <project-or-file> [--root DIR] [--json]
+  ${colors.bold("dejavu")} <token-or-exact-phrase> [flags]
+  ${colors.bold("dejavu find")} <term> [term...] [flags]
+  ${colors.bold("dejavu show")} <transcript-locator> [flags]
+  ${colors.bold("dejavu query")} <transcript-locator> <question> [flags]
+  ${colors.bold("dejavu memory list")} [--files] [--root DIR] [--json]
+  ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
+  ${colors.bold("dejavu memory show")} <project-or-file> [--root DIR] [--json]
 
 search flags
   -s, --source NAME      all, claude, codex, pi, or opencode (default all)
