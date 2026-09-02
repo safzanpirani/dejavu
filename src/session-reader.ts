@@ -3,9 +3,11 @@ import { sourceFromLocator } from "./source-registry.ts";
 import type { RecallBlock, RecallMessage, TranscriptSource } from "./transcript-types.ts";
 export type { RecallBlock, RecallMessage } from "./transcript-types.ts";
 
-interface TreeEntry {
+export interface TreeEntry {
   type?: string;
   id?: string;
+  timestamp?: string;
+  cwd?: string;
   parentId?: string | null;
   uuid?: string;
   parentUuid?: string | null;
@@ -18,19 +20,27 @@ export async function loadRecallMessages(locator: string, forcedSource?: Transcr
   const source = forcedSource ?? sourceFromLocator(locator);
   if (source === "opencode") return loadOpenCodeMessages(locator);
   const entries = parseJsonl(await Bun.file(locator).text());
-  if (source === "pi") return loadPiBranch(entries);
-  if (source === "claude") return loadClaudeBranch(entries);
+  if (source === "pi") return piBranch(entries).flatMap((entry) => normalizeEnvelope(entry.message));
+  if (source === "claude") return claudeBranch(entries).flatMap((entry) => normalizeEnvelope(entry.message));
   return loadCodexMessages(entries);
 }
 
-function parseJsonl(text: string): TreeEntry[] {
+/** Loads the raw JSONL entries for a locator, following the active branch for Pi and Claude trees. */
+export async function loadBranchEntries(locator: string, source: TranscriptSource): Promise<TreeEntry[]> {
+  const entries = parseJsonl(await Bun.file(locator).text());
+  if (source === "pi") return piBranch(entries);
+  if (source === "claude") return claudeBranch(entries);
+  return entries;
+}
+
+export function parseJsonl(text: string): TreeEntry[] {
   return text.split("\n").filter((line) => line.trim()).flatMap((line) => {
     try { return [JSON.parse(line) as TreeEntry]; }
     catch { return []; }
   });
 }
 
-function loadPiBranch(entries: TreeEntry[]): RecallMessage[] {
+function piBranch(entries: TreeEntry[]): TreeEntry[] {
   const treeEntries = entries.filter((entry) => entry.type !== "session");
   const byId = new Map(treeEntries.filter((entry) => entry.id).map((entry) => [entry.id!, entry]));
   const branch: TreeEntry[] = [];
@@ -39,10 +49,10 @@ function loadPiBranch(entries: TreeEntry[]): RecallMessage[] {
     branch.push(current);
     current = current.parentId ? byId.get(current.parentId) : undefined;
   }
-  return branch.reverse().flatMap((entry) => normalizeEnvelope(entry.message));
+  return branch.reverse();
 }
 
-function loadClaudeBranch(entries: TreeEntry[]): RecallMessage[] {
+function claudeBranch(entries: TreeEntry[]): TreeEntry[] {
   const byId = new Map(entries.filter((entry) => entry.uuid).map((entry) => [entry.uuid!, entry]));
   const recordedLeaf = entries.findLast((entry) => entry.type === "last-prompt")?.leafUuid;
   let current = recordedLeaf ? byId.get(recordedLeaf) : entries.findLast((entry) => entry.uuid);
@@ -51,7 +61,7 @@ function loadClaudeBranch(entries: TreeEntry[]): RecallMessage[] {
     branch.push(current);
     current = current.parentUuid ? byId.get(current.parentUuid) : undefined;
   }
-  return branch.reverse().flatMap((entry) => normalizeEnvelope(entry.message));
+  return branch.reverse();
 }
 
 function loadCodexMessages(entries: TreeEntry[]): RecallMessage[] {
@@ -102,7 +112,7 @@ export function serializeRecallMessages(messages: RecallMessage[]): string {
 }
 
 export function extractVisibleMessage(line: string, source: TranscriptSource): { role: string; text: string; date?: string; project?: string } | null {
-  let entry: TreeEntry & { timestamp?: string; cwd?: string };
+  let entry: TreeEntry;
   try { entry = JSON.parse(line) as typeof entry; }
   catch { return null; }
   const envelope = source === "codex" ? entry.payload : entry.message;

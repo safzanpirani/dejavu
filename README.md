@@ -25,6 +25,7 @@ Search every detected agent store:
 dejavu 'Cannot find module'
 dejavu find deployment timeout --since 2w
 dejavu show '<locator from search results>' --around timeout
+dejavu transcript '<locator from search results>'
 dejavu memory search 'deployment boundary'
 ```
 
@@ -80,6 +81,16 @@ dejavu show '<locator>' --around database
 ```
 
 `show` renders user and assistant turns without model usage. It summarizes tool calls and truncates long messages by default. Pass `--full` to disable truncation.
+
+### View a transcript turn by turn
+
+```bash
+dejavu transcript '<locator>'
+dejavu transcript '<locator>' --full --thinking
+dejavu transcript '<locator>' --no-tools --json
+```
+
+`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, and OpenCode sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal. Use `--color` or `--no-color` to override.
 
 ### Search agent memory
 

@@ -5,10 +5,11 @@ import { DEFAULT_MAX_PARALLEL } from "./concurrency.ts";
 import { DEFAULT_SEARCH_LIMIT, DEFAULT_SNIPPET_LIMIT, querySession, searchSessions } from "./core.ts";
 import { DEFAULT_FIND_LIMIT, findSessions, showSession } from "./find.ts";
 import { defaultMemoryRoot, listMemories, memoryFiles, searchMemories, showMemory } from "./memory.ts";
-import { renderFind, renderQuery, renderSearch, renderShow } from "./render.ts";
+import { renderFind, renderQuery, renderSearch, renderShow, renderTranscript } from "./render.ts";
 import { discoverTranscriptStores, parseSource } from "./source-registry.ts";
 import { refreshTranscriptIndex, transcriptIndexStatus } from "./transcript-index.ts";
 import type { StoreDiagnostic } from "./transcript-types.ts";
+import { viewTranscript } from "./transcript-view.ts";
 
 const colors = {
   red: (text: string) => `\x1b[31m${text}\x1b[0m`,
@@ -21,6 +22,7 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
   ${colors.bold("dejavu")} <token-or-exact-phrase> [flags]
   ${colors.bold("dejavu find")} <term> [term...] [flags]
   ${colors.bold("dejavu show")} <transcript-locator> [flags]
+  ${colors.bold("dejavu transcript")} <transcript-locator> [flags]
   ${colors.bold("dejavu query")} <transcript-locator> <question> [flags]
   ${colors.bold("dejavu memory list")} [--files] [--root DIR] [--json]
   ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
@@ -47,6 +49,13 @@ find flags (multi-term session finder, ranked, user messages weighted)
 show flags
       --full             do not truncate long messages
       --around TERM      only messages containing TERM, with 3 turns of context
+
+transcript flags (turn-by-turn view with tool calls and results)
+      --full             do not truncate messages, tool inputs, or tool outputs
+      --thinking         include model thinking blocks
+      --no-tools         hide tool calls and tool results
+      --color / --no-color
+                         force ANSI colors on or off (default: on for a terminal)
 
 query flags
       --model P/ID       Pi model used to answer the question
@@ -212,6 +221,25 @@ async function main(): Promise<void> {
     const result = await showSession(locator, { full, around });
     console.log(json ? JSON.stringify(result, null, 2) : renderShow(result));
     if (!quiet && !json) console.error(colors.dim(`${result.source} · ${result.messageCount} message${result.messageCount === 1 ? "" : "s"}`));
+    return;
+  }
+  if (args[0] === "transcript" || args[0] === "view") {
+    args.shift();
+    const full = pullFlag(args, "--full");
+    const thinking = pullFlag(args, "--thinking");
+    const tools = !pullFlag(args, "--no-tools");
+    const forceColor = pullFlag(args, "--color");
+    const noColor = pullFlag(args, "--no-color");
+    rejectUnknownFlags(args);
+    const locator = args.shift() ?? die("transcript needs a transcript locator from search results");
+    if (args.length > 0) die(`transcript accepts one transcript locator (unexpected argument: '${args[0]}')`);
+    const result = await viewTranscript(locator, { thinking, tools });
+    const color = forceColor || (!noColor && !json && Boolean(process.stdout.isTTY) && !process.env.NO_COLOR);
+    console.log(json ? JSON.stringify(result, null, 2) : renderTranscript(result, { full, color }));
+    if (!quiet && !json) {
+      const c = result.counts;
+      console.error(colors.dim(`${result.source} · ${c.user} user · ${c.assistant} assistant · ${c.toolCalls} tool calls · ${c.toolResults} results · ${c.thinking} thinking`));
+    }
     return;
   }
   if (args[0] === "query") {

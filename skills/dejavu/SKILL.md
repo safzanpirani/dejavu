@@ -34,6 +34,8 @@ Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-D
 
 `dejavu show <locator>` prints the parsed conversation as `[user]`/`[assistant]` turns (tool calls summarized, long messages truncated; `--full` disables truncation). `--around TERM` prints only messages containing TERM plus three turns of context — use it to jump to the relevant region of a long session. Use `show` to confirm a session is the right one before resuming it or paying for `dejavu query`.
 
+`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, and OpenCode. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits the event list (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
+
 ## Find a transcript
 
 Search all detected stores by default:
