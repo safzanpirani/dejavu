@@ -3,6 +3,7 @@ import { DEFAULT_MAX_PARALLEL, mapPool } from "./concurrency.ts";
 import { completeQuery, resolveQueryModel } from "./model-client.ts";
 import { searchOpenCodeStore } from "./opencode-store.ts";
 import { searchFileCounts, searchMatchingLines } from "./search-backend.ts";
+import { refreshTranscriptIndex, searchTranscriptIndexMatches } from "./transcript-index.ts";
 import { discoverTranscriptStores, sourceFromLocator } from "./source-registry.ts";
 import { extractVisibleMessage, loadRecallMessages, type RecallMessage } from "./session-reader.ts";
 import type {
@@ -29,6 +30,7 @@ export interface SearchOptions {
   limit?: number;
   snippets?: number;
   maxParallel?: number;
+  noIndex?: boolean;
 }
 
 export interface SearchDeps {
@@ -96,6 +98,21 @@ export async function searchSessions(
   const startedAt = now();
   const countFiles = deps.countFiles ?? searchFileCounts;
   const searchOpenCode = deps.searchOpenCode ?? searchOpenCodeStore;
+  const indexedMatches = new Map<TranscriptSource, StoreSearchMatch[]>();
+  const useIndex = !options.noIndex && needle.length >= 3 && !deps.discoverStores && !deps.countFiles;
+  if (useIndex) {
+    try {
+      const jsonlStores = stores.filter((store) => store.kind === "jsonl");
+      await refreshTranscriptIndex(jsonlStores);
+      const sources = [...new Set(jsonlStores.map((store) => store.source))];
+      for (const sourceName of sources) indexedMatches.set(sourceName, []);
+      for (const item of searchTranscriptIndexMatches(needle, sources, undefined, limit * 4 * Math.max(1, sources.length), snippetLimit)) {
+        const matches = indexedMatches.get(item.source) ?? [];
+        matches.push(item);
+        indexedMatches.set(item.source, matches);
+      }
+    } catch { /* The filesystem scanner remains the compatibility fallback. */ }
+  }
   const storeScans = await mapPool(stores, maxParallel, async (store) => {
     if (store.kind === "sqlite") {
       try {
@@ -109,6 +126,8 @@ export async function searchSessions(
         };
       }
     }
+    const direct = indexedMatches.get(store.source);
+    if (direct) return { store, direct, counts: [], diagnostic: undefined };
     const counts = (await countFiles(needle, store.path))
       .sort((a, b) => b.count - a.count || b.path.localeCompare(a.path))
       .slice(0, limit * 4);

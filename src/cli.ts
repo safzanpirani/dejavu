@@ -6,7 +6,8 @@ import { DEFAULT_SEARCH_LIMIT, DEFAULT_SNIPPET_LIMIT, querySession, searchSessio
 import { DEFAULT_FIND_LIMIT, findSessions, showSession } from "./find.ts";
 import { defaultMemoryRoot, listMemories, memoryFiles, searchMemories, showMemory } from "./memory.ts";
 import { renderFind, renderQuery, renderSearch, renderShow } from "./render.ts";
-import { parseSource } from "./source-registry.ts";
+import { discoverTranscriptStores, parseSource } from "./source-registry.ts";
+import { refreshTranscriptIndex, transcriptIndexStatus } from "./transcript-index.ts";
 import type { StoreDiagnostic } from "./transcript-types.ts";
 
 const colors = {
@@ -24,12 +25,14 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
   ${colors.bold("dejavu memory list")} [--files] [--root DIR] [--json]
   ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
   ${colors.bold("dejavu memory show")} <project-or-file> [--root DIR] [--json]
+  ${colors.bold("dejavu index")} <status|update|rebuild> [--json]
 
 search flags
   -s, --source NAME      all, claude, codex, pi, or opencode (default all)
   -n, --limit N          transcripts to return (default ${DEFAULT_SEARCH_LIMIT})
       --snippets N       snippets per transcript (default ${DEFAULT_SNIPPET_LIMIT})
       --max-parallel N   local store/file workers (default ${DEFAULT_MAX_PARALLEL})
+      --no-index         bypass the transcript index and scan files directly
 
 find flags (multi-term session finder, ranked, user messages weighted)
   -s, --source NAME      restrict to one source
@@ -39,6 +42,7 @@ find flags (multi-term session finder, ranked, user messages weighted)
       --user             require every term to appear in user messages
       --paths            print matching transcript locators only, one per line
       --max-parallel N   local store/candidate workers (default ${DEFAULT_MAX_PARALLEL})
+      --no-index         bypass the transcript index and scan files directly
 
 show flags
       --full             do not truncate long messages
@@ -119,6 +123,25 @@ async function main(): Promise<void> {
   }
   const json = pullFlag(args, "--json");
   const quiet = pullFlag(args, "-q", "--quiet");
+  if (args[0] === "index") {
+    args.shift();
+    const verb = args.shift() ?? "status";
+    rejectUnknownFlags(args);
+    if (args.length > 0) die(`index ${verb} accepts no positional arguments (unexpected: '${args[0]}')`);
+    if (verb === "status") {
+      const result = await transcriptIndexStatus();
+      console.log(json ? JSON.stringify(result, null, 2) : result.exists
+        ? `${result.files} files · ${result.messages} messages · ${result.bytes} bytes · ${result.path}`
+        : `not built · ${result.path}`);
+      return;
+    }
+    if (verb === "update" || verb === "rebuild") {
+      const result = await refreshTranscriptIndex(await discoverTranscriptStores("all"), undefined, verb === "rebuild");
+      console.log(json ? JSON.stringify(result, null, 2) : `${result.files} files · ${result.messages} messages · ${result.indexed} indexed · ${result.removed} removed · ${result.elapsedMs}ms · ${result.path}`);
+      return;
+    }
+    die(`unknown index command '${verb}' (status|update|rebuild)`);
+  }
   if (args[0] === "memory") {
     args.shift();
     const verb = args.shift() ?? "list";
@@ -165,9 +188,10 @@ async function main(): Promise<void> {
     const userOnly = pullFlag(args, "--user");
     const pathsOnly = pullFlag(args, "--paths");
     const maxParallel = integer(pullValue(args, ["--max-parallel"]), "--max-parallel", DEFAULT_MAX_PARALLEL);
+    const noIndex = pullFlag(args, "--no-index");
     rejectUnknownFlags(args);
     if (args.length === 0) die("find needs one or more terms");
-    const result = await findSessions(args, { source, limit, project, since, userOnly, maxParallel });
+    const result = await findSessions(args, { source, limit, project, since, userOnly, maxParallel, noIndex });
     if (pathsOnly) console.log(result.hits.map((hit) => hit.path).join("\n"));
     else console.log(json ? JSON.stringify(result, null, 2) : renderFind(result));
     reportSkippedStores(result.skippedStores, quiet);
@@ -207,9 +231,10 @@ async function main(): Promise<void> {
   const limit = integer(pullValue(args, ["-n", "--limit"]), "--limit", DEFAULT_SEARCH_LIMIT);
   const snippets = integer(pullValue(args, ["--snippets"]), "--snippets", DEFAULT_SNIPPET_LIMIT);
   const maxParallel = integer(pullValue(args, ["--max-parallel"]), "--max-parallel", DEFAULT_MAX_PARALLEL);
+  const noIndex = pullFlag(args, "--no-index");
   rejectUnknownFlags(args);
   const query = args.join(" ").trim() || die("need one token or exact phrase to search");
-  const result = await searchSessions(query, { source, limit, snippets, maxParallel });
+  const result = await searchSessions(query, { source, limit, snippets, maxParallel, noIndex });
   console.log(json ? JSON.stringify(result, null, 2) : renderSearch(result));
   reportSkippedStores(result.skippedStores, quiet);
   if (!quiet && !json) console.error(colors.dim(`${result.sources.join(",")} · ${result.elapsedMs}ms`));

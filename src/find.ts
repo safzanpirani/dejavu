@@ -3,6 +3,7 @@ import { DEFAULT_MAX_PARALLEL, mapPool } from "./concurrency.ts";
 import { dateFromPath, projectFromClaudePath, projectFromPiPath, readTranscriptProject } from "./core.ts";
 import { searchOpenCodeStore } from "./opencode-store.ts";
 import { searchFileCounts, searchMatchingLines } from "./search-backend.ts";
+import { refreshTranscriptIndex, searchTranscriptIndex } from "./transcript-index.ts";
 import { discoverTranscriptStores, sourceFromLocator } from "./source-registry.ts";
 import { extractVisibleMessage, loadRecallMessages } from "./session-reader.ts";
 import { prepareRecallMessages } from "./core.ts";
@@ -20,6 +21,7 @@ export interface FindOptions {
   since?: string;
   userOnly?: boolean;
   maxParallel?: number;
+  noIndex?: boolean;
 }
 
 export interface FindHit {
@@ -154,6 +156,25 @@ export async function findSessions(
   if (stores.length === 0) throw new Error(`no transcript stores found for source: ${options.source ?? "all"}`);
   const countFiles = deps.countFiles ?? searchFileCounts;
   const searchOpenCode = deps.searchOpenCode ?? searchOpenCodeStore;
+  const indexedCounts = new Map<string, Map<TranscriptSource, Array<{ path: string; count: number }>>>();
+  const useIndex = !options.noIndex && cleaned.every((term) => term.length >= 3) && !deps.discoverStores && !deps.countFiles;
+  if (useIndex) {
+    try {
+      const jsonlStores = stores.filter((store) => store.kind === "jsonl");
+      await refreshTranscriptIndex(jsonlStores);
+      const sources = [...new Set(jsonlStores.map((store) => store.source))];
+      for (const term of cleaned) {
+        const bySource = new Map<TranscriptSource, Array<{ path: string; count: number }>>();
+        for (const sourceName of sources) bySource.set(sourceName, []);
+        for (const item of searchTranscriptIndex(term, sources, undefined, 800)) {
+          const matches = bySource.get(item.source) ?? [];
+          matches.push({ path: item.path, count: item.count });
+          bySource.set(item.source, matches);
+        }
+        indexedCounts.set(term, bySource);
+      }
+    } catch { /* The filesystem scanner remains the compatibility fallback. */ }
+  }
 
   // Per term x store, collect raw match counts with a bounded pool.
   // OpenCode search results (with snippets) are kept to avoid re-querying per candidate.
@@ -177,7 +198,7 @@ export async function findSessions(
       }
       rows = matches.map((match) => ({ source: store.source, path: match.path, count: match.count }));
     } else {
-      const counts = await countFiles(term, store.path);
+      const counts = indexedCounts.get(term)?.get(store.source) ?? await countFiles(term, store.path);
       rows = counts
         .filter((item) => item.path.endsWith(".jsonl") && !NOISE_PATH.test(item.path))
         .map((item) => ({ source: store.source, path: item.path, count: item.count }));

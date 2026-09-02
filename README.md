@@ -6,6 +6,8 @@ Agents lose useful context when work moves between Claude Code, Codex, Pi, and O
 
 Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context to your configured Pi model. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
 
+Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. It parses only new or changed JSONL transcripts before each search. OpenCode searches its native SQLite stores directly.
+
 ## Quick start
 
 You need [Bun](https://bun.sh/) 1.4 or newer. Clone the repository and link the CLI:
@@ -57,6 +59,8 @@ dejavu --source codex session-recall.ts --max-parallel 4 --json
 
 Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode` to narrow the search.
 
+The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Pass `--no-index` to use the direct filesystem scanner.
+
 Each result includes its source, date, project, match count, snippets, and locator. JSONL sources return file paths. OpenCode returns `opencode://...#session-id` locators.
 
 ### Find a session from a few terms
@@ -97,6 +101,16 @@ Model selection follows this order:
 1. `--model provider/id`
 2. `~/.pi/agent/session-recall.json`
 3. Pi's default provider and model in `settings.json`
+
+### Manage the transcript index
+
+```bash
+dejavu index status
+dejavu index update
+dejavu index rebuild
+```
+
+Search and `find` update the index automatically. `update` performs the same incremental refresh explicitly. `rebuild` discards indexed transcript rows and recreates them from the current JSONL stores. Set `DEJAVU_INDEX_PATH` to use another database path.
 
 ## Agent guidance
 
