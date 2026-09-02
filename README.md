@@ -6,7 +6,7 @@ Agents lose useful context when work moves between Claude Code, Codex, Pi, and O
 
 Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context to your configured Pi model. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
 
-Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. It parses only new or changed JSONL transcripts before each search. OpenCode searches its native SQLite stores directly.
+Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. Before each search it parses only the appended tail of changed JSONL transcripts and pulls new or updated OpenCode text parts by cursor. A typical refresh takes well under a second.
 
 ## Quick start
 
@@ -59,7 +59,7 @@ dejavu --source codex session-recall.ts --max-parallel 4 --json
 
 Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode` to narrow the search.
 
-The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Pass `--no-index` to use the direct filesystem scanner.
+The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
 Each result includes its source, date, project, match count, snippets, and locator. JSONL sources return file paths. OpenCode returns `opencode://...#session-id` locators.
 
@@ -110,7 +110,7 @@ dejavu index update
 dejavu index rebuild
 ```
 
-Search and `find` update the index automatically. `update` performs the same incremental refresh explicitly. `rebuild` discards indexed transcript rows and recreates them from the current JSONL stores. Set `DEJAVU_INDEX_PATH` to use another database path.
+Search and `find` update the index automatically. `update` performs the same incremental refresh explicitly. `rebuild` discards the index and recreates it from the current JSONL and OpenCode stores. A schema change triggers the same rebuild on the next refresh. Set `DEJAVU_INDEX_PATH` to use another database path.
 
 ## Agent guidance
 

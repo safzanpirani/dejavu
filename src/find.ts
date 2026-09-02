@@ -3,7 +3,7 @@ import { DEFAULT_MAX_PARALLEL, mapPool } from "./concurrency.ts";
 import { dateFromPath, projectFromClaudePath, projectFromPiPath, readTranscriptProject } from "./core.ts";
 import { searchOpenCodeStore } from "./opencode-store.ts";
 import { searchFileCounts, searchMatchingLines } from "./search-backend.ts";
-import { refreshTranscriptIndex, searchTranscriptIndex } from "./transcript-index.ts";
+import { refreshTranscriptIndex, searchTranscriptIndexMatches } from "./transcript-index.ts";
 import { discoverTranscriptStores, sourceFromLocator } from "./source-registry.ts";
 import { extractVisibleMessage, loadRecallMessages } from "./session-reader.ts";
 import { prepareRecallMessages } from "./core.ts";
@@ -156,24 +156,21 @@ export async function findSessions(
   if (stores.length === 0) throw new Error(`no transcript stores found for source: ${options.source ?? "all"}`);
   const countFiles = deps.countFiles ?? searchFileCounts;
   const searchOpenCode = deps.searchOpenCode ?? searchOpenCodeStore;
-  const indexedCounts = new Map<string, Map<TranscriptSource, Array<{ path: string; count: number }>>>();
-  const useIndex = !options.noIndex && cleaned.every((term) => term.length >= 3) && !deps.discoverStores && !deps.countFiles;
+  // term -> store path -> ranked matches from the transcript index (snippets included for OpenCode scoring).
+  const indexedByTerm = new Map<string, Map<string, StoreSearchMatch[]>>();
+  const useIndex = !options.noIndex && cleaned.every((term) => term.length >= 3) && !deps.discoverStores && !deps.countFiles && !deps.searchOpenCode;
   if (useIndex) {
     try {
-      const jsonlStores = stores.filter((store) => store.kind === "jsonl");
-      await refreshTranscriptIndex(jsonlStores);
-      const sources = [...new Set(jsonlStores.map((store) => store.source))];
+      const refreshed = await refreshTranscriptIndex(stores);
+      const skippedPaths = new Set(refreshed.skipped.map((item) => item.path));
+      const indexedStores = stores.filter((store) => !skippedPaths.has(store.path));
       for (const term of cleaned) {
-        const bySource = new Map<TranscriptSource, Array<{ path: string; count: number }>>();
-        for (const sourceName of sources) bySource.set(sourceName, []);
-        for (const item of searchTranscriptIndex(term, sources, undefined, 800)) {
-          const matches = bySource.get(item.source) ?? [];
-          matches.push({ path: item.path, count: item.count });
-          bySource.set(item.source, matches);
-        }
-        indexedCounts.set(term, bySource);
+        const byStore = new Map<string, StoreSearchMatch[]>();
+        for (const store of indexedStores) byStore.set(store.path, []);
+        for (const item of searchTranscriptIndexMatches(term, indexedStores, undefined, 800, 4)) byStore.get(item.store)?.push(item);
+        indexedByTerm.set(term, byStore);
       }
-    } catch { /* The filesystem scanner remains the compatibility fallback. */ }
+    } catch { /* The filesystem scanner remains the compatibility fallback. */ indexedByTerm.clear(); }
   }
 
   // Per term x store, collect raw match counts with a bounded pool.
@@ -182,7 +179,13 @@ export async function findSessions(
     const scanStart = now();
     let rows: { source: TranscriptSource; path: string; count: number }[];
     let matches: StoreSearchMatch[] = [];
-    if (store.kind === "sqlite") {
+    const indexed = indexedByTerm.get(term)?.get(store.path);
+    if (indexed) {
+      matches = indexed;
+      rows = indexed
+        .filter((item) => store.kind === "sqlite" || (item.path.endsWith(".jsonl") && !NOISE_PATH.test(item.path)))
+        .map((item) => ({ source: store.source, path: item.path, count: item.count }));
+    } else if (store.kind === "sqlite") {
       try {
         matches = await searchOpenCode(term, store.path, 200, 4);
       } catch (error) {
@@ -198,7 +201,7 @@ export async function findSessions(
       }
       rows = matches.map((match) => ({ source: store.source, path: match.path, count: match.count }));
     } else {
-      const counts = indexedCounts.get(term)?.get(store.source) ?? await countFiles(term, store.path);
+      const counts = await countFiles(term, store.path);
       rows = counts
         .filter((item) => item.path.endsWith(".jsonl") && !NOISE_PATH.test(item.path))
         .map((item) => ({ source: store.source, path: item.path, count: item.count }));

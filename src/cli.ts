@@ -131,13 +131,14 @@ async function main(): Promise<void> {
     if (verb === "status") {
       const result = await transcriptIndexStatus();
       console.log(json ? JSON.stringify(result, null, 2) : result.exists
-        ? `${result.files} files · ${result.messages} messages · ${result.bytes} bytes · ${result.path}`
+        ? `${result.files} files · ${result.messages} messages · ${result.bytes} bytes · schema v${result.schemaVersion} · ${result.path}`
         : `not built · ${result.path}`);
       return;
     }
     if (verb === "update" || verb === "rebuild") {
       const result = await refreshTranscriptIndex(await discoverTranscriptStores("all"), undefined, verb === "rebuild");
       console.log(json ? JSON.stringify(result, null, 2) : `${result.files} files · ${result.messages} messages · ${result.indexed} indexed · ${result.removed} removed · ${result.elapsedMs}ms · ${result.path}`);
+      reportSkippedStores(result.skipped, quiet || json);
       return;
     }
     die(`unknown index command '${verb}' (status|update|rebuild)`);

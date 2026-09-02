@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { compactHome, countOccurrences, snippetAround } from "./transcript-paths.ts";
 import type { RecallMessage, StoreSearchMatch, TranscriptSnippet } from "./transcript-types.ts";
 
 interface SearchRow {
@@ -99,28 +100,4 @@ export async function loadOpenCodeMessages(locator: string): Promise<RecallMessa
 function safeJson(value: string): Record<string, unknown> {
   try { return JSON.parse(value) as Record<string, unknown>; }
   catch { return {}; }
-}
-
-function countOccurrences(text: string, query: string): number {
-  const haystack = text.toLowerCase();
-  const needle = query.toLowerCase();
-  let count = 0;
-  let index = 0;
-  while ((index = haystack.indexOf(needle, index)) >= 0) {
-    count++;
-    index += needle.length;
-  }
-  return count;
-}
-
-function snippetAround(text: string, query: string, radius = 100): string {
-  const index = text.toLowerCase().indexOf(query.toLowerCase());
-  const start = Math.max(0, index - radius);
-  const end = Math.min(text.length, index + query.length + radius);
-  return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
-}
-
-function compactHome(path: string): string {
-  const home = process.env.HOME ?? "";
-  return home && path.startsWith(`${home}/`) ? path.slice(home.length + 1) : path;
 }

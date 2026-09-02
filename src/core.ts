@@ -3,7 +3,9 @@ import { DEFAULT_MAX_PARALLEL, mapPool } from "./concurrency.ts";
 import { completeQuery, resolveQueryModel } from "./model-client.ts";
 import { searchOpenCodeStore } from "./opencode-store.ts";
 import { searchFileCounts, searchMatchingLines } from "./search-backend.ts";
-import { refreshTranscriptIndex, searchTranscriptIndexMatches } from "./transcript-index.ts";
+import { type IndexedStoreMatch, refreshTranscriptIndex, searchTranscriptIndexMatches } from "./transcript-index.ts";
+import { compactHome, dateFromPath, projectFromTranscriptPath, projectFromTranscriptText, snippetAround } from "./transcript-paths.ts";
+export { dateFromPath, projectFromClaudePath, projectFromPiPath, snippetAround } from "./transcript-paths.ts";
 import { discoverTranscriptStores, sourceFromLocator } from "./source-registry.ts";
 import { extractVisibleMessage, loadRecallMessages, type RecallMessage } from "./session-reader.ts";
 import type {
@@ -98,22 +100,25 @@ export async function searchSessions(
   const startedAt = now();
   const countFiles = deps.countFiles ?? searchFileCounts;
   const searchOpenCode = deps.searchOpenCode ?? searchOpenCodeStore;
-  const indexedMatches = new Map<TranscriptSource, StoreSearchMatch[]>();
-  const useIndex = !options.noIndex && needle.length >= 3 && !deps.discoverStores && !deps.countFiles;
+  const indexedMatches = new Map<string, IndexedStoreMatch[]>();
+  const indexSkipped: StoreDiagnostic[] = [];
+  const useIndex = !options.noIndex && needle.length >= 3 && !deps.discoverStores && !deps.countFiles && !deps.searchOpenCode;
   if (useIndex) {
     try {
-      const jsonlStores = stores.filter((store) => store.kind === "jsonl");
-      await refreshTranscriptIndex(jsonlStores);
-      const sources = [...new Set(jsonlStores.map((store) => store.source))];
-      for (const sourceName of sources) indexedMatches.set(sourceName, []);
-      for (const item of searchTranscriptIndexMatches(needle, sources, undefined, limit * 4 * Math.max(1, sources.length), snippetLimit)) {
-        const matches = indexedMatches.get(item.source) ?? [];
-        matches.push(item);
-        indexedMatches.set(item.source, matches);
+      const refreshed = await refreshTranscriptIndex(stores);
+      const skippedPaths = new Set(refreshed.skipped.map((item) => item.path));
+      const indexedStores = stores.filter((store) => !skippedPaths.has(store.path));
+      for (const store of indexedStores) indexedMatches.set(store.path, []);
+      for (const item of searchTranscriptIndexMatches(needle, indexedStores, undefined, limit * 4 * Math.max(1, indexedStores.length), snippetLimit)) {
+        indexedMatches.get(item.store)?.push(item);
       }
-    } catch { /* The filesystem scanner remains the compatibility fallback. */ }
+      // Stores the index could not read still get one direct attempt below.
+      indexSkipped.push(...refreshed.skipped);
+    } catch { /* The filesystem scanner remains the compatibility fallback. */ indexedMatches.clear(); }
   }
   const storeScans = await mapPool(stores, maxParallel, async (store) => {
+    const indexed = indexedMatches.get(store.path);
+    if (indexed) return { store, direct: indexed.map(({ store: _store, ...match }) => match), counts: [], diagnostic: undefined };
     if (store.kind === "sqlite") {
       try {
         return { store, direct: await searchOpenCode(needle, store.path, limit * 4, snippetLimit), counts: [], diagnostic: undefined };
@@ -126,8 +131,6 @@ export async function searchSessions(
         };
       }
     }
-    const direct = indexedMatches.get(store.source);
-    if (direct) return { store, direct, counts: [], diagnostic: undefined };
     const counts = (await countFiles(needle, store.path))
       .sort((a, b) => b.count - a.count || b.path.localeCompare(a.path))
       .slice(0, limit * 4);
@@ -174,55 +177,11 @@ export async function searchSessions(
 }
 
 export async function readTranscriptProject(path: string, source: TranscriptSource): Promise<string> {
-  if (source === "pi") return projectFromPiPath(path);
-  if (source === "claude") return projectFromClaudePath(path);
+  if (source !== "codex") return projectFromTranscriptPath(path, source);
   try {
-    const prefix = await Bun.file(path).slice(0, 128 * 1024).text();
-    for (const line of prefix.split("\n")) {
-      const entry = JSON.parse(line) as { type?: string; payload?: { cwd?: string } };
-      if (source === "codex" && entry.type === "session_meta" && entry.payload?.cwd) return compactHome(entry.payload.cwd);
-    }
+    return projectFromTranscriptText(path, source, await Bun.file(path).slice(0, 128 * 1024).text());
   } catch { /* Metadata is optional. */ }
   return "~";
-}
-
-export function snippetAround(text: string, query: string, radius = 100): string {
-  const index = text.toLowerCase().indexOf(query.toLowerCase());
-  if (index < 0) return text.slice(0, radius * 2);
-  const start = Math.max(0, index - radius);
-  const end = Math.min(text.length, index + query.length + radius);
-  return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
-}
-
-export function dateFromPath(path: string): string {
-  return path.match(/(\d{4}-\d{2}-\d{2})T/)?.[1]
-    ?? path.match(/sessions[/\\](\d{4})[/\\](\d{2})[/\\](\d{2})/)?.slice(1, 4).join("-")
-    ?? "unknown";
-}
-
-export function projectFromPiPath(path: string, home = process.env.HOME ?? ""): string {
-  const match = path.match(/sessions[/\\](--.*?--)[/\\]/);
-  if (!match?.[1]) return "~";
-  return decodeProject(match[1].slice(2, -2), home);
-}
-
-export function projectFromClaudePath(path: string, home = process.env.HOME ?? ""): string {
-  const match = path.match(/\.claude[/\\]projects[/\\]([^/\\]+)[/\\]/);
-  if (!match?.[1]) return "~";
-  return decodeProject(match[1].replace(/^-/, ""), home);
-}
-
-function decodeProject(encodedPath: string, home: string): string {
-  const homeEncoded = home.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
-  let encoded = encodedPath;
-  if (homeEncoded && encoded.startsWith(`${homeEncoded}-`)) encoded = encoded.slice(homeEncoded.length + 1);
-  else if (encoded === homeEncoded) return "~";
-  return encoded.replace(/-/g, "/") || "~";
-}
-
-function compactHome(path: string): string {
-  const home = process.env.HOME ?? "";
-  return home && path.startsWith(`${home}/`) ? path.slice(home.length + 1) : path;
 }
 
 export function prepareRecallMessages(messages: RecallMessage[]): RecallMessage[] {
