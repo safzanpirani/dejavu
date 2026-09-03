@@ -4,6 +4,8 @@ import type { RecallBlock, RecallMessage, TranscriptSource } from "./transcript-
 export type { RecallBlock, RecallMessage } from "./transcript-types.ts";
 
 export interface TreeEntry {
+  /** 1-based line number in the source JSONL file. */
+  line?: number;
   type?: string;
   id?: string;
   timestamp?: string;
@@ -34,9 +36,13 @@ export async function loadBranchEntries(locator: string, source: TranscriptSourc
 }
 
 export function parseJsonl(text: string): TreeEntry[] {
-  return text.split("\n").filter((line) => line.trim()).flatMap((line) => {
-    try { return [JSON.parse(line) as TreeEntry]; }
-    catch { return []; }
+  return text.split("\n").flatMap((line, index) => {
+    if (!line.trim()) return [];
+    try {
+      const entry = JSON.parse(line) as TreeEntry;
+      if (entry && typeof entry === "object") entry.line = index + 1;
+      return [entry];
+    } catch { return []; }
   });
 }
 

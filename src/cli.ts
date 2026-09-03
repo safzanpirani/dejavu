@@ -10,6 +10,7 @@ import { discoverTranscriptStores, parseSource } from "./source-registry.ts";
 import { refreshTranscriptIndex, transcriptIndexStatus } from "./transcript-index.ts";
 import type { StoreDiagnostic } from "./transcript-types.ts";
 import { viewTranscript } from "./transcript-view.ts";
+import { DEFAULT_PLACEHOLDER, parseDropList, scrubTranscript } from "./transcript-scrub.ts";
 
 const colors = {
   red: (text: string) => `\x1b[31m${text}\x1b[0m`,
@@ -23,6 +24,7 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
   ${colors.bold("dejavu find")} <term> [term...] [flags]
   ${colors.bold("dejavu show")} <transcript-locator> [flags]
   ${colors.bold("dejavu transcript")} <transcript-locator> [flags]
+  ${colors.bold("dejavu scrub")} <transcript-locator> [--drop N|A-B]... [--pattern TEXT]... [flags]
   ${colors.bold("dejavu query")} <transcript-locator> <question> [flags]
   ${colors.bold("dejavu memory list")} [--files] [--root DIR] [--json]
   ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
@@ -57,6 +59,14 @@ transcript flags (turn-by-turn view with tool calls and results)
       --color / --no-color
                          force ANSI colors on or off (default: on for a terminal)
 
+scrub flags (redact a transcript in place; writes a .bak-<epoch> copy first)
+      --drop N|A-B       redact event #N (or a range) from dejavu transcript; repeatable,
+                         comma lists allowed; dropping a tool call also drops its result
+      --pattern TEXT     remove every line containing TEXT (case-insensitive) from every
+                         string field in every record, including dead branches; repeatable
+      --placeholder TEXT replacement text (default "${DEFAULT_PLACEHOLDER}")
+      --dry-run          report what would change without writing
+
 query flags
       --model P/ID       Pi model used to answer the question
       --agent-dir P      Pi config directory (default ~/.pi/agent)
@@ -86,6 +96,13 @@ function pullFlag(args: string[], ...names: string[]): boolean {
     }
   }
   return found;
+}
+
+function pullValues(args: string[], names: string[]): string[] {
+  const values: string[] = [];
+  let value: string | undefined;
+  while ((value = pullValue(args, names)) !== undefined) values.push(value);
+  return values;
 }
 
 function pullValue(args: string[], names: string[]): string | undefined {
@@ -239,6 +256,29 @@ async function main(): Promise<void> {
     if (!quiet && !json) {
       const c = result.counts;
       console.error(colors.dim(`${result.source} · ${c.user} user · ${c.assistant} assistant · ${c.toolCalls} tool calls · ${c.toolResults} results · ${c.thinking} thinking`));
+    }
+    return;
+  }
+  if (args[0] === "scrub") {
+    args.shift();
+    const drop = parseDropList(pullValues(args, ["--drop"]));
+    const patterns = pullValues(args, ["--pattern"]);
+    const placeholder = pullValue(args, ["--placeholder"]);
+    const dryRun = pullFlag(args, "--dry-run");
+    rejectUnknownFlags(args);
+    const locator = args.shift() ?? die("scrub needs a transcript locator");
+    if (args.length > 0) die(`scrub accepts one transcript locator (unexpected argument: '${args[0]}')`);
+    const result = await scrubTranscript(locator, { drop, patterns, placeholder, dryRun });
+    if (json) { console.log(JSON.stringify(result, null, 2)); return; }
+    const lines = [
+      `${result.dryRun ? "Would change" : "Changed"} ${result.changedRecords} record${result.changedRecords === 1 ? "" : "s"} in ${result.source} transcript ${result.path}`,
+      result.droppedEvents.length ? `Redacted events: ${result.droppedEvents.map((index) => `#${index}`).join(", ")}` : undefined,
+      patterns.length ? `Pattern lines removed: ${result.patternLines}` : undefined,
+      result.backup ? `Backup: ${result.backup}` : undefined,
+    ];
+    console.log(lines.filter((line): line is string => line !== undefined).join("\n"));
+    if (!quiet && !result.dryRun && result.changedRecords > 0) {
+      console.error(colors.dim("a running agent that already loaded this session keeps the old content in memory until it restarts"));
     }
     return;
   }

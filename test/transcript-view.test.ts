@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openCodeLocator } from "../src/opencode-store.ts";
 import { renderTranscript } from "../src/render.ts";
-import { loadTranscriptEvents, viewTranscript } from "../src/transcript-view.ts";
+import { loadTranscriptEvents, viewTranscript, type TranscriptEvent } from "../src/transcript-view.ts";
+
+/** Drops provenance fields so fixtures can be compared by content. */
+function bare(events: TranscriptEvent[]): Record<string, unknown>[] {
+  return events.map(({ index: _index, ref: _ref, ...rest }) => rest);
+}
 
 async function withJsonl(relativePath: string, lines: unknown[], run: (path: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "dejavu-transcript-"));
@@ -33,7 +38,10 @@ describe("loadTranscriptEvents", () => {
     await withJsonl(".claude/projects/-work-demo/s.jsonl", lines, async (path) => {
       const { project, events } = await loadTranscriptEvents(path, "claude");
       expect(project).toBe("/work/demo");
-      expect(events).toEqual([
+      expect(events.map((event) => [event.index, event.ref])).toEqual([
+        [0, { line: 1 }], [1, { line: 2, block: 0 }], [2, { line: 2, block: 1 }], [3, { line: 2, block: 2 }], [4, { line: 3, block: 0 }], [5, { line: 4, block: 0 }],
+      ]);
+      expect(bare(events)).toEqual([
         { kind: "user", text: "hello", timestamp: "2026-08-01T08:00:00Z" },
         { kind: "thinking", text: "plan", timestamp: "2026-08-01T08:00:01Z" },
         { kind: "assistant", text: "looking", timestamp: "2026-08-01T08:00:01Z" },
@@ -78,7 +86,8 @@ describe("loadTranscriptEvents", () => {
     ];
     await withJsonl(".pi/agent/sessions/--work--/s.jsonl", lines, async (path) => {
       const { events } = await loadTranscriptEvents(path, "pi");
-      expect(events).toEqual([
+      expect(events[3]?.ref).toEqual({ line: 4 });
+      expect(bare(events)).toEqual([
         { kind: "user", text: "hi", timestamp: "2026-08-03T10:00:00Z" },
         { kind: "thinking", text: "hm", timestamp: undefined },
         { kind: "tool_call", name: "bash", input: { command: "pwd" }, callId: "call1", timestamp: undefined },
@@ -107,7 +116,8 @@ describe("loadTranscriptEvents", () => {
     try {
       const { project, events } = await loadTranscriptEvents(openCodeLocator(databasePath, "ses"), "opencode");
       expect(project).toBe("/work/oc");
-      expect(events).toEqual([
+      expect(events[2]?.ref).toEqual({ partId: "p3", messageId: "m2" });
+      expect(bare(events)).toEqual([
         { kind: "user", text: "question", timestamp: "2026-08-04T00:00:00.000Z" },
         { kind: "thinking", text: "why", timestamp: undefined },
         { kind: "tool_call", name: "grep", input: { pattern: "x" }, callId: "g1", timestamp: undefined },

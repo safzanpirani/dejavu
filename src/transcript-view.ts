@@ -5,12 +5,24 @@ import { sourceFromLocator } from "./source-registry.ts";
 import { compactHome, projectFromTranscriptPath } from "./transcript-paths.ts";
 import type { TranscriptSource } from "./transcript-types.ts";
 
+/** Where an event lives in its store, so `dejavu scrub` can edit exactly that record. */
+export type EventRef =
+  | { line: number; block?: number }
+  | { partId: string; messageId: string };
+
+interface EventBase {
+  /** Position in the complete event list, stable across --thinking and --no-tools filters. */
+  index?: number;
+  ref?: EventRef;
+  timestamp?: string;
+}
+
 export type TranscriptEvent =
-  | { kind: "user"; text: string; timestamp?: string }
-  | { kind: "assistant"; text: string; timestamp?: string }
-  | { kind: "thinking"; text: string; timestamp?: string }
-  | { kind: "tool_call"; name: string; input: unknown; callId?: string; timestamp?: string }
-  | { kind: "tool_result"; name?: string; callId?: string; output: string; isError: boolean; timestamp?: string };
+  | (EventBase & { kind: "user"; text: string })
+  | (EventBase & { kind: "assistant"; text: string })
+  | (EventBase & { kind: "thinking"; text: string })
+  | (EventBase & { kind: "tool_call"; name: string; input: unknown; callId?: string })
+  | (EventBase & { kind: "tool_result"; name?: string; callId?: string; output: string; isError: boolean });
 
 export interface TranscriptCounts {
   user: number;
@@ -81,14 +93,20 @@ export async function loadTranscriptEvents(
   return { project: codexProject(entries), events: nameResults(entries.flatMap(codexEvents)) };
 }
 
-/** Fills in a tool result's name from the matching earlier tool call when the store records only a call id. */
+/** Fills in a tool result's name from the matching earlier tool call when the store records only a call id, and numbers every event. */
 function nameResults(events: TranscriptEvent[]): TranscriptEvent[] {
   const names = new Map<string, string>();
-  for (const event of events) {
+  events.forEach((event, index) => {
+    event.index = index;
     if (event.kind === "tool_call" && event.callId) names.set(event.callId, event.name);
     else if (event.kind === "tool_result" && !event.name && event.callId) event.name = names.get(event.callId);
-  }
+  });
   return events;
+}
+
+function lineRef(entry: TreeEntry, block?: number): EventRef | undefined {
+  if (entry.line === undefined) return undefined;
+  return block === undefined ? { line: entry.line } : { line: entry.line, block };
 }
 
 // ---------------------------------------------------------------------------
@@ -104,18 +122,19 @@ function claudeEvents(entry: TreeEntry): TranscriptEvent[] {
   if (role !== "user" && role !== "assistant") return [];
   const timestamp = entry.timestamp;
   const content = entry.message?.content;
-  if (typeof content === "string") return content.trim() ? [{ kind: role, text: content, timestamp }] : [];
+  if (typeof content === "string") return content.trim() ? [{ kind: role, text: content, timestamp, ref: lineRef(entry) }] : [];
   if (!Array.isArray(content)) return [];
-  return content.flatMap((raw): TranscriptEvent[] => {
+  return content.flatMap((raw, position): TranscriptEvent[] => {
     const block = asRecord(raw);
     if (!block) return [];
+    const ref = lineRef(entry, position);
     switch (block.type) {
       case "text":
-        return typeof block.text === "string" && block.text.trim() ? [{ kind: role, text: block.text, timestamp }] : [];
+        return typeof block.text === "string" && block.text.trim() ? [{ kind: role, text: block.text, timestamp, ref }] : [];
       case "thinking":
-        return typeof block.thinking === "string" && block.thinking.trim() ? [{ kind: "thinking", text: block.thinking, timestamp }] : [];
+        return typeof block.thinking === "string" && block.thinking.trim() ? [{ kind: "thinking", text: block.thinking, timestamp, ref }] : [];
       case "tool_use":
-        return [{ kind: "tool_call", name: stringOr(block.name, "unknown"), input: block.input ?? {}, callId: stringOr(block.id), timestamp }];
+        return [{ kind: "tool_call", name: stringOr(block.name, "unknown"), input: block.input ?? {}, callId: stringOr(block.id), timestamp, ref }];
       case "tool_result":
         return [{
           kind: "tool_result",
@@ -123,9 +142,10 @@ function claudeEvents(entry: TreeEntry): TranscriptEvent[] {
           output: textOf(block.content),
           isError: block.is_error === true,
           timestamp,
+          ref,
         }];
       case "image":
-        return [{ kind: role, text: "[image]", timestamp }];
+        return [{ kind: role, text: "[image]", timestamp, ref }];
       default:
         return [];
     }
@@ -163,26 +183,27 @@ function codexEvents(entry: TreeEntry): TranscriptEvent[] {
   const payload = entry.payload as CodexPayload | undefined;
   if (!payload) return [];
   const timestamp = entry.timestamp;
+  const ref = lineRef(entry);
   switch (payload.type) {
     case "message": {
       if (payload.role !== "user" && payload.role !== "assistant") return [];
       const text = textOf(payload.content);
-      return text.trim() ? [{ kind: payload.role, text, timestamp }] : [];
+      return text.trim() ? [{ kind: payload.role, text, timestamp, ref }] : [];
     }
     case "reasoning": {
       const text = [textOf(payload.summary), textOf(payload.content)].filter(Boolean).join("\n");
-      return text.trim() ? [{ kind: "thinking", text, timestamp }] : [];
+      return text.trim() ? [{ kind: "thinking", text, timestamp, ref }] : [];
     }
     case "function_call":
-      return [{ kind: "tool_call", name: stringOr(payload.name, "unknown"), input: parseJsonArguments(payload.arguments), callId: payload.call_id, timestamp }];
+      return [{ kind: "tool_call", name: stringOr(payload.name, "unknown"), input: parseJsonArguments(payload.arguments), callId: payload.call_id, timestamp, ref }];
     case "custom_tool_call":
-      return [{ kind: "tool_call", name: stringOr(payload.name, "unknown"), input: payload.input ?? "", callId: payload.call_id, timestamp }];
+      return [{ kind: "tool_call", name: stringOr(payload.name, "unknown"), input: payload.input ?? "", callId: payload.call_id, timestamp, ref }];
     case "local_shell_call":
-      return [{ kind: "tool_call", name: "shell", input: payload.action?.command ?? payload.action ?? {}, callId: payload.call_id, timestamp }];
+      return [{ kind: "tool_call", name: "shell", input: payload.action?.command ?? payload.action ?? {}, callId: payload.call_id, timestamp, ref }];
     case "function_call_output":
     case "custom_tool_call_output": {
       const output = textOf(payload.output);
-      return [{ kind: "tool_result", callId: payload.call_id, output, isError: looksLikeCodexError(output), timestamp }];
+      return [{ kind: "tool_result", callId: payload.call_id, output, isError: looksLikeCodexError(output), timestamp, ref }];
     }
     default:
       return [];
@@ -215,25 +236,27 @@ function piEvents(entry: TreeEntry): TranscriptEvent[] {
       output: textOf(message.content),
       isError: message.isError === true,
       timestamp,
+      ref: lineRef(entry),
     }];
   }
   const role = message.role;
   if (role !== "user" && role !== "assistant") return [];
   const content = message.content;
-  if (typeof content === "string") return content.trim() ? [{ kind: role, text: content, timestamp }] : [];
+  if (typeof content === "string") return content.trim() ? [{ kind: role, text: content, timestamp, ref: lineRef(entry) }] : [];
   if (!Array.isArray(content)) return [];
-  return content.flatMap((raw): TranscriptEvent[] => {
+  return content.flatMap((raw, position): TranscriptEvent[] => {
     const block = asRecord(raw);
     if (!block) return [];
+    const ref = lineRef(entry, position);
     switch (block.type) {
       case "text":
-        return typeof block.text === "string" && block.text.trim() ? [{ kind: role, text: block.text, timestamp }] : [];
+        return typeof block.text === "string" && block.text.trim() ? [{ kind: role, text: block.text, timestamp, ref }] : [];
       case "thinking":
-        return typeof block.thinking === "string" && block.thinking.trim() ? [{ kind: "thinking", text: block.thinking, timestamp }] : [];
+        return typeof block.thinking === "string" && block.thinking.trim() ? [{ kind: "thinking", text: block.thinking, timestamp, ref }] : [];
       case "toolCall":
-        return [{ kind: "tool_call", name: stringOr(block.name, "unknown"), input: block.arguments ?? {}, callId: stringOr(block.id), timestamp }];
+        return [{ kind: "tool_call", name: stringOr(block.name, "unknown"), input: block.arguments ?? {}, callId: stringOr(block.id), timestamp, ref }];
       case "image":
-        return [{ kind: role, text: "[image]", timestamp }];
+        return [{ kind: role, text: "[image]", timestamp, ref }];
       default:
         return [];
     }
@@ -246,6 +269,7 @@ function piEvents(entry: TreeEntry): TranscriptEvent[] {
 interface OpenCodeRow {
   message_id: string;
   message_data: string;
+  part_id: string;
   part_data: string;
 }
 
@@ -257,7 +281,7 @@ async function loadOpenCodeEvents(locator: string): Promise<{ project: string; e
       "SELECT directory FROM session WHERE id = ?1",
     ).get(sessionId)?.directory;
     const rows = database.query<OpenCodeRow, [string]>(`
-      SELECT m.id AS message_id, m.data AS message_data, p.data AS part_data
+      SELECT m.id AS message_id, m.data AS message_data, p.id AS part_id, p.data AS part_data
       FROM message m
       JOIN part p ON p.message_id = m.id
       WHERE m.session_id = ?1
@@ -270,31 +294,32 @@ async function loadOpenCodeEvents(locator: string): Promise<{ project: string; e
       const role = message.role === "assistant" ? "assistant" : "user";
       const created = asRecord(message.time)?.created;
       const timestamp = typeof created === "number" ? new Date(created).toISOString() : undefined;
+      const ref: EventRef = { partId: row.part_id, messageId: row.message_id };
       switch (part.type) {
         case "text":
-          if (typeof part.text === "string" && part.text.trim()) events.push({ kind: role, text: part.text, timestamp });
+          if (typeof part.text === "string" && part.text.trim()) events.push({ kind: role, text: part.text, timestamp, ref });
           break;
         case "reasoning":
-          if (typeof part.text === "string" && part.text.trim()) events.push({ kind: "thinking", text: part.text, timestamp });
+          if (typeof part.text === "string" && part.text.trim()) events.push({ kind: "thinking", text: part.text, timestamp, ref });
           break;
         case "file":
-          events.push({ kind: role, text: `[file: ${stringOr(part.filename, stringOr(part.mime, "attachment"))}]`, timestamp });
+          events.push({ kind: role, text: `[file: ${stringOr(part.filename, stringOr(part.mime, "attachment"))}]`, timestamp, ref });
           break;
         case "tool": {
           const state = asRecord(part.state) ?? {};
           const name = stringOr(part.tool, "unknown");
           const callId = stringOr(part.callID);
-          events.push({ kind: "tool_call", name, input: state.input ?? {}, callId, timestamp });
+          events.push({ kind: "tool_call", name, input: state.input ?? {}, callId, timestamp, ref });
           const isError = state.status === "error";
           const output = isError ? textOf(state.error) : textOf(state.output);
-          if (state.status === "completed" || isError) events.push({ kind: "tool_result", name, callId, output, isError, timestamp });
+          if (state.status === "completed" || isError) events.push({ kind: "tool_result", name, callId, output, isError, timestamp, ref });
           break;
         }
         default:
           break;
       }
     }
-    return { project: compactHome(directory || "~"), events };
+    return { project: compactHome(directory || "~"), events: nameResults(events) };
   } finally {
     database.close();
   }

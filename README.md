@@ -26,6 +26,7 @@ dejavu 'Cannot find module'
 dejavu find deployment timeout --since 2w
 dejavu show '<locator from search results>' --around timeout
 dejavu transcript '<locator from search results>'
+dejavu scrub '<locator from search results>' --drop 12 --pattern secret-host
 dejavu memory search 'deployment boundary'
 ```
 
@@ -91,6 +92,16 @@ dejavu transcript '<locator>' --no-tools --json
 ```
 
 `transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, and OpenCode sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal. Use `--color` or `--no-color` to override.
+
+### Redact a transcript
+
+```bash
+dejavu transcript '<locator>'                       # note the #N event numbers
+dejavu scrub '<locator>' --drop 12 --drop 30-34 --dry-run
+dejavu scrub '<locator>' --drop 12 --pattern "secret-host" --pattern "api key"
+```
+
+`scrub` edits the transcript in place after writing a `.bak-<epoch>` copy next to it. `--drop` replaces the content of the numbered events from `dejavu transcript` with a placeholder while keeping ids, types, and parent links intact, so the session still resumes. Dropping a tool call also drops its result. `--pattern` removes every line that contains the text, case-insensitively, from every string field in every record, including tool result copies stored outside the message and branches that are no longer active. `--placeholder` changes the replacement text and `--dry-run` reports without writing. Claude, Codex, and Pi files are rewritten line by line; OpenCode rows are updated in a transaction after the database file is copied.
 
 ### Search agent memory
 

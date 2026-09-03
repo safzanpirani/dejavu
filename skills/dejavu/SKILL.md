@@ -36,6 +36,10 @@ Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-D
 
 `dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, and OpenCode. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits the event list (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
 
+## Redact a transcript
+
+`dejavu scrub <locator>` rewrites a transcript in place after saving a `.bak-<epoch>` copy. Use `--drop N` (repeatable, ranges like `30-34`) with the `#N` numbers from `dejavu transcript` to replace a user turn, assistant turn, thinking block, or tool call and its result with `[redacted]`; ids, types, and parent links stay so the session still resumes. Use `--pattern TEXT` (repeatable) to delete every line containing the text from every string field in every record, which also covers tool result copies stored outside the message and inactive branches. Run with `--dry-run` first, report the counts, and remind the user that an agent process that already loaded the session keeps the old content until it restarts. Never print the redacted content back.
+
 ## Find a transcript
 
 Search all detected stores by default:

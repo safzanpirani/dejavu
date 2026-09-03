@@ -60,18 +60,18 @@ export function renderTranscript(view: TranscriptView, options: RenderTranscript
   const blocks = view.events.map((event, index) => {
     switch (event.kind) {
       case "user":
-        return `${rule(paint.user("USER"), event.timestamp, paint)}\n${clip(event.text, full ? Infinity : TEXT_LIMIT)}`;
+        return `${rule(paint.user("USER"), event, paint)}\n${clip(event.text, full ? Infinity : TEXT_LIMIT)}`;
       case "assistant":
-        return `${rule(paint.assistant("ASSISTANT"), event.timestamp, paint)}\n${clip(event.text, full ? Infinity : TEXT_LIMIT)}`;
+        return `${rule(paint.assistant("ASSISTANT"), event, paint)}\n${clip(event.text, full ? Infinity : TEXT_LIMIT)}`;
       case "thinking":
-        return `${rule(paint.dim("THINKING"), event.timestamp, paint)}\n${paint.dim(clip(event.text, full ? Infinity : TEXT_LIMIT))}`;
+        return `${rule(paint.dim("THINKING"), event, paint)}\n${paint.dim(clip(event.text, full ? Infinity : TEXT_LIMIT))}`;
       case "tool_call": {
         const previous = view.events[index - 1];
-        const lead = previous && previous.kind !== "user" ? "" : `${rule(paint.assistant("ASSISTANT"), event.timestamp, paint)}\n`;
-        return `${lead}${paint.tool(`▶ ${event.name}`)} ${indent(formatToolInput(event.input, full), "    ")}`;
+        const lead = previous && previous.kind !== "user" ? "" : `${rule(paint.assistant("ASSISTANT"), event, paint)}\n`;
+        return `${lead}${tag(event, paint)}${paint.tool(`▶ ${event.name}`)} ${indent(formatToolInput(event.input, full), "    ")}`;
       }
       case "tool_result": {
-        const label = event.isError ? paint.error(`◀ ${event.name ?? "tool"} error`) : paint.dim(`◀ ${event.name ?? "tool"} result`);
+        const label = `${tag(event, paint)}${event.isError ? paint.error(`◀ ${event.name ?? "tool"} error`) : paint.dim(`◀ ${event.name ?? "tool"} result`)}`;
         const body = full ? event.output : clipLines(event.output, TOOL_OUTPUT_LINES, TOOL_OUTPUT_LIMIT);
         return body.trim() ? `${label}\n${indentAll(paint.dim(body), "    ")}` : `${label} ${paint.dim("(empty)")}`;
       }
@@ -80,9 +80,13 @@ export function renderTranscript(view: TranscriptView, options: RenderTranscript
   return `${header}\n\n${blocks.join("\n\n")}`;
 }
 
-function rule(label: string, timestamp: string | undefined, paint: Paint): string {
-  const when = timestamp ? ` ${paint.dim(timestamp.replace("T", " ").slice(0, 19))}` : "";
-  return `${paint.dim("───")} ${label}${when} ${paint.dim("─".repeat(40))}`;
+function rule(label: string, event: { index?: number; timestamp?: string }, paint: Paint): string {
+  const when = event.timestamp ? ` ${paint.dim(event.timestamp.replace("T", " ").slice(0, 19))}` : "";
+  return `${paint.dim("───")} ${tag(event, paint)}${label}${when} ${paint.dim("─".repeat(40))}`;
+}
+
+function tag(event: { index?: number }, paint: Paint): string {
+  return event.index === undefined ? "" : `${paint.dim(`#${event.index}`)} `;
 }
 
 function formatToolInput(input: unknown, full: boolean): string {
