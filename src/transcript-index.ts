@@ -58,6 +58,21 @@ export function defaultIndexPath(): string {
   return process.env.DEJAVU_INDEX_PATH ?? join(cacheRoot, "dejavu", "transcripts.sqlite");
 }
 
+/** Select sessions without exposing their indexed message bodies. */
+export function listIndexedSessions(
+  options: { project: string; since?: string; limit: number },
+  path = defaultIndexPath(),
+): { paths: string[]; total: number } {
+  const database = openIndex(path, { readonly: true });
+  try {
+    const project = compactHome(options.project).replace(/^~\//, "").toLowerCase();
+    const rows = database.query(`SELECT path, MAX(date) AS latest FROM message_rows
+      WHERE instr(lower(project), ?) > 0 GROUP BY path HAVING MAX(date) >= ?
+      ORDER BY latest DESC, path ASC`).all(project, options.since ?? "") as { path: string }[];
+    return { paths: rows.slice(0, options.limit).map((row) => row.path), total: rows.length };
+  } finally { database.close(); }
+}
+
 function storedSchemaVersion(database: Database): number {
   const table = database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata'").get();
   if (!table) return 0;

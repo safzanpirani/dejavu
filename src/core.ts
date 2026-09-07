@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { DEFAULT_MAX_PARALLEL, mapPool } from "./concurrency.ts";
-import { completeQuery, resolveQueryModel } from "./model-client.ts";
+import { completeQuery, estimateCost, resolveQueryModel } from "./model-client.ts";
 import { searchOpenCodeStore } from "./opencode-store.ts";
 import { searchFileCounts, searchMatchingLines } from "./search-backend.ts";
 import { type IndexedStoreMatch, refreshTranscriptIndex, searchTranscriptIndexMatches } from "./transcript-index.ts";
@@ -55,7 +55,11 @@ export interface QueryResult {
   sessionPath: string;
   question: string;
   answer: string;
-  model: { provider: string; id: string };
+  model: { provider: string; id: string; reasoningEffort?: "medium" };
+  transport: "http" | "pi" | "codex";
+  usage?: { inputTokens: number; outputTokens: number };
+  /** Estimated USD for this call, when the model entry records prices. */
+  costUsd?: number;
   messageCount: number;
   wasWindowed: boolean;
   elapsedMs: number;
@@ -271,13 +275,16 @@ export async function querySession(
     const text = resolved.serialize([message]);
     return { role: message.role, text, charCount: text.length };
   }), question, tokenBudget) : fullText;
-  const answer = await complete(resolved, conversation, question.trim(), options.signal);
+  const completion = await complete(resolved, conversation, question.trim(), options.signal);
   return {
     source,
     sessionPath,
     question: question.trim(),
-    answer,
-    model: { provider: resolved.provider, id: resolved.id },
+    answer: completion.answer,
+    model: { provider: resolved.provider, id: resolved.id, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) },
+    transport: completion.transport,
+    usage: completion.usage,
+    costUsd: estimateCost(resolved.cost, completion.usage),
     messageCount: messages.length,
     wasWindowed,
     elapsedMs: now() - startedAt,

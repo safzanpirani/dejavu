@@ -62,25 +62,37 @@ describe("findSessions", () => {
   test("bounds reverse-completing candidate scans and preserves candidate order", async () => {
     const paths = Array.from({ length: 6 }, (_, index) => `${storeDir}/-Users-me-Development-p${index}/${index}aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl`);
     const completions: number[] = [];
-    const delays = [120, 90, 60, 30, 10, 5];
+    const gates = paths.map(() => Promise.withResolvers<void>());
+    const started = paths.map(() => Promise.withResolvers<void>());
+    const finished = paths.map(() => Promise.withResolvers<void>());
     let active = 0;
     let peak = 0;
-    const result = await findSessions(["workshop"], { limit: 6 }, {
+    const pending = findSessions(["workshop"], { limit: 6 }, {
       discoverStores: async () => [{ source: "claude", kind: "jsonl", path: storeDir }],
       countFiles: async () => paths.map((path) => ({ path, count: 1 })),
       findLines: async (_term, path) => {
         const index = paths.indexOf(path);
         active++;
         peak = Math.max(peak, active);
-        await Bun.sleep(delays[index]!);
+        started[index]!.resolve();
+        await gates[index]!.promise;
         completions.push(index);
         active--;
+        finished[index]!.resolve();
         return [claudeLine("user", "planning the workshop session")];
       },
       readProject: async (path) => `Development/p${paths.indexOf(path)}`,
       readPrefix: async () => claudeLine("user", "open the workshop"),
       now: () => 0,
     });
+
+    await Promise.all(started.slice(0, 4).map((entry) => entry.promise));
+    for (const index of [3, 4, 5, 2, 1, 0]) {
+      await started[index]!.promise;
+      gates[index]!.resolve();
+      await finished[index]!.promise;
+    }
+    const result = await pending;
 
     expect(completions).toEqual([3, 4, 5, 2, 1, 0]);
     expect(peak).toBe(4);
@@ -145,6 +157,16 @@ describe("findSessions", () => {
   test("--user drops sessions without user-message matches for every term", async () => {
     const result = await findSessions(["workshop"], { userOnly: true }, deps);
     expect(result.hits.every((hit) => Object.values(hit.termCounts).every((count) => count.user > 0))).toBe(true);
+  });
+
+  test("matches a hyphenated project name in a decoded Claude path", async () => {
+    const path = `${storeDir}/-Users-me-Development-comfyui-modal/session.jsonl`;
+    const result = await findSessions(["workshop"], { project: "comfyui-modal" }, {
+      ...deps,
+      countFiles: async () => [{ path, count: 1 }],
+      readProject: async () => "Development/comfyui/modal",
+    });
+    expect(result.hits.map((hit) => hit.path)).toEqual([path]);
   });
 
   test("project filter applies before the candidate cap", async () => {

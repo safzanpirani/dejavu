@@ -32,6 +32,12 @@ Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-D
 
 ## Read a transcript without model cost
 
+For bounded context in one call, use `dejavu pack <term>... --project SUBSTR --budget-chars 8000 --json`. It runs the session finder and returns user/assistant excerpts around matches, with overlapping neighborhoods merged. Defaults: 3 sessions, 2 neighboring dialogue events, 1200 characters per event, 12000 total event-body characters. It shares the budget across sessions/events and focuses long excerpts around a term. `--context 0` returns only matching events. `--exclude-session ID_OR_LOCATOR` is repeatable; active `CODEX_THREAD_ID`/`CLAUDE_SESSION_ID` values are automatically excluded when present. It accepts find's source, project, since, user, no-index, and max-parallel flags. Search considers at most 40 ranked candidates, not a complete catalog. Inspect `requiredTerms` for relaxed matching and `skippedStores`/`skippedSessions` for unavailable data.
+
+Use `show --no-tools` for only user/assistant content without tool summaries or tool-only turns. `show --max-chars N` changes the per-message limit in text and JSON. `--no-toolcalls` aliases `--no-tools` for both show and transcript.
+
+For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 --budget-chars 8000 --json`. `--tool-chars N` caps tool input/output bodies; `--from-event N --limit N` paginates by stable event IDs after filtering. Explicit bounds apply to JSON; unbounded JSON stays complete. Budgets count event-body characters including ellipses, excluding labels, JSON encoding, and metadata. Shortened structured tool inputs become preview strings, marked in `window.clipped`. Follow `window.nextEvent` for omitted events, and recover clipped content separately with `transcript <locator> --full --from-event N --limit 1` (add `--thinking` for reasoning). A pack's nextEvent resumes the conversation, not the match filter. `--full` cannot be combined with character limits.
+
 `dejavu show <locator>` prints the parsed conversation as `[user]`/`[assistant]` turns (tool calls summarized, long messages truncated; `--full` disables truncation). `--around TERM` prints only messages containing TERM plus three turns of context — use it to jump to the relevant region of a long session. Use `show` to confirm a session is the right one before resuming it or paying for `dejavu query`.
 
 `dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, and OpenCode. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits the event list (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
@@ -64,6 +70,20 @@ Good anchors include filenames, symbols, package names, issue IDs, exact error f
 
 Each result includes a source, date, project, match count, snippets, and locator. OpenCode locators start with `opencode://`; pass them back unchanged. Search results can include historical user text. Never repeat credentials or other secrets found in snippets.
 
+## Profile tool activity
+
+```bash
+dejavu profile '<transcript-locator>' --json
+dejavu profile --project dejavu --since 7d --limit 10 --json
+dejavu profile '<transcript-locator>' --explain --json
+```
+
+The default is deterministic and invokes no model. It measures outer calls, result characters, identical-input repeats, error flags, observation calls, and recognizable nested `tools.name()` call sites. JSON preserves event IDs for inspection with `dejavu transcript`; it omits raw prompts, inputs, and outputs. `--output-threshold N` changes the oversized-result threshold from 10,000 characters.
+
+Repeated calls are candidates for review, not proven waste. Nested call sites are lexical hints, not executed counts; aliases, loops, templates, and computed access limit coverage. First-result latency includes waiting and is not model reasoning time. Project mode selects sessions by their last indexed visible-message date and measures each entire selected session. Check `omittedSessions` and `diagnostics` for coverage limits. Exit 1 signals skipped sources or an explanation failure even when measurements are available.
+
+`--explain` sends only bounded metrics and event references through Codex exec to `gpt-5.6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
+
 ## Ask about one transcript
 
 Use a focused question after selecting a result:
@@ -72,9 +92,9 @@ Use a focused question after selecting a result:
 dejavu query '<locator from search results>' 'What did we decide, and which files changed?' --json
 ```
 
-`dejavu query` sends the selected conversation context to the configured Pi model and may incur model usage. Query only the transcript needed for the request. The loader removes thinking, developer instructions, and tool output. It follows branches where the source supports them and windows large transcripts around question terms. The model-backed query stays serial and does not accept `--max-parallel`.
+`dejavu query` sends the selected conversation context through `codex exec` to `gpt-5.6-luna` with medium reasoning by default and may incur model usage. It requires an authenticated Codex CLI. Query only the transcript needed for the request. The loader removes thinking, developer instructions, and tool output. It follows branches where the source supports them and windows large transcripts around question terms. The model-backed query stays serial and does not accept `--max-parallel`.
 
-Model selection is `--model provider/id`, then `~/.pi/agent/session-recall.json`, then Pi's default model. Do not rewrite model configuration unless the user asks.
+Use `--model <codex-model-id>` or `--model codex/<id>` for a Codex override, still at medium reasoning. The default ignores Pi model settings. Codex runs ephemerally with transcript input on stdin, a read-only sandbox, project/skill instructions disabled, and a 120-second timeout. It uses the OpenAI provider and existing Codex authentication without changing user configuration. An explicit non-Codex `--model provider/id` retains the legacy HTTP/Pi path and reads provider settings from `~/.pi/agent` or `--agent-dir`. Do not rewrite model configuration unless the user asks.
 
 ## Report the result
 

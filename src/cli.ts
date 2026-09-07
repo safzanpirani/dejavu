@@ -11,6 +11,9 @@ import { refreshTranscriptIndex, transcriptIndexStatus } from "./transcript-inde
 import type { StoreDiagnostic } from "./transcript-types.ts";
 import { viewTranscript } from "./transcript-view.ts";
 import { DEFAULT_PLACEHOLDER, parseDropList, scrubTranscript } from "./transcript-scrub.ts";
+import { explainProfile, profileSessions, renderProfile } from "./profile.ts";
+import { packSessions, renderPack } from "./pack.ts";
+import { renderWindow, validateBound, windowTranscript } from "./transcript-window.ts";
 
 const colors = {
   red: (text: string) => `\x1b[31m${text}\x1b[0m`,
@@ -22,10 +25,13 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
 
   ${colors.bold("dejavu")} <token-or-exact-phrase> [flags]
   ${colors.bold("dejavu find")} <term> [term...] [flags]
+  ${colors.bold("dejavu pack")} <term> [term...] [flags]
   ${colors.bold("dejavu show")} <transcript-locator> [flags]
   ${colors.bold("dejavu transcript")} <transcript-locator> [flags]
   ${colors.bold("dejavu scrub")} <transcript-locator> [--drop N|A-B]... [--pattern TEXT]... [flags]
   ${colors.bold("dejavu query")} <transcript-locator> <question> [flags]
+  ${colors.bold("dejavu profile")} <transcript-locator>... [--explain] [--json]
+  ${colors.bold("dejavu profile")} --project SUBSTR [--since 7d] [--limit 10] [--explain]
   ${colors.bold("dejavu memory list")} [--files] [--root DIR] [--json]
   ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
   ${colors.bold("dejavu memory show")} <project-or-file> [--root DIR] [--json]
@@ -34,7 +40,7 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
 search flags
   -s, --source NAME      all, claude, codex, pi, or opencode (default all)
   -n, --limit N          transcripts to return (default ${DEFAULT_SEARCH_LIMIT})
-      --snippets N       snippets per transcript (default ${DEFAULT_SNIPPET_LIMIT})
+      --snippets N       snippets per transcript (integer >= 1; default ${DEFAULT_SNIPPET_LIMIT})
       --max-parallel N   local store/file workers (default ${DEFAULT_MAX_PARALLEL})
       --no-index         bypass the transcript index and scan files directly
 
@@ -51,11 +57,28 @@ find flags (multi-term session finder, ranked, user messages weighted)
 show flags
       --full             do not truncate long messages
       --around TERM      only messages containing TERM, with 3 turns of context
+      --no-tools         only user/assistant content, without tool summaries
+      --max-chars N      characters per message (default 700; applies to JSON)
+
+pack flags (model-free search plus user/assistant excerpts)
+      --limit N          sessions to return (default 3; search cap 40)
+      --budget-chars N   total event-body characters (default 12000)
+      --max-chars N      maximum characters per event (default 1200)
+      --context N        neighboring dialogue events per match (default 2; 0 allowed)
+      --exclude-session ID_OR_LOCATOR
+                         repeatable; active session IDs from the environment are excluded
+                         also accepts find's source, project, since, user, no-index, max-parallel
 
 transcript flags (turn-by-turn view with tool calls and results)
       --full             do not truncate messages, tool inputs, or tool outputs
       --thinking         include model thinking blocks
       --no-tools         hide tool calls and tool results
+      --max-chars N      cap dialogue/thinking event bodies, including JSON
+      --tool-chars N     cap tool input/output bodies, including JSON
+      --budget-chars N   cap total event-body characters, excluding labels/metadata
+      --from-event N     start at stable event #N (inclusive; 0 allowed)
+      --limit N          maximum events; JSON window.nextEvent gives the next ID
+                         --no-toolcalls is an alias for --no-tools in show/transcript
       --color / --no-color
                          force ANSI colors on or off (default: on for a terminal)
 
@@ -67,17 +90,29 @@ scrub flags (redact a transcript in place; writes a .bak-<epoch> copy first)
       --placeholder TEXT replacement text (default "${DEFAULT_PLACEHOLDER}")
       --dry-run          report what would change without writing
 
+profile flags
+      --project SUBSTR  select indexed sessions by project instead of locators
+      --since WHEN      select sessions with visible-message activity since YYYY-MM-DD/7d
+      --limit N         maximum sessions in project mode (default 10)
+      --output-threshold N
+                         flag results over N characters (default 10000)
+      --explain         interpret bounded metrics with Luna medium; no raw context sent
+
 query flags
-      --model P/ID       Pi model used to answer the question
-      --agent-dir P      Pi config directory (default ~/.pi/agent)
+      --model ID         Codex model (default gpt-5.6-luna, medium reasoning)
+                         Explicit provider/id selects a legacy HTTP/Pi provider;
+                         codex/id selects Codex exec
+      --agent-dir P      Pi config directory for legacy overrides (default ~/.pi/agent)
 
 common flags
-      --json             emit the complete structured result
+      --json             emit structured results, respecting explicit bounds
   -q, --quiet            suppress stderr diagnostics
   -h, --help             show this help
 
 Search covers detected Claude, Codex, Pi, and OpenCode stores by default.
 Memory commands read Claude's cross-project Markdown memory corpus.
+Memory selectors accept exact listed project keys, unique project substrings, or file paths.
+Memory search --snippets also requires an integer >= 1.
 It is case-insensitive literal fixed-string search, not semantic search.
 Use one distinctive token or exact phrase per call.`;
 
@@ -134,6 +169,14 @@ function rejectUnknownFlags(args: string[]): void {
   if (unknown) die(`unknown flag: ${unknown}`);
 }
 
+function optionalBound(args: string[], flag: string, minimum = 1): number | undefined {
+  const raw = pullValue(args, [flag]);
+  if (raw === undefined) return undefined;
+  const value = raw.trim() ? Number(raw) : NaN;
+  validateBound(value, flag, minimum);
+  return value;
+}
+
 function reportSkippedStores(diagnostics: StoreDiagnostic[], quiet: boolean): void {
   if (quiet) return;
   for (const diagnostic of diagnostics) {
@@ -149,6 +192,26 @@ async function main(): Promise<void> {
   }
   const json = pullFlag(args, "--json");
   const quiet = pullFlag(args, "-q", "--quiet");
+  if (args[0] === "profile") {
+    args.shift();
+    const project = pullValue(args, ["--project"]);
+    const since = pullValue(args, ["--since"]);
+    const limit = integer(pullValue(args, ["--limit"]), "--limit", 10);
+    const threshold = integer(pullValue(args, ["--output-threshold"]), "--output-threshold", 10_000);
+    const explain = pullFlag(args, "--explain");
+    rejectUnknownFlags(args);
+    const report = await profileSessions(args, { project, since, limit, threshold });
+    if (explain && report.sessions.length) {
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
+      try { report.explanation = await explainProfile(report, controller.signal); }
+      finally { process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
+    }
+    console.log(json ? JSON.stringify(report, null, 2) : renderProfile(report));
+    if (report.diagnostics.length || report.explanation?.error) process.exitCode = 1;
+    return;
+  }
   if (args[0] === "index") {
     args.shift();
     const verb = args.shift() ?? "status";
@@ -197,7 +260,8 @@ async function main(): Promise<void> {
       return;
     }
     if (verb === "show") {
-      rejectUnknownFlags(args);
+      // Claude project keys emitted by memory list begin with a single hyphen.
+      rejectUnknownFlags(args.filter((arg) => !/^-[^-]/.test(arg)));
       const selector = args.shift() ?? die("memory show needs a project slug, project substring, or memory file path");
       if (args.length > 0) die(`memory show accepts one selector (unexpected: '${args[0]}')`);
       const result = await showMemory(selector, root);
@@ -228,14 +292,37 @@ async function main(): Promise<void> {
     }
     return;
   }
+  if (args[0] === "pack") {
+    args.shift();
+    const source = parseSource(pullValue(args, ["-s", "--source"]) ?? "all");
+    const limit = integer(pullValue(args, ["-n", "--limit"]), "--limit", 3);
+    const project = pullValue(args, ["-p", "--project"]);
+    const since = pullValue(args, ["--since"]);
+    const userOnly = pullFlag(args, "--user");
+    const noIndex = pullFlag(args, "--no-index");
+    const maxParallel = integer(pullValue(args, ["--max-parallel"]), "--max-parallel", DEFAULT_MAX_PARALLEL);
+    const budgetChars = optionalBound(args, "--budget-chars");
+    const maxChars = optionalBound(args, "--max-chars");
+    const context = optionalBound(args, "--context", 0);
+    const excludeSessions = pullValues(args, ["--exclude-session"]);
+    rejectUnknownFlags(args);
+    if (args.length === 0 || args.some((term) => !term.trim())) die("pack needs one or more nonempty terms");
+    const result = await packSessions(args, { source, limit, project, since, userOnly, noIndex, maxParallel, budgetChars, maxChars, context, excludeSessions });
+    console.log(json ? JSON.stringify(result, null, 2) : renderPack(result));
+    reportSkippedStores(result.skippedStores, quiet);
+    if (!quiet) for (const skipped of result.skippedSessions) console.error(colors.dim(`skipped ${skipped.path}: ${skipped.error}`));
+    return;
+  }
   if (args[0] === "show") {
     args.shift();
     const full = pullFlag(args, "--full");
     const around = pullValue(args, ["--around"]);
+    const tools = !pullFlag(args, "--no-tools", "--no-toolcalls");
+    const maxChars = optionalBound(args, "--max-chars");
     rejectUnknownFlags(args);
     const locator = args.shift() ?? die("show needs a transcript locator from search results");
     if (args.length > 0) die(`show accepts one transcript locator (unexpected argument: '${args[0]}')`);
-    const result = await showSession(locator, { full, around });
+    const result = await showSession(locator, { full, around, tools, maxChars });
     console.log(json ? JSON.stringify(result, null, 2) : renderShow(result));
     if (!quiet && !json) console.error(colors.dim(`${result.source} · ${result.messageCount} message${result.messageCount === 1 ? "" : "s"}`));
     return;
@@ -244,15 +331,29 @@ async function main(): Promise<void> {
     args.shift();
     const full = pullFlag(args, "--full");
     const thinking = pullFlag(args, "--thinking");
-    const tools = !pullFlag(args, "--no-tools");
+    const tools = !pullFlag(args, "--no-tools", "--no-toolcalls");
+    const maxChars = optionalBound(args, "--max-chars");
+    const toolChars = optionalBound(args, "--tool-chars");
+    const budgetChars = optionalBound(args, "--budget-chars");
+    const fromEvent = optionalBound(args, "--from-event", 0);
+    const limit = optionalBound(args, "--limit");
+    const clipping = maxChars !== undefined || toolChars !== undefined || budgetChars !== undefined;
+    if (full && clipping) die("--full cannot be combined with character limits");
     const forceColor = pullFlag(args, "--color");
     const noColor = pullFlag(args, "--no-color");
     rejectUnknownFlags(args);
     const locator = args.shift() ?? die("transcript needs a transcript locator from search results");
     if (args.length > 0) die(`transcript accepts one transcript locator (unexpected argument: '${args[0]}')`);
-    const result = await viewTranscript(locator, { thinking, tools });
+    const view = await viewTranscript(locator, { thinking, tools });
+    const bounded = clipping || fromEvent !== undefined || limit !== undefined;
+    const result = bounded ? windowTranscript(view, {
+      fromEvent, limit, budgetChars,
+      maxChars: maxChars ?? (!json && clipping ? 1200 : undefined),
+      toolChars: toolChars ?? (!json && clipping ? 600 : undefined),
+    }) : view;
     const color = forceColor || (!noColor && !json && Boolean(process.stdout.isTTY) && !process.env.NO_COLOR);
-    console.log(json ? JSON.stringify(result, null, 2) : renderTranscript(result, { full, color }));
+    const summary = "window" in result ? `\n\n${renderWindow((result as ReturnType<typeof windowTranscript>).window)}` : "";
+    console.log(json ? JSON.stringify(result, null, 2) : `${renderTranscript(result, { full: full || clipping, color })}${summary}`);
     if (!quiet && !json) {
       const c = result.counts;
       console.error(colors.dim(`${result.source} · ${c.user} user · ${c.assistant} assistant · ${c.toolCalls} tool calls · ${c.toolResults} results · ${c.thinking} thinking`));
@@ -289,10 +390,23 @@ async function main(): Promise<void> {
     rejectUnknownFlags(args);
     const locator = args.shift() ?? die("query needs a transcript locator from search results");
     const question = args.join(" ").trim() || die("query needs a question");
-    const result = await querySession(locator, question, { agentDir, model });
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+    let result;
+    try {
+      result = await querySession(locator, question, { agentDir, model, signal: controller.signal });
+    } finally {
+      process.removeListener("SIGINT", cancel);
+      process.removeListener("SIGTERM", cancel);
+    }
     console.log(json ? JSON.stringify(result, null, 2) : renderQuery(result));
     if (!quiet && !json) {
-      console.error(colors.dim(`${result.source} · ${result.model.provider}/${result.model.id} · ${result.messageCount} message${result.messageCount === 1 ? "" : "s"}${result.wasWindowed ? " · windowed" : ""} · ${result.elapsedMs}ms`));
+      const tokens = result.usage ? ` · ${result.usage.inputTokens} in / ${result.usage.outputTokens} out` : "";
+      const cost = result.costUsd !== undefined ? ` · ~$${result.costUsd.toFixed(4)}` : "";
+      const reasoning = result.model.reasoningEffort ? ` · ${result.model.reasoningEffort}` : "";
+      console.error(colors.dim(`${result.source} · ${result.model.provider}/${result.model.id}${reasoning} · ${result.transport} · ${result.messageCount} message${result.messageCount === 1 ? "" : "s"}${result.wasWindowed ? " · windowed" : ""}${tokens}${cost} · ${result.elapsedMs}ms`));
     }
     return;
   }

@@ -197,7 +197,7 @@ describe("query preparation", () => {
         provider: "test", id: "tiny", contextWindow: 1000,
         serialize: (messages) => JSON.stringify(messages), agentDir: "/pi",
       }),
-      complete: async (_model, conversation, question) => `${question} ${conversation.includes("SQLite")}`,
+      complete: async (_model, conversation, question) => ({ answer: `${question} ${conversation.includes("SQLite")}`, transport: "pi" as const }),
       now: () => 20,
     });
     expect(result).toMatchObject({ source: "codex", answer: "What database? true" });

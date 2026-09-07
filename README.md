@@ -4,7 +4,7 @@ Agents lose useful context when work moves between Claude Code, Codex, Pi, and O
 
 `dejavu` is agent-first. An agent can search past sessions, inspect the relevant conversation, and recover decisions, commands, errors, and file changes. The agent can then verify that historical context against the current workspace. Humans can run the same commands from a terminal.
 
-Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context to your configured Pi model. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
+Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context through Codex exec to `gpt-5.6-luna` with medium reasoning by default. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
 
 Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. Before each search it parses only the appended tail of changed JSONL transcripts and pulls new or updated OpenCode text parts by cursor. A typical refresh takes well under a second.
 
@@ -36,7 +36,7 @@ Ask a model to summarize one selected session:
 dejavu query '<locator from search results>' 'What did we decide?'
 ```
 
-`dejavu query` requires an installed [Pi coding agent](https://github.com/earendil-works/pi). Plain search, `find`, `show`, and memory commands do not invoke a model.
+`dejavu query` requires an installed, authenticated `codex` binary with access to `gpt-5.6-luna`. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
 
 ## What it reads
 
@@ -83,6 +83,21 @@ dejavu show '<locator>' --around database
 
 `show` renders user and assistant turns without model usage. It summarizes tool calls and truncates long messages by default. Pass `--full` to disable truncation.
 
+Use `show --no-tools` to remove tool summaries and tool-only turns. `--around` then counts only the remaining dialogue turns. `--max-chars N` changes the 700-character message limit in text and JSON output; the ` [...]` marker is additional. `--no-toolcalls` is an alias for `--no-tools` in both `show` and `transcript`.
+
+### Pack search results into bounded excerpts
+
+```bash
+dejavu pack deployment timeout --project payments-api --budget-chars 8000 --json
+dejavu pack database --context 1 --limit 3 --exclude-session '<session ID or locator>'
+```
+
+`pack` combines the session finder with user/assistant excerpts around literal matches. It uses no model. Defaults are three sessions, two neighboring dialogue events per match, 1,200 characters per event, and 12,000 event-body characters across the pack. It merges overlapping neighborhoods and shares the budget across sessions and events; actual per-event limits can be smaller. Long matching events show a region around a search term. Very small budgets can abbreviate or omit matches.
+
+The command accepts `find` filters (`--source`, `--project`, `--since`, `--user`), `--no-index`, and `--max-parallel`. `--context 0` returns matching events only. `--exclude-session` is repeatable and accepts an exact locator or session ID. Available `CODEX_THREAD_ID` and `CLAUDE_SESSION_ID` values exclude the active session automatically. Search examines at most 40 ranked candidates; counts describe those candidates, not every stored session. Results retain relaxed search terms and report unreadable stores and sessions.
+
+Each excerpt carries its source locator and original event IDs. `window.clipped` lists shortened fields and character offsets; `window.nextEvent` identifies the first omitted excerpt event. Read more with `transcript '<locator>' --from-event N`, or recover a shortened event with `transcript '<locator>' --full --from-event N --limit 1`. Transcript continuation reads the conversation from that ID; it does not repeat the pack's match filter.
+
 ### View a transcript turn by turn
 
 ```bash
@@ -92,6 +107,29 @@ dejavu transcript '<locator>' --no-tools --json
 ```
 
 `transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, and OpenCode sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal. Use `--color` or `--no-color` to override.
+
+```bash
+dejavu transcript '<locator>' --no-tools --max-chars 1500 --budget-chars 8000 --json
+dejavu transcript '<locator>' --tool-chars 400 --from-event 20 --limit 10 --json
+```
+
+Explicit `--max-chars`, `--tool-chars`, and `--budget-chars` limits apply to JSON as well as text. `--max-chars` caps dialogue and thinking bodies; `--tool-chars` caps each tool input and output. Character budgets count JavaScript string characters in event bodies, including truncation ellipses, and exclude JSON encoding, formatting, labels, and metadata. A shortened structured tool input becomes a preview string, identified by its `window.clipped` record. No original transcript data is changed.
+
+`--from-event N` is inclusive and accepts zero. `--limit N` bounds the event count after filtering. Event IDs remain stable across filters; `window.nextEvent` is the next event to request or `null` at the end. Shortened content must be recovered separately using `--full --from-event N --limit 1` (add `--thinking` for reasoning events). `--full` accepts pagination but cannot be combined with character limits. Without explicit bounds, JSON remains complete. Text keeps its original display limits; when character bounds are supplied, unspecified dialogue/tool limits default to 1,200/600 characters.
+
+### Profile tool activity
+
+```bash
+dejavu profile '<transcript-locator>' --json
+dejavu profile --project dejavu --since 7d --limit 10 --json
+dejavu profile '<transcript-locator>' --explain --json
+```
+
+The default is deterministic and invokes no model. It measures outer calls, result characters, identical-input repeats, error flags, observation calls, and recognizable nested `tools.name()` call sites. JSON preserves event IDs for inspection with `dejavu transcript`; it omits raw prompts, inputs, and outputs. `--output-threshold N` changes the oversized-result threshold from 10,000 characters.
+
+Repeated calls are candidates for review, not proven waste. Nested call sites are lexical hints, not executed counts; aliases, loops, templates, and computed access limit coverage. First-result latency includes waiting and is not model reasoning time. Project mode selects sessions by their last indexed visible-message date and measures each entire selected session. Check `omittedSessions` and `diagnostics` for coverage limits. Exit 1 signals skipped sources or an explanation failure even when measurements are available.
+
+`--explain` sends only bounded metrics and event references through Codex exec to `gpt-5.6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
 
 ### Redact a transcript
 
@@ -116,13 +154,15 @@ Memory search stays separate from transcript search. Memory files contain curate
 
 ### Query one session
 
-`dejavu query` follows the source's conversation structure. It removes reasoning, developer instructions, and tool output before it invokes Pi. Large sessions use windows around the question terms.
+`dejavu query` follows the source's conversation structure. It removes reasoning, developer instructions, and tool output before it calls the model. Large sessions use windows around the question terms.
 
-Model selection follows this order:
+The default is `codex exec --model gpt-5.6-luna` with medium reasoning and the OpenAI provider. It uses Codex's existing authentication, ignores user config overrides, disables project/skill instructions, and runs ephemerally in an isolated temporary directory with a read-only sandbox. Transcript text goes through stdin. The final answer comes from Codex's output file, which is deleted with the temporary directory after completion. Queries time out after 120 seconds and do not retry automatically.
 
-1. `--model provider/id`
-2. `~/.pi/agent/session-recall.json`
-3. Pi's default provider and model in `settings.json`
+Use `--model <codex-model-id>` or `--model codex/<id>` to select another Codex model, still with medium reasoning. No Pi configuration is read on this path, and old Pi defaults do not override Luna.
+
+For an explicit legacy `--model provider/id`, Dejavu reads the endpoint and key from the Pi config under `~/.pi/agent` (or `--agent-dir`). OpenAI-compatible providers with an API key use HTTP; other providers use the installed `pi` binary. `DEJAVU_QUERY_VIA_PI=1` forces Pi only for these explicit legacy overrides.
+
+The status line and JSON report the model, reasoning effort for Codex, transport, and token counts when available. Estimated cost is reported only for legacy providers with configured pricing; Codex queries do not invent a dollar estimate.
 
 ### Manage the transcript index
 

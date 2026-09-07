@@ -75,6 +75,16 @@ export function parseSince(value: string, today = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
 
+function matchesProject(project: string, needle: string, source: TranscriptSource): boolean {
+  const haystack = project.toLowerCase();
+  const query = needle.toLowerCase();
+  if (haystack.includes(query)) return true;
+  // Claude and Pi encode both directory separators and literal hyphens as '-'.
+  // Their decoded paths cannot distinguish these characters.
+  return (source === "claude" || source === "pi") &&
+    haystack.replace(/-/g, "/").includes(query.replace(/-/g, "/"));
+}
+
 export function resumeCommand(source: TranscriptSource, path: string, project: string): string | undefined {
   const name = basename(path);
   if (source === "claude") {
@@ -234,8 +244,8 @@ export async function findSessions(
   if (options.project) {
     const needle = options.project.toLowerCase();
     candidates = candidates.filter((candidate) => {
-      if (candidate.source === "claude") return projectFromClaudePath(candidate.path).toLowerCase().includes(needle);
-      if (candidate.source === "pi") return projectFromPiPath(candidate.path).toLowerCase().includes(needle);
+      if (candidate.source === "claude") return matchesProject(projectFromClaudePath(candidate.path), needle, candidate.source);
+      if (candidate.source === "pi") return matchesProject(projectFromPiPath(candidate.path), needle, candidate.source);
       return true;
     });
   }
@@ -304,7 +314,7 @@ export async function findSessions(
     const date = latestDate || dateFromPath(candidate.path);
     if (sinceDate && date !== "unknown" && date < sinceDate) return null;
     const project = candidate.source === "opencode" ? "opencode" : await readProject(candidate.path, candidate.source);
-    if (options.project && !project.toLowerCase().includes(options.project.toLowerCase())) return null;
+    if (options.project && !matchesProject(project, options.project, candidate.source)) return null;
     const openingPrompt = await findOpeningPrompt(candidate.path, candidate.source, { readPrefix, loadMessages });
     return {
       source: candidate.source,
@@ -347,12 +357,19 @@ export interface ShowResult {
   messages: { role: string; text: string }[];
 }
 
-export interface ShowOptions { full?: boolean; around?: string }
+export interface ShowOptions { full?: boolean; around?: string; tools?: boolean; maxChars?: number }
 
 export async function showSession(locator: string, options: ShowOptions = {}, deps: ShowDeps = {}): Promise<ShowResult> {
   const full = options.full ?? false;
+  if (options.maxChars !== undefined && (!Number.isSafeInteger(options.maxChars) || options.maxChars < 1)) throw new Error("--max-chars needs an integer >= 1");
+  if (full && options.maxChars !== undefined) throw new Error("--full cannot be combined with --max-chars");
+  const maxChars = options.maxChars ?? 700;
   const source = (deps.detectSource ?? sourceFromLocator)(locator);
   let messages = prepareRecallMessages(await (deps.loadMessages ?? loadRecallMessages)(locator));
+  if (options.tools === false) {
+    messages = messages.map((message) => ({ ...message, content: message.content.filter((block) => block.type !== "toolCall") }))
+      .filter((message) => message.content.some((block) => block.type === "image" || (block.type === "text" && typeof block.text === "string" && block.text.trim())));
+  }
   if (messages.length === 0) throw new Error("transcript has no recallable messages");
   let omitted: Set<number> | undefined;
   if (options.around) {
@@ -390,7 +407,7 @@ export async function showSession(locator: string, options: ShowOptions = {}, de
       return [];
     }).join("\n").trim();
     if (text.length === 0) return;
-    rendered.push({ role: message.role, text: full || text.length <= 700 ? text : `${text.slice(0, 700)} [...]` });
+    rendered.push({ role: message.role, text: full || text.length <= maxChars ? text : `${text.slice(0, maxChars)} [...]` });
   });
   if (omitted?.has(messages.length)) rendered.push({ role: "…", text: "[messages omitted]" });
   return { path: locator, source, messageCount: rendered.length, messages: rendered };
