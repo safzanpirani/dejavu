@@ -13,6 +13,7 @@ import { viewTranscript } from "./transcript-view.ts";
 import { DEFAULT_PLACEHOLDER, parseDropList, scrubTranscript } from "./transcript-scrub.ts";
 import { explainProfile, profileSessions, renderProfile } from "./profile.ts";
 import { packSessions, renderPack } from "./pack.ts";
+import { runProjectMemory } from "./project-memory-cli.ts";
 import { renderWindow, validateBound, windowTranscript } from "./transcript-window.ts";
 
 const colors = {
@@ -35,6 +36,7 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
   ${colors.bold("dejavu memory list")} [--files] [--root DIR] [--json]
   ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
   ${colors.bold("dejavu memory show")} <project-or-file> [--root DIR] [--json]
+  ${colors.bold("dejavu memory project")} <verb> [flags]   ${colors.dim("(cross-harness project memory)")}
   ${colors.bold("dejavu index")} <status|update|rebuild> [--json]
 
 search flags
@@ -234,7 +236,12 @@ async function main(): Promise<void> {
   }
   if (args[0] === "memory") {
     args.shift();
-    const verb = args.shift() ?? "list";
+    const memoryVerb = args.shift() ?? "list";
+    if (memoryVerb === "project") {
+      process.exitCode = await runProjectMemory(args, { json, quiet });
+      return;
+    }
+    const verb = memoryVerb;
     const root = pullValue(args, ["--root"]) ?? defaultMemoryRoot();
     if (verb === "list") {
       const files = pullFlag(args, "--files");
