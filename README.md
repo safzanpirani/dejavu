@@ -152,6 +152,31 @@ dejavu memory show '<project or file selector>'
 
 Memory search stays separate from transcript search. Memory files contain curated facts instead of conversation turns.
 
+### Project memory (cross-harness)
+
+`dejavu memory list|search|show` above reads Claude's Markdown corpus read-only. The `memory project` namespace is a separate, writable store shared by every harness — Claude Code, Codex, Pi, OpenCode, or anything that can run a command.
+
+A project is an opaque id bound to canonical local roots. A Git repository binds by its common directory, so every worktree shares one identity, while a separate clone stays isolated until `bind` links it. No repository file is required, so nothing is added to your commits.
+
+```bash
+dejavu memory project init --cwd /path/to/repo --name my-project --json
+dejavu memory project add --cwd /path/to/repo --file decision.json --harness claude --json
+dejavu memory project recall --cwd /path/to/repo --query 'money rounding' --json
+dejavu memory project update <id> --if-revision 1 --cwd /path/to/repo --file fix.json --json
+dejavu memory project search 'redis' --json
+dejavu memory project export --format markdown --output memory.md
+dejavu memory project import-claude --from ~/.claude/projects/<slug>/memory --project-id <id> --dry-run
+dejavu memory project doctor
+```
+
+Records are validated, revisioned, and scoped to a repository-relative path prefix and/or an exact branch. Recall is deterministic and bounded: the whole rendered context string is charged against `--budget-chars` (default 6000, ceiling 24000), and unverified, expired, archived, and superseded records are excluded. Recall never calls a model and never refreshes the transcript index.
+
+Writes use short transactions with optimistic concurrency: supply `--if-revision N` and a stale revision returns a conflict (exit 3) instead of overwriting. Add `--request-id ID` to make a retried mutation idempotent.
+
+The database lives at `${XDG_DATA_HOME:-~/.local/share}/dejavu/memory.sqlite` (`DEJAVU_MEMORY_DB` overrides it; it never inherits `DEJAVU_INDEX_PATH`), so deleting `~/.cache/dejavu/` or rebuilding the transcript index cannot lose a memory.
+
+`dejavu memory project help` lists every verb and flag. Exit codes for the namespace: 0 success, 1 operational, 2 invalid arguments, 3 revision conflict, 4 missing project or record.
+
 ### Query one session
 
 `dejavu query` follows the source's conversation structure. It removes reasoning, developer instructions, and tool output before it calls the model. Large sessions use windows around the question terms.
