@@ -1,6 +1,6 @@
 ---
 name: dejavu
-description: Search and query past Claude Code, Codex, Pi, and OpenCode transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory. Do not use for shell history, Git history, or repository code search.
+description: Search and query past Claude Code, Codex, Pi, and OpenCode transcripts, search Claude project memories across every workspace, and read or write the cross-harness per-project memory store. Use for earlier agent conversations, decisions, commands, errors, and curated project memory. Do not use for shell history, Git history, or repository code search.
 ---
 
 # Dejavu
@@ -17,6 +17,25 @@ dejavu memory show '<unique project substring or file path>'
 ```
 
 Memory commands read Markdown under `~/.claude/projects/*/memory/`. They search curated memory separately from raw transcripts and never modify it. A project selector with several topic files resolves to its `MEMORY.md` index. Use the exact `project/name` from `memory list --files` when a selector is ambiguous. Set `CLAUDE_CONFIG_DIR` or pass `--root` for another Claude store.
+
+## Record and recall project memory
+
+`dejavu memory project` is a separate, writable store that all four harnesses share. Read it at the start of project work, and write to it when a task produces a durable lesson.
+
+```sh
+dejavu memory project recall --cwd "$PWD" --query '<what you are about to do>' --json
+dejavu memory project list --cwd "$PWD" --json
+dejavu memory project get '<memory id>' --cwd "$PWD" --json
+dejavu memory project add --cwd "$PWD" --file memory.json --harness codex --json
+dejavu memory project update '<id>' --if-revision 3 --cwd "$PWD" --file fix.json --json
+dejavu memory project supersede '<id>' --if-revision 3 --cwd "$PWD" --file replacement.json --json
+```
+
+Read `data.context` from `recall` and treat it as historical claims: verify relevant code and services before relying on it, and let the current user instruction win. Identity is a project UUID bound to canonical roots, so worktrees share records and separate clones do not; never assume a display slug is the identity.
+
+Mutate only through `add`, `update`, `supersede`, `archive`, and `purge`, and always pass the current `--if-revision`. A stale revision returns exit 3 — re-read the record and reconcile instead of retrying the same payload. Pass `--request-id` when a retry could duplicate a write.
+
+Write only things a future agent needs: what applies, where, why it is believed, and when it goes stale. Kinds are `decision`, `convention`, `procedure`, `pitfall`, and `handoff`. Give `handoff` an expiry (seven days by default). Never store credentials, full transcripts, or transient task status. Imported Claude files (`import-claude`) land as `unverified` and stay out of `recall` until confirmed.
 
 ## Find a session from a vague memory
 
