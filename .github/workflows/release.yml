@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -52,3 +53,24 @@ jobs:
             release/dejavu-*
             release/checksums.txt
           generate_release_notes: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Publishes through npm trusted publishing (OIDC), so the repository stores no npm token.
+      # Trust can only be granted to an existing package, so the first version is published by hand.
+      - name: Publish to npm
+        run: |
+          name=$(node -p 'require("./package.json").name')
+          version="${GITHUB_REF_NAME#v}"
+          if ! npm view "$name" name >/dev/null 2>&1; then
+            echo "::notice::$name is not on npm yet; publish the first version by hand"
+            exit 0
+          fi
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm; nothing to publish"
+            exit 0
+          fi
+          npm install -g npm@latest
+          node scripts/npm-prepare.cjs release/checksums.txt
+          npm publish --access public

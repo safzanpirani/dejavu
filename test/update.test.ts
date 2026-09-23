@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -74,6 +74,28 @@ describe("selfUpdate", () => {
       const fetch = releaseFetch(bumped(VERSION), { "checksums.txt": `${"0".repeat(64)}  dejavu-linux-x64\n`, "dejavu-linux-x64": "tampered" });
       const deps = { fetch, executable, compiled: true, platform: "linux" as const, arch: "x64", checkPath: join(root, "check.json"), log: () => {} };
       await expect(selfUpdate({}, deps)).rejects.toThrow(/checksum mismatch/);
+      expect(await readFile(executable, "utf8")).toBe("old");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("updates an npm or Bun global install through its package manager", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dejavu-update-"));
+    const packageRoot = join(root, ".bun", "install", "global", "node_modules", "@safzanpirani", "dejavu");
+    const executable = join(packageRoot, "native", "dejavu");
+    await mkdir(join(packageRoot, "native"), { recursive: true });
+    await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: "@safzanpirani/dejavu" }));
+    await writeFile(executable, "old");
+    const latest = bumped(VERSION);
+    const runs: string[][] = [];
+    try {
+      const deps = {
+        fetch: releaseFetch(latest), executable, compiled: true, checkPath: join(root, "check.json"), log: () => {},
+        runPackageManager: (command: string, args: string[]) => { runs.push([command, ...args]); },
+      };
+      expect(await selfUpdate({}, deps)).toMatchObject({ latest, updated: true });
+      expect(runs).toEqual([["bun", "add", "-g", `@safzanpirani/dejavu@${latest}`]]);
       expect(await readFile(executable, "utf8")).toBe("old");
     } finally {
       await rm(root, { recursive: true, force: true });

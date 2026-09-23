@@ -10,7 +10,17 @@ Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`.
 
 ## Quick start
 
-Download the binary for your platform from the [latest release](https://github.com/safzanpirani/dejavu/releases/latest) and put it on your `PATH`:
+Install from npm:
+
+```bash
+npm install -g @safzanpirani/dejavu
+# or
+bun add -g @safzanpirani/dejavu
+```
+
+The package downloads the checksum-verified binary for your platform from the matching GitHub release. Bun skips install scripts for untrusted packages, so the first `dejavu` run fetches the binary instead. If no binary is available, the launcher runs the bundled source with Bun 1.4.2 or newer.
+
+Or download the binary for your platform from the [latest release](https://github.com/safzanpirani/dejavu/releases/latest) and put it on your `PATH`:
 
 ```bash
 curl -fsSL -o ~/.local/bin/dejavu https://github.com/safzanpirani/dejavu/releases/latest/download/dejavu-darwin-arm64
@@ -192,7 +202,7 @@ dejavu self-update --check
 dejavu self-update
 ```
 
-`self-update` downloads the newest release binary for this platform, verifies it against the release's `checksums.txt`, and replaces the running binary in place. A source checkout reports the new version and asks for `git pull` instead. When stderr is a terminal, dejavu checks for a new release at most once a day and prints a one-line notice after the command. It skips the check for `--json`, `--quiet`, `--paths`, and piped output. Set `DEJAVU_NO_UPDATE_CHECK=1` to turn it off. The last result is cached in `~/.local/state/dejavu/update-check.json`.
+`self-update` downloads the newest release binary for this platform, verifies it against the release's `checksums.txt`, and replaces the running binary in place. An npm or Bun global install is updated with `npm install -g` or `bun add -g` instead. A source checkout reports the new version and asks for `git pull` instead. When stderr is a terminal, dejavu checks for a new release at most once a day and prints a one-line notice after the command. It skips the check for `--json`, `--quiet`, `--paths`, and piped output. Set `DEJAVU_NO_UPDATE_CHECK=1` to turn it off. The last result is cached in `~/.local/state/dejavu/update-check.json`.
 
 ## Agent guidance
 
@@ -209,7 +219,7 @@ bun run check
 bun run build:local
 ```
 
-Pushing a `v*` tag that matches the `package.json` version runs `.github/workflows/release.yml`. It runs the checks, builds every platform binary, and publishes them with checksums as a GitHub release.
+Pushing a `v*` tag that matches the `package.json` version runs `.github/workflows/release.yml`. It runs the checks, builds every platform binary, publishes them with checksums as a GitHub release, and publishes the npm package through npm trusted publishing.
 
 The macOS build script applies an ad hoc signature because Bun 1.4 can emit an invalid arm64 signature. The code keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
 

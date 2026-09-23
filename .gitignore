@@ -3,3 +3,5 @@ dist/
 .DS_Store
 .scratch/
 PAPERCUTS.md
+native/
+checksums.json

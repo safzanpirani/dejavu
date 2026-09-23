@@ -1,7 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 
 export const VERSION: string = packageJson.version;
@@ -25,6 +26,7 @@ export interface UpdateDeps {
   platform?: NodeJS.Platform;
   arch?: string;
   log?: (line: string) => void;
+  runPackageManager?: (command: string, args: string[]) => void;
 }
 
 export function parseVersion(value: string): [number, number, number] | null {
@@ -117,6 +119,27 @@ function isCompiled(): boolean {
   return Bun.main.startsWith("/$bunfs/") || /^[A-Z]:[\\/]~BUN[\\/]/i.test(Bun.main);
 }
 
+/**
+ * The npm package keeps the binary in native/ beside its package.json, so an npm or Bun global
+ * install is updated through its package manager rather than by replacing the binary in place.
+ */
+export async function packageManagerFor(executable: string): Promise<"npm" | "bun" | null> {
+  const root = dirname(dirname(executable));
+  try {
+    const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { name?: string };
+    if (manifest.name !== packageJson.name || basename(dirname(executable)) !== "native") return null;
+  } catch {
+    return null;
+  }
+  return root.replaceAll("\\", "/").includes("/.bun/") ? "bun" : "npm";
+}
+
+function runPackageManager(command: string, args: string[]): void {
+  const result = spawnSync(command, args, { stdio: "inherit" });
+  if (result.error) throw new Error(`${command} is not on PATH; run \`${command} ${args.join(" ")}\``);
+  if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} exited with ${result.status}`);
+}
+
 export interface SelfUpdateResult {
   current: string;
   latest: string;
@@ -134,6 +157,13 @@ export async function selfUpdate(options: { checkOnly?: boolean } = {}, deps: Up
     throw new Error(`dejavu ${latest} is available, but this dejavu runs from a source checkout; run \`git pull\` there instead`);
   }
   const executable = await realpath(deps.executable ?? process.execPath);
+  const manager = await packageManagerFor(executable);
+  if (manager) {
+    const args = manager === "bun" ? ["add", "-g", `${packageJson.name}@${latest}`] : ["install", "-g", `${packageJson.name}@${latest}`];
+    log(`updating through ${manager}: ${manager} ${args.join(" ")}`);
+    (deps.runPackageManager ?? runPackageManager)(manager, args);
+    return { current: VERSION, latest, updated: true, path: executable };
+  }
   const tag = `v${latest}`;
   const asset = releaseAssetName(deps.platform, deps.arch);
   const expected = checksumFor(new TextDecoder().decode(await fetchBytes(releaseDownloadUrl(tag, "checksums.txt"), deps)), asset);
