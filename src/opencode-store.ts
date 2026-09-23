@@ -17,6 +17,22 @@ interface MessageRow {
   part_data: string;
 }
 
+// A read-only connection to a WAL database fails with SQLITE_CANTOPEN when no -shm file exists,
+// because it cannot create one. Opening the file as immutable reads the committed database
+// directly, which is correct for a store no OpenCode process is currently writing to.
+export function openOpenCodeDatabase(databasePath: string): Database {
+  let database: Database | null = null;
+  try {
+    database = new Database(databasePath, { readonly: true, strict: true });
+    database.query("SELECT 1 FROM sqlite_master LIMIT 1").all();
+    return database;
+  } catch (error) {
+    database?.close();
+    if ((error as { code?: string }).code !== "SQLITE_CANTOPEN") throw error;
+    return new Database(`file:${encodeURI(databasePath)}?immutable=1`, { readonly: true, strict: true });
+  }
+}
+
 export function openCodeLocator(databasePath: string, sessionId: string): string {
   return `opencode://${encodeURI(databasePath)}#${encodeURIComponent(sessionId)}`;
 }
@@ -35,7 +51,7 @@ export async function searchOpenCodeStore(
   limit: number,
   snippetsPerSession: number,
 ): Promise<StoreSearchMatch[]> {
-  const database = new Database(databasePath, { readonly: true, strict: true });
+  const database = openOpenCodeDatabase(databasePath);
   try {
     const rows = database.query<SearchRow, [string]>(`
       SELECT s.id AS session_id, s.directory, s.title, s.time_updated,
@@ -74,7 +90,7 @@ export async function searchOpenCodeStore(
 
 export async function loadOpenCodeMessages(locator: string): Promise<RecallMessage[]> {
   const { databasePath, sessionId } = parseOpenCodeLocator(locator);
-  const database = new Database(databasePath, { readonly: true, strict: true });
+  const database = openOpenCodeDatabase(databasePath);
   try {
     const rows = database.query<MessageRow, [string]>(`
       SELECT m.id AS message_id, json_extract(m.data, '$.role') AS role, p.data AS part_data

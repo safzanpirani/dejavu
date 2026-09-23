@@ -37,9 +37,10 @@ describe("OpenCode SQLite adapter", () => {
     ]);
   });
 
-  test("reports the real opencode-next SQLITE_CANTOPEN without changing the database", async () => {
+  test("reads a WAL opencode store that has no -shm file, without changing the database", async () => {
     const nextDatabase = join(homedir(), ".local", "share", "opencode", "opencode-next.db");
     if (!(await Bun.file(nextDatabase).exists())) return;
+    if (await Bun.file(`${nextDatabase}-shm`).exists()) return;
     const beforeStat = await stat(nextDatabase);
     const beforeBytes = await readFile(nextDatabase);
 
@@ -50,9 +51,8 @@ describe("OpenCode SQLite adapter", () => {
     const afterStat = await stat(nextDatabase);
     const afterBytes = await readFile(nextDatabase);
     expect(result.matches).toEqual([]);
-    expect(result.skippedStores).toHaveLength(1);
-    expect(result.skippedStores[0]).toMatchObject({ source: "opencode", path: nextDatabase });
-    expect(result.skippedStores[0]?.error.toLowerCase()).toContain("unable to open database file");
+    expect(result.skippedStores).toEqual([]);
+    expect(await Bun.file(`${nextDatabase}-shm`).exists()).toBe(false);
     expect({ size: afterStat.size, mtimeMs: afterStat.mtimeMs }).toEqual({ size: beforeStat.size, mtimeMs: beforeStat.mtimeMs });
     expect(afterBytes).toEqual(beforeBytes);
   });

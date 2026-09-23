@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { parseOpenCodeLocator } from "./opencode-store.ts";
+import { openOpenCodeDatabase, parseOpenCodeLocator } from "./opencode-store.ts";
 import { loadBranchEntries, type TreeEntry } from "./session-reader.ts";
 import { sourceFromLocator } from "./source-registry.ts";
 import { compactHome, projectFromTranscriptPath } from "./transcript-paths.ts";
@@ -275,7 +275,7 @@ interface OpenCodeRow {
 
 async function loadOpenCodeEvents(locator: string): Promise<{ project: string; events: TranscriptEvent[] }> {
   const { databasePath, sessionId } = parseOpenCodeLocator(locator);
-  const database = new Database(databasePath, { readonly: true, strict: true });
+  const database = openOpenCodeDatabase(databasePath);
   try {
     const directory = database.query<{ directory: string | null }, [string]>(
       "SELECT directory FROM session WHERE id = ?1",

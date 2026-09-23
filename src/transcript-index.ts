@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { openCodeLocator } from "./opencode-store.ts";
+import { openCodeLocator, openOpenCodeDatabase } from "./opencode-store.ts";
 import { extractVisibleMessage } from "./session-reader.ts";
 import { compactHome, dateFromPath, projectFromTranscriptPath, projectFromTranscriptText, snippetAround } from "./transcript-paths.ts";
 import type { StoreDiagnostic, StoreSearchMatch, TranscriptSource, TranscriptStore } from "./transcript-types.ts";
@@ -267,7 +267,7 @@ interface OpenCodePartRow {
 function refreshOpenCodeStore(database: Database, store: TranscriptStore): { indexed: number; removed: number } {
   const cursor = database.query("SELECT time_updated, part_id FROM opencode_cursors WHERE store = ?").get(store.path) as
     { time_updated: number; part_id: string } | null ?? { time_updated: -1, part_id: "" };
-  const source = new Database(store.path, { readonly: true, strict: true });
+  const source = openOpenCodeDatabase(store.path);
   try {
     // Text parts are re-read whenever OpenCode touches them, so streamed parts converge once they finish.
     const rows = source.query<OpenCodePartRow, [number, string]>(`

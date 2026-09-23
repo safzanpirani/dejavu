@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { copyFileSync } from "node:fs";
-import { parseOpenCodeLocator } from "./opencode-store.ts";
+import { openOpenCodeDatabase, parseOpenCodeLocator } from "./opencode-store.ts";
 import { sourceFromLocator } from "./source-registry.ts";
 import type { TranscriptSource } from "./transcript-types.ts";
 import { loadTranscriptEvents, type EventRef, type TranscriptEvent } from "./transcript-view.ts";
@@ -214,7 +214,7 @@ async function scrubOpenCode(locator: string, source: TranscriptSource, context:
     partTargets.set(ref.partId, [...(partTargets.get(ref.partId) ?? []), event]);
   }
   const backup = dryRun ? null : `${databasePath}.bak-${Math.floor((deps.now ?? Date.now)() / 1000)}`;
-  const database = new Database(databasePath, { readonly: dryRun, strict: true });
+  const database = dryRun ? openOpenCodeDatabase(databasePath) : new Database(databasePath, { strict: true });
   const counter = { lines: 0 };
   let changedRecords = 0;
   try {
