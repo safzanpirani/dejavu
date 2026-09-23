@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { copyFileSync } from "node:fs";
-import { openOpenCodeDatabase, parseOpenCodeLocator } from "./opencode-store.ts";
+import { openCodeSchema, openOpenCodeDatabase, parseOpenCodeLocator } from "./opencode-store.ts";
 import { sourceFromLocator } from "./source-registry.ts";
 import type { TranscriptSource } from "./transcript-types.ts";
 import { loadTranscriptEvents, type EventRef, type TranscriptEvent } from "./transcript-view.ts";
@@ -208,19 +208,27 @@ async function scrubJsonl(locator: string, source: TranscriptSource, context: Sc
 async function scrubOpenCode(locator: string, source: TranscriptSource, context: ScrubContext, dryRun: boolean, deps: ScrubDeps): Promise<ScrubResult> {
   const { databasePath, sessionId } = parseOpenCodeLocator(locator);
   const partTargets = new Map<string, TranscriptEvent[]>();
+  // v2 session_message id -> dropped content or file positions; -1 marks the user text itself.
+  const v2Targets = new Map<string, Set<number>>();
   for (const event of context.targets) {
-    const ref = event.ref as { partId: string } | undefined;
-    if (!ref || !("partId" in ref)) continue;
-    partTargets.set(ref.partId, [...(partTargets.get(ref.partId) ?? []), event]);
+    const ref = event.ref;
+    if (ref && "partId" in ref) partTargets.set(ref.partId, [...(partTargets.get(ref.partId) ?? []), event]);
+    if (ref && "sessionMessageId" in ref) v2Targets.set(ref.sessionMessageId, (v2Targets.get(ref.sessionMessageId) ?? new Set()).add(ref.item ?? -1));
   }
   const backup = dryRun ? null : `${databasePath}.bak-${Math.floor((deps.now ?? Date.now)() / 1000)}`;
   const database = dryRun ? openOpenCodeDatabase(databasePath) : new Database(databasePath, { strict: true });
   const counter = { lines: 0 };
   let changedRecords = 0;
   try {
-    const parts = database.query<{ id: string; data: string }, [string]>("SELECT id, data FROM part WHERE session_id = ?1").all(sessionId);
-    const messages = database.query<{ id: string; data: string }, [string]>("SELECT id, data FROM message WHERE session_id = ?1").all(sessionId);
-    const updates: Array<{ table: "part" | "message"; id: string; data: string }> = [];
+    // A hybrid store can hold legacy parts and v2 rows for one session, so both are scrubbed.
+    const schema = openCodeSchema(database);
+    const rowsOf = (table: string, present: boolean) => present
+      ? database.query<{ id: string; data: string }, [string]>(`SELECT id, data FROM ${table} WHERE session_id = ?1`).all(sessionId)
+      : [];
+    const parts = rowsOf("part", schema.legacy);
+    const messages = rowsOf("message", schema.legacy);
+    const sessionMessages = rowsOf("session_message", schema.v2);
+    const updates: Array<{ table: "part" | "message" | "session_message"; id: string; data: string }> = [];
     for (const row of parts) {
       let data: unknown;
       try { data = JSON.parse(row.data); }
@@ -249,13 +257,32 @@ async function scrubOpenCode(locator: string, source: TranscriptSource, context:
         if (after !== before) updates.push({ table: "message", id: row.id, data: after });
       }
     }
+    for (const row of sessionMessages) {
+      let data: unknown;
+      try { data = JSON.parse(row.data); }
+      catch { continue; }
+      if (!isRecord(data)) continue;
+      const before = JSON.stringify(data);
+      const items = v2Targets.get(row.id);
+      if (items) {
+        if (items.has(-1) && typeof data.text === "string") data.text = context.placeholder;
+        for (const key of ["content", "files"] as const) {
+          const list = data[key];
+          if (Array.isArray(list)) data[key] = list.map((item, position) => items.has(position) ? redactNode(item, context.placeholder) : item);
+        }
+      }
+      if (context.patterns.length) data = scrubPatterns(data, context.patterns, context.placeholder, counter);
+      const after = JSON.stringify(data);
+      if (after !== before) updates.push({ table: "session_message", id: row.id, data: after });
+    }
     changedRecords = updates.length;
     if (!dryRun && updates.length > 0) {
       copyFileSync(databasePath, backup!);
-      const part = database.query("UPDATE part SET data = ?1 WHERE id = ?2");
-      const message = database.query("UPDATE message SET data = ?1 WHERE id = ?2");
+      const statements = new Map<string, ReturnType<Database["query"]>>();
+      const statement = (table: string) => statements.get(table)
+        ?? statements.set(table, database.query(`UPDATE ${table} SET data = ?1 WHERE id = ?2`)).get(table)!;
       database.transaction(() => {
-        for (const update of updates) (update.table === "part" ? part : message).run(update.data, update.id);
+        for (const update of updates) statement(update.table).run(update.data, update.id);
       })();
     }
   } finally {

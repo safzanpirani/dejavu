@@ -143,6 +143,41 @@ describe("scrubTranscript on OpenCode SQLite", () => {
   });
 });
 
+describe("scrubTranscript on OpenCode v2 SQLite", () => {
+  test("redacts targeted session_message items and pattern lines", async () => {
+    const databasePath = `/tmp/dejavu-scrub-v2-${crypto.randomUUID()}.db`;
+    const database = new Database(databasePath, { create: true });
+    database.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT NOT NULL, title TEXT, time_updated INTEGER NOT NULL)");
+    database.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)");
+    database.run("INSERT INTO session_v2 VALUES (?, ?, ?, ?)", ["ses", "/work/next", "Next", 1]);
+    const insert = database.prepare("INSERT INTO session_message VALUES (?, 'ses', ?, ?, ?, ?, ?)");
+    insert.run("u1", "user", 0, 0, 0, JSON.stringify({ text: "check bohrium\nand the rest" }));
+    insert.run("a1", "assistant", 1, 1, 1, JSON.stringify({ content: [
+      { type: "tool", id: "b1", name: "bash", state: { status: "completed", input: { command: "ssh host" }, content: [{ type: "text", text: "up" }] } },
+      { type: "text", text: "all good" },
+    ] }));
+    insert.run("u2", "user", 2, 2, 2, JSON.stringify({ text: "secret question" }));
+    database.close();
+    try {
+      const locator = openCodeLocator(databasePath, "ses");
+      const result = await scrubTranscript(locator, { drop: [1, 4], patterns: ["bohrium"] }, { now: () => 7000 });
+      expect(result).toMatchObject({ source: "opencode", droppedEvents: [1, 2, 4], backup: `${databasePath}.bak-7`, changedRecords: 3 });
+      const reopened = new Database(databasePath, { readonly: true });
+      const rows = Object.fromEntries(reopened.query<{ id: string; data: string }, []>("SELECT id, data FROM session_message").all().map((row) => [row.id, JSON.parse(row.data)]));
+      reopened.close();
+      expect(rows.u1.text).toBe("and the rest");
+      expect(rows.a1.content).toEqual([
+        { type: "tool", id: "b1", name: "bash", state: { status: "completed", input: { command: "[redacted]" }, content: [{ type: "text", text: "[redacted]" }] } },
+        { type: "text", text: "all good" },
+      ]);
+      expect(rows.u2.text).toBe("[redacted]");
+    } finally {
+      rmSync(databasePath, { force: true });
+      rmSync(`${databasePath}.bak-7`, { force: true });
+    }
+  });
+});
+
 describe("helpers", () => {
   test("parseDropList accepts numbers, ranges, and comma lists", () => {
     expect(parseDropList(["4", "7-9", "1,2"])).toEqual([4, 7, 8, 9, 1, 2]);

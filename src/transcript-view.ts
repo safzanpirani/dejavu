@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { openOpenCodeDatabase, parseOpenCodeLocator } from "./opencode-store.ts";
+import { openCodeSchema, openCodeSessionUsesV2, openOpenCodeDatabase, parseOpenCodeLocator } from "./opencode-store.ts";
 import { loadBranchEntries, type TreeEntry } from "./session-reader.ts";
 import { sourceFromLocator } from "./source-registry.ts";
 import { compactHome, projectFromTranscriptPath } from "./transcript-paths.ts";
@@ -8,7 +8,9 @@ import type { TranscriptSource } from "./transcript-types.ts";
 /** Where an event lives in its store, so `dejavu scrub` can edit exactly that record. */
 export type EventRef =
   | { line: number; block?: number }
-  | { partId: string; messageId: string };
+  | { partId: string; messageId: string }
+  // An OpenCode v2 session_message row; item indexes assistant $.content or user $.files, and is absent for user text.
+  | { sessionMessageId: string; item?: number };
 
 interface EventBase {
   /** Position in the complete event list, stable across --thinking and --no-tools filters. */
@@ -277,6 +279,8 @@ async function loadOpenCodeEvents(locator: string): Promise<{ project: string; e
   const { databasePath, sessionId } = parseOpenCodeLocator(locator);
   const database = openOpenCodeDatabase(databasePath);
   try {
+    const schema = openCodeSchema(database);
+    if (openCodeSessionUsesV2(database, schema, sessionId)) return loadOpenCodeV2Events(database, sessionId);
     const directory = database.query<{ directory: string | null }, [string]>(
       "SELECT directory FROM session WHERE id = ?1",
     ).get(sessionId)?.directory;
@@ -323,6 +327,57 @@ async function loadOpenCodeEvents(locator: string): Promise<{ project: string; e
   } finally {
     database.close();
   }
+}
+
+// OpenCode v2 keeps one JSON row per message: user text and files, or assistant content items.
+function loadOpenCodeV2Events(database: Database, sessionId: string): { project: string; events: TranscriptEvent[] } {
+  const directory = database.query<{ directory: string | null }, [string]>(
+    "SELECT directory FROM session_v2 WHERE id = ?1",
+  ).get(sessionId)?.directory;
+  const rows = database.query<{ id: string; type: string; data: string }, [string]>(`
+    SELECT id, type, data FROM session_message
+    WHERE session_id = ?1 AND type IN ('user', 'assistant')
+    ORDER BY seq
+  `).all(sessionId);
+  const events: TranscriptEvent[] = [];
+  for (const row of rows) {
+    const data = safeJson(row.data);
+    const created = asRecord(data.time)?.created;
+    const timestamp = typeof created === "number" ? new Date(created).toISOString() : undefined;
+    if (row.type === "user") {
+      if (typeof data.text === "string" && data.text.trim()) events.push({ kind: "user", text: data.text, timestamp, ref: { sessionMessageId: row.id } });
+      (Array.isArray(data.files) ? data.files : []).forEach((raw, item) => {
+        const file = asRecord(raw) ?? {};
+        events.push({ kind: "user", text: `[file: ${stringOr(file.name, stringOr(file.mime, "attachment"))}]`, timestamp, ref: { sessionMessageId: row.id, item } });
+      });
+      continue;
+    }
+    (Array.isArray(data.content) ? data.content : []).forEach((raw, item) => {
+      const block = asRecord(raw) ?? {};
+      const ref: EventRef = { sessionMessageId: row.id, item };
+      switch (block.type) {
+        case "text":
+          if (typeof block.text === "string" && block.text.trim()) events.push({ kind: "assistant", text: block.text, timestamp, ref });
+          break;
+        case "reasoning":
+          if (typeof block.text === "string" && block.text.trim()) events.push({ kind: "thinking", text: block.text, timestamp, ref });
+          break;
+        case "tool": {
+          const state = asRecord(block.state) ?? {};
+          const name = stringOr(block.name, "unknown");
+          const callId = stringOr(block.id);
+          events.push({ kind: "tool_call", name, input: state.input ?? {}, callId, timestamp, ref });
+          const isError = state.status === "error";
+          const output = isError ? stringOr(asRecord(state.error)?.message, textOf(state.error)) : textOf(state.content);
+          if (state.status === "completed" || isError) events.push({ kind: "tool_result", name, callId, output, isError, timestamp, ref });
+          break;
+        }
+        default:
+          break;
+      }
+    });
+  }
+  return { project: compactHome(directory || "~"), events: nameResults(events) };
 }
 
 // ---------------------------------------------------------------------------

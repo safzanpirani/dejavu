@@ -147,6 +147,48 @@ describe("transcript index incremental paths", () => {
     }
   });
 
+  test("indexes v2 session_message rows and drops legacy rows once a session moves to v2", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dejavu-index-opencode-v2-"));
+    const databasePath = join(root, "opencode.db");
+    const indexPath = join(root, "index.sqlite");
+    const database = new Database(databasePath, { create: true });
+    database.run("CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_updated INTEGER)");
+    database.run("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)");
+    database.run("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)");
+    database.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT NOT NULL, title TEXT, time_updated INTEGER NOT NULL)");
+    database.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)");
+    database.run("INSERT INTO session VALUES (?, ?, ?, ?)", ["ses_1", "/work/demo", "Demo", Date.UTC(2026, 7, 4)]);
+    database.run("INSERT INTO message VALUES (?, ?, ?, ?)", ["msg_1", "ses_1", 1, JSON.stringify({ role: "user" })]);
+    database.run("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)", ["part_1", "msg_1", "ses_1", 1, 1, JSON.stringify({ type: "text", text: "Needle legacy" })]);
+    const store: TranscriptStore = { source: "opencode", kind: "sqlite", path: databasePath };
+    const insertMessage = database.prepare("INSERT OR REPLACE INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)");
+    try {
+      expect((await refreshTranscriptIndex([store], indexPath)).indexed).toBe(1);
+      expect(searchTranscriptIndexMatches("needle", [store], indexPath)[0]).toMatchObject({ count: 1 });
+
+      database.run("INSERT INTO session_v2 VALUES (?, ?, ?, ?)", ["ses_1", "/work/demo", "Demo", Date.UTC(2026, 8, 1)]);
+      insertMessage.run("msg_v1", "ses_1", "user", 0, 5, 5, JSON.stringify({ text: "Needle question" }));
+      insertMessage.run("msg_v2", "ses_1", "assistant", 1, 6, 6, JSON.stringify({ content: [
+        { type: "text", text: "Needle answer" }, { type: "reasoning", text: "Needle hidden" }, { type: "text", text: "Needle again" },
+      ] }));
+      insertMessage.run("msg_v3", "ses_1", "synthetic", 2, 7, 7, JSON.stringify({ text: "Needle synthetic" }));
+      expect((await refreshTranscriptIndex([store], indexPath)).indexed).toBe(3);
+      const [match, ...rest] = searchTranscriptIndexMatches("needle", [store], indexPath, 40, 5);
+      expect(rest).toEqual([]);
+      expect(match).toMatchObject({ count: 3, date: "2026-09-01" });
+      expect(match!.snippets.map((snippet) => snippet.text).sort()).toEqual(["Needle again", "Needle answer", "Needle question"]);
+
+      // A streamed assistant message is re-read whole when its time_updated moves.
+      insertMessage.run("msg_v2", "ses_1", "assistant", 1, 6, 8, JSON.stringify({ content: [{ type: "text", text: "Needle final" }] }));
+      expect((await refreshTranscriptIndex([store], indexPath)).indexed).toBe(1);
+      expect(searchTranscriptIndexMatches("needle", [store], indexPath)[0]).toMatchObject({ count: 2 });
+      expect((await refreshTranscriptIndex([store], indexPath)).indexed).toBe(0);
+    } finally {
+      database.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("rebuilds an index whose schema version is stale", async () => {
     const root = await mkdtemp(join(tmpdir(), "dejavu-index-schema-"));
     const indexPath = join(root, "index.sqlite");

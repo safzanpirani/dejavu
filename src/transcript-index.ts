@@ -2,7 +2,9 @@ import { Database } from "bun:sqlite";
 import { mkdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { openCodeLocator, openOpenCodeDatabase } from "./opencode-store.ts";
+import {
+  legacyOnlyClause, OPENCODE_V2_FROM, OPENCODE_V2_TEXT, OPENCODE_V2_VISIBLE, openCodeLocator, openCodeSchema, openOpenCodeDatabase,
+} from "./opencode-store.ts";
 import { extractVisibleMessage } from "./session-reader.ts";
 import { compactHome, dateFromPath, projectFromTranscriptPath, projectFromTranscriptText, snippetAround } from "./transcript-paths.ts";
 import type { StoreDiagnostic, StoreSearchMatch, TranscriptSource, TranscriptStore } from "./transcript-types.ts";
@@ -265,12 +267,20 @@ interface OpenCodePartRow {
 }
 
 function refreshOpenCodeStore(database: Database, store: TranscriptStore): { indexed: number; removed: number } {
-  const cursor = database.query("SELECT time_updated, part_id FROM opencode_cursors WHERE store = ?").get(store.path) as
-    { time_updated: number; part_id: string } | null ?? { time_updated: -1, part_id: "" };
   const source = openOpenCodeDatabase(store.path);
   try {
+    const schema = openCodeSchema(source);
+    let indexed = 0;
+    if (schema.v2) indexed += refreshOpenCodeRows(database, store, `${store.path}#session_message`, V2_KEY_PREFIX, (cursor) => source.query<OpenCodePartRow, [number, string]>(`
+      SELECT sm.id AS part_id, sm.time_updated, s.id AS session_id, s.directory, s.title, s.time_updated AS session_updated,
+             sm.type AS role, ${OPENCODE_V2_TEXT} AS text
+      FROM ${OPENCODE_V2_FROM}
+      JOIN session_v2 s ON s.id = sm.session_id
+      WHERE (sm.time_updated > ?1 OR (sm.time_updated = ?1 AND sm.id > ?2)) AND ${OPENCODE_V2_VISIBLE}
+      ORDER BY sm.time_updated, sm.id, item.key
+    `).all(cursor.time_updated, cursor.part_id));
     // Text parts are re-read whenever OpenCode touches them, so streamed parts converge once they finish.
-    const rows = source.query<OpenCodePartRow, [number, string]>(`
+    if (schema.legacy) indexed += refreshOpenCodeRows(database, store, store.path, "", (cursor) => source.query<OpenCodePartRow, [number, string]>(`
       SELECT p.id AS part_id, p.time_updated, s.id AS session_id, s.directory, s.title, s.time_updated AS session_updated,
              json_extract(m.data, '$.role') AS role, json_extract(p.data, '$.text') AS text
       FROM part p
@@ -278,36 +288,67 @@ function refreshOpenCodeStore(database: Database, store: TranscriptStore): { ind
       JOIN session s ON s.id = p.session_id
       WHERE (p.time_updated > ?1 OR (p.time_updated = ?1 AND p.id > ?2))
         AND json_extract(p.data, '$.type') = 'text'
+        ${legacyOnlyClause(schema, "p.session_id")}
       ORDER BY p.time_updated, p.id
-    `).all(cursor.time_updated, cursor.part_id);
-    if (rows.length === 0) return { indexed: 0, removed: 0 };
-    const insert = database.prepare("INSERT INTO message_rows (store, path, source, role, date, project, key, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    const remove = database.prepare("DELETE FROM message_rows WHERE store = ? AND key = ?");
-    const apply = database.transaction(() => {
-      let indexed = 0;
-      for (const row of rows) {
-        remove.run(store.path, row.part_id);
-        if (!row.text) continue;
-        insert.run(
-          store.path,
-          openCodeLocator(store.path, row.session_id),
-          "opencode",
-          row.role || "unknown",
-          new Date(row.session_updated).toISOString().slice(0, 10),
-          compactHome(row.directory || row.title || "~"),
-          row.part_id,
-          row.text,
-        );
-        indexed++;
-      }
-      const last = rows.at(-1)!;
-      database.run("INSERT OR REPLACE INTO opencode_cursors (store, time_updated, part_id) VALUES (?, ?, ?)", [store.path, last.time_updated, last.part_id]);
-      return indexed;
-    });
-    return { indexed: apply(), removed: 0 };
+    `).all(cursor.time_updated, cursor.part_id));
+    return { indexed, removed: 0 };
   } finally {
     source.close();
   }
+}
+
+// v2 rows are keyed by message id under this prefix. A session that first appears in session_message
+// drops its earlier legacy rows, which carry bare part ids.
+const V2_KEY_PREFIX = "v2:";
+
+function refreshOpenCodeRows(
+  database: Database,
+  store: TranscriptStore,
+  cursorKey: string,
+  keyPrefix: string,
+  read: (cursor: { time_updated: number; part_id: string }) => OpenCodePartRow[],
+): number {
+  const cursor = database.query("SELECT time_updated, part_id FROM opencode_cursors WHERE store = ?").get(cursorKey) as
+    { time_updated: number; part_id: string } | null ?? { time_updated: -1, part_id: "" };
+  const rows = read(cursor);
+  if (rows.length === 0) return 0;
+  const insert = database.prepare("INSERT INTO message_rows (store, path, source, role, date, project, key, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+  const remove = database.prepare("DELETE FROM message_rows WHERE store = ? AND key = ?");
+  const removeLegacy = database.prepare(`DELETE FROM message_rows WHERE store = ? AND path = ? AND key NOT LIKE '${V2_KEY_PREFIX}%'`);
+  const apply = database.transaction(() => {
+    let indexed = 0;
+    const cleared = new Set<string>();
+    const sessions = new Set<string>();
+    for (const row of rows) {
+      const key = keyPrefix + row.part_id;
+      const path = openCodeLocator(store.path, row.session_id);
+      // A v2 message spans several rows, one per content item, so its old rows are removed once.
+      if (!cleared.has(key)) {
+        remove.run(store.path, key);
+        cleared.add(key);
+      }
+      if (keyPrefix && !sessions.has(path)) {
+        removeLegacy.run(store.path, path);
+        sessions.add(path);
+      }
+      if (!row.text) continue;
+      insert.run(
+        store.path,
+        path,
+        "opencode",
+        row.role || "unknown",
+        new Date(row.session_updated).toISOString().slice(0, 10),
+        compactHome(row.directory || row.title || "~"),
+        key,
+        row.text,
+      );
+      indexed++;
+    }
+    const last = rows.at(-1)!;
+    database.run("INSERT OR REPLACE INTO opencode_cursors (store, time_updated, part_id) VALUES (?, ?, ?)", [cursorKey, last.time_updated, last.part_id]);
+    return indexed;
+  });
+  return apply();
 }
 
 function ftsLiteral(query: string): string {

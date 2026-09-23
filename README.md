@@ -6,7 +6,7 @@ Agents lose useful context when work moves between Claude Code, Codex, Pi, and O
 
 Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context through Codex exec to `gpt-5.6-luna` with medium reasoning by default. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
 
-Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. Before each search it parses only the appended tail of changed JSONL transcripts and pulls new or updated OpenCode text parts by cursor. A typical refresh takes well under a second.
+Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. Before each search it parses only the appended tail of changed JSONL transcripts and pulls new or updated OpenCode messages by cursor. A typical refresh takes well under a second.
 
 ## Quick start
 
@@ -47,7 +47,7 @@ dejavu query '<locator from search results>' 'What did we decide?'
 | Claude Code | JSONL transcripts under `~/.claude/projects` |
 | Codex | JSONL transcripts under `~/.codex/sessions` |
 | Pi | JSONL transcripts under `~/.pi/agent/sessions` |
-| OpenCode | SQLite databases under `~/.local/share/opencode` |
+| OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema |
 
 It also reads Claude Code Markdown memory under `~/.claude/projects/*/memory/`. Set `CLAUDE_CONFIG_DIR` or pass `--root` to use another Claude store.
 

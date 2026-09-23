@@ -97,6 +97,47 @@ describe("loadTranscriptEvents", () => {
     });
   });
 
+  test("opencode v2: reads session_message user text, files, and assistant content items", async () => {
+    const databasePath = `/tmp/dejavu-transcript-v2-${crypto.randomUUID()}.db`;
+    const database = new Database(databasePath, { create: true });
+    database.run("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT NOT NULL, title TEXT, time_updated INTEGER NOT NULL)");
+    database.run("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)");
+    database.run("INSERT INTO session_v2 VALUES (?, ?, ?, ?)", ["ses", "/work/next", "Next", 1]);
+    const insert = database.prepare("INSERT INTO session_message VALUES (?, 'ses', ?, ?, ?, ?, ?)");
+    insert.run("u1", "user", 0, 0, 0, JSON.stringify({ text: "question", files: [{ name: "shot.png", mime: "image/png", data: "AAAA" }], time: { created: Date.UTC(2026, 8, 1) } }));
+    insert.run("a1", "assistant", 1, 1, 1, JSON.stringify({ content: [
+      { type: "reasoning", text: "why" },
+      { type: "tool", id: "g1", name: "grep", state: { status: "completed", input: { pattern: "x" }, content: [{ type: "text", text: "1 match" }] } },
+      { type: "tool", id: "g2", name: "read", state: { status: "error", input: { path: "/nope" }, error: { type: "tool.execution", message: "ENOENT" } } },
+      { type: "tool", id: "g3", name: "bash", state: { status: "running", input: { command: "sleep" } } },
+      { type: "text", text: "answer" },
+    ] }));
+    insert.run("s1", "synthetic", 2, 2, 2, JSON.stringify({ text: "hidden" }));
+    database.close();
+    try {
+      const { project, events } = await loadTranscriptEvents(openCodeLocator(databasePath, "ses"), "opencode");
+      expect(project).toBe("/work/next");
+      expect(events.map((event) => event.ref)).toEqual([
+        { sessionMessageId: "u1" }, { sessionMessageId: "u1", item: 0 }, { sessionMessageId: "a1", item: 0 },
+        { sessionMessageId: "a1", item: 1 }, { sessionMessageId: "a1", item: 1 }, { sessionMessageId: "a1", item: 2 },
+        { sessionMessageId: "a1", item: 2 }, { sessionMessageId: "a1", item: 3 }, { sessionMessageId: "a1", item: 4 },
+      ]);
+      expect(bare(events)).toEqual([
+        { kind: "user", text: "question", timestamp: "2026-09-01T00:00:00.000Z" },
+        { kind: "user", text: "[file: shot.png]", timestamp: "2026-09-01T00:00:00.000Z" },
+        { kind: "thinking", text: "why", timestamp: undefined },
+        { kind: "tool_call", name: "grep", input: { pattern: "x" }, callId: "g1", timestamp: undefined },
+        { kind: "tool_result", name: "grep", callId: "g1", output: "1 match", isError: false, timestamp: undefined },
+        { kind: "tool_call", name: "read", input: { path: "/nope" }, callId: "g2", timestamp: undefined },
+        { kind: "tool_result", name: "read", callId: "g2", output: "ENOENT", isError: true, timestamp: undefined },
+        { kind: "tool_call", name: "bash", input: { command: "sleep" }, callId: "g3", timestamp: undefined },
+        { kind: "assistant", text: "answer", timestamp: undefined },
+      ]);
+    } finally {
+      await rm(databasePath, { force: true });
+    }
+  });
+
   test("opencode: expands tool parts into a call and a result", async () => {
     const databasePath = `/tmp/dejavu-transcript-${crypto.randomUUID()}.db`;
     const database = new Database(databasePath, { create: true });
