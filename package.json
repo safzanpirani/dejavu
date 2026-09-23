@@ -2,7 +2,7 @@
   "name": "@safzanpirani/dejavu",
   "version": "0.3.0",
   "devDependencies": {
-    "@types/bun": "1.4.0",
+    "@types/bun": "1.4.2",
     "typescript": "5.9.3"
   },
   "bin": {
@@ -24,9 +24,9 @@
     "pi"
   ],
   "license": "MIT",
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.2",
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.2"
   },
   "scripts": {
     "dejavu": "bun run src/cli.ts",
