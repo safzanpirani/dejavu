@@ -14,6 +14,7 @@ import { DEFAULT_PLACEHOLDER, parseDropList, scrubTranscript } from "./transcrip
 import { explainProfile, profileSessions, renderProfile } from "./profile.ts";
 import { packSessions, renderPack } from "./pack.ts";
 import { renderWindow, validateBound, windowTranscript } from "./transcript-window.ts";
+import { availableUpdate, compareVersions, DISABLE_CHECK_ENV, selfUpdate, VERSION } from "./update.ts";
 
 const colors = {
   red: (text: string) => `\x1b[31m${text}\x1b[0m`,
@@ -36,6 +37,8 @@ const HELP = `${colors.bold("dejavu")}: search and query coding-agent transcript
   ${colors.bold("dejavu memory search")} <phrase> [--limit N] [--snippets N] [--root DIR] [--json]
   ${colors.bold("dejavu memory show")} <project-or-file> [--root DIR] [--json]
   ${colors.bold("dejavu index")} <status|update|rebuild> [--json]
+  ${colors.bold("dejavu self-update")} [--check] [--json]
+  ${colors.bold("dejavu --version")}
 
 search flags
   -s, --source NAME      all, claude, codex, pi, or opencode (default all)
@@ -190,8 +193,24 @@ async function main(): Promise<void> {
     console.log(HELP);
     return;
   }
+  if (args.length === 1 && (args[0] === "--version" || args[0] === "-V")) {
+    console.log(VERSION);
+    return;
+  }
   const json = pullFlag(args, "--json");
   const quiet = pullFlag(args, "-q", "--quiet");
+  if (args[0] === "self-update") {
+    args.shift();
+    const checkOnly = pullFlag(args, "--check");
+    rejectUnknownFlags(args);
+    if (args.length > 0) die(`self-update accepts no positional arguments (unexpected: '${args[0]}')`);
+    const result = await selfUpdate({ checkOnly });
+    if (json) console.log(JSON.stringify(result, null, 2));
+    else if (result.updated) console.log(`dejavu ${result.current} -> ${result.latest} installed at ${result.path}`);
+    else if (compareVersions(result.latest, result.current) > 0) console.log(`dejavu ${result.latest} is available (installed ${result.current}); run \`dejavu self-update\` to install it`);
+    else console.log(`dejavu ${result.current} is up to date`);
+    return;
+  }
   if (args[0] === "profile") {
     args.shift();
     const project = pullValue(args, ["--project"]);
@@ -423,4 +442,14 @@ async function main(): Promise<void> {
   if (!quiet && !json) console.error(colors.dim(`${result.sources.join(",")} · ${result.elapsedMs}ms`));
 }
 
-main().catch((error) => die(error instanceof Error ? error.message : String(error)));
+// People at a terminal see a daily release notice on stderr; agents and pipes never pay for the lookup.
+async function printUpdateNotice(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (!process.stderr.isTTY || args[0] === "self-update" || args.some((arg) => ["--json", "-q", "--quiet", "--paths"].includes(arg))) return;
+  const latest = await availableUpdate().catch(() => null);
+  if (latest) console.error(colors.dim(`dejavu ${latest} is available (installed ${VERSION}); run \`dejavu self-update\`, or set ${DISABLE_CHECK_ENV}=1 to silence this`));
+}
+
+main()
+  .then(printUpdateNotice)
+  .catch((error) => die(error instanceof Error ? error.message : String(error)));

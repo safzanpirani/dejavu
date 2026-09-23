@@ -10,7 +10,17 @@ Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`.
 
 ## Quick start
 
-You need [Bun](https://bun.sh/) 1.4 or newer. Clone the repository and link the CLI:
+Download the binary for your platform from the [latest release](https://github.com/safzanpirani/dejavu/releases/latest) and put it on your `PATH`:
+
+```bash
+curl -fsSL -o ~/.local/bin/dejavu https://github.com/safzanpirani/dejavu/releases/latest/download/dejavu-darwin-arm64
+chmod +x ~/.local/bin/dejavu
+ln -sf dejavu ~/.local/bin/deja
+```
+
+Releases ship `dejavu-darwin-arm64`, `dejavu-darwin-x64`, `dejavu-linux-x64`, `dejavu-linux-arm64`, and `dejavu-windows-x64.exe`, with SHA-256 sums in `checksums.txt`.
+
+To run from source instead, install [Bun](https://bun.sh/) 1.4.2 or newer, clone the repository, and link the CLI:
 
 ```bash
 bun install
@@ -174,6 +184,16 @@ dejavu index rebuild
 
 Search and `find` update the index automatically. `update` performs the same incremental refresh explicitly. `rebuild` discards the index and recreates it from the current JSONL and OpenCode stores. A schema change triggers the same rebuild on the next refresh. Set `DEJAVU_INDEX_PATH` to use another database path.
 
+## Updates
+
+```bash
+dejavu --version
+dejavu self-update --check
+dejavu self-update
+```
+
+`self-update` downloads the newest release binary for this platform, verifies it against the release's `checksums.txt`, and replaces the running binary in place. A source checkout reports the new version and asks for `git pull` instead. When stderr is a terminal, dejavu checks for a new release at most once a day and prints a one-line notice after the command. It skips the check for `--json`, `--quiet`, `--paths`, and piped output. Set `DEJAVU_NO_UPDATE_CHECK=1` to turn it off. The last result is cached in `~/.local/state/dejavu/update-check.json`.
+
 ## Agent guidance
 
 Use `--json` when another agent or command consumes the result. Use one distinctive token or phrase for plain search. Use `find` when you remember several terms from the same session. Use `show` to confirm a result before you resume or query it.
@@ -188,6 +208,8 @@ Run `dejavu --help` for the complete flag reference.
 bun run check
 bun run build:local
 ```
+
+Pushing a `v*` tag that matches the `package.json` version runs `.github/workflows/release.yml`. It runs the checks, builds every platform binary, and publishes them with checksums as a GitHub release.
 
 The macOS build script applies an ad hoc signature because Bun 1.4 can emit an invalid arm64 signature. The code keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
 

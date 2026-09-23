@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # macOS so the darwin binaries can be re-signed; Bun 1.4 can emit an invalid arm64 signature.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Verify the tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared=$(bun -e 'console.log((await Bun.file("package.json").json()).version)')
+          test "$tag" = "$declared" || { echo "tag v$tag does not match package.json version $declared"; exit 1; }
+      - name: Check
+        run: |
+          bun install --frozen-lockfile
+          bun run check
+      - name: Build
+        run: |
+          mkdir -p release
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
+            ext=""
+            [ "$target" = "windows-x64" ] && ext=".exe"
+            bun build --compile --target="bun-$target" src/cli.ts --outfile "release/dejavu-$target$ext"
+          done
+          codesign --force --sign - release/dejavu-darwin-arm64 release/dejavu-darwin-x64
+          ./release/dejavu-darwin-arm64 --version
+      - name: Checksums
+        run: |
+          cd release
+          shasum -a 256 dejavu-* > checksums.txt
+          cat checksums.txt
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/dejavu-*
+            release/checksums.txt
+          generate_release_notes: true
