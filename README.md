@@ -219,7 +219,7 @@ bun run check
 bun run build:local
 ```
 
-Pushing a `v*` tag that matches the `package.json` version runs `.github/workflows/release.yml`. It runs the checks, builds every platform binary, publishes them with checksums as a GitHub release, and publishes the npm package through npm trusted publishing.
+Pushing a `v*` tag that matches the `package.json` version runs `.github/workflows/release.yml`. It runs the checks, builds every platform binary, publishes them with checksums as a GitHub release, and publishes the npm package with the `NPM_TOKEN` repository secret.
 
 The macOS build script applies an ad hoc signature because Bun 1.4 can emit an invalid arm64 signature. The code keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
 

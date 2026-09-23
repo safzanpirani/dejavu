@@ -57,14 +57,16 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      # Publishes through npm trusted publishing (OIDC), so the repository stores no npm token.
-      # Trust can only be granted to an existing package, so the first version is published by hand.
+      # Publishes with the NPM_TOKEN secret when one is set, or through npm trusted publishing (OIDC)
+      # once the package trusts this workflow. npm refuses session logins without a 2FA challenge.
       - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           name=$(node -p 'require("./package.json").name')
           version="${GITHUB_REF_NAME#v}"
-          if ! npm view "$name" name >/dev/null 2>&1; then
-            echo "::notice::$name is not on npm yet; publish the first version by hand"
+          if [ -z "$NODE_AUTH_TOKEN" ] && ! npm view "$name" name >/dev/null 2>&1; then
+            echo "::notice::$name is not on npm yet and no NPM_TOKEN secret is set; skipping npm"
             exit 0
           fi
           if npm view "$name@$version" version >/dev/null 2>&1; then
@@ -73,4 +75,4 @@ jobs:
           fi
           npm install -g npm@latest
           node scripts/npm-prepare.cjs release/checksums.txt
-          npm publish --access public
+          npm publish --access public --provenance
