@@ -113,6 +113,10 @@ common flags
   -h, --help             show this help
 
 Search covers detected Claude, Codex, Pi, and OpenCode stores by default.
+Each agent's variable replaces its home-directory store: CLAUDE_CONFIG_DIR
+($CLAUDE_CONFIG_DIR/projects), CODEX_HOME ($CODEX_HOME/sessions),
+PI_CODING_AGENT_DIR ($PI_CODING_AGENT_DIR/sessions), and XDG_DATA_HOME
+($XDG_DATA_HOME/opencode/*.db) or OPENCODE_DB for OpenCode.
 Memory commands read Claude's cross-project Markdown memory corpus.
 Memory selectors accept exact listed project keys, unique project substrings, or file paths.
 Memory search --snippets also requires an integer >= 1.

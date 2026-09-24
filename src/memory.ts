@@ -1,5 +1,5 @@
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { transcriptStoreRoots } from "./source-registry.ts";
 
 export interface MemoryFile {
   project: string;
@@ -33,7 +33,7 @@ async function defaultGlob(root: string): Promise<string[]> {
 }
 
 export function defaultMemoryRoot(): string {
-  return join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+  return transcriptStoreRoots().claude;
 }
 
 function projectFromPath(path: string): string {

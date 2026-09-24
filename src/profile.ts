@@ -151,9 +151,10 @@ export async function profileSessions(locators: string[], options: ProfileOption
   if (!paths.length) {
     if (!options.project) throw new Error("profile needs a transcript locator or --project <substring>");
     const since = options.since ? parseSince(options.since) : undefined;
-    const refreshed = await refreshTranscriptIndex(await discoverTranscriptStores("all"));
+    const stores = await discoverTranscriptStores("all");
+    const refreshed = await refreshTranscriptIndex(stores);
     report.diagnostics.push(...refreshed.skipped.map((item) => ({ path: item.path, error: item.error })));
-    const selection = listIndexedSessions({ project: options.project, since, limit });
+    const selection = listIndexedSessions({ project: options.project, since, limit }, stores);
     paths = selection.paths;
     report.matchedSessions = selection.total;
     report.omittedSessions = selection.total - paths.length;

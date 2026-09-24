@@ -1,3 +1,4 @@
+import { transcriptStoreRoots } from "./source-registry.ts";
 import type { TranscriptSource } from "./transcript-types.ts";
 
 export function compactHome(path: string, home = process.env.HOME ?? ""): string {
@@ -37,10 +38,12 @@ export function projectFromPiPath(path: string, home = process.env.HOME ?? ""): 
   return decodeProject(match[1].slice(2, -2), home);
 }
 
-export function projectFromClaudePath(path: string, home = process.env.HOME ?? ""): string {
-  const match = path.match(/\.claude[/\\]projects[/\\]([^/\\]+)[/\\]/);
-  if (!match?.[1]) return "~";
-  return decodeProject(match[1].replace(/^-/, ""), home);
+export function projectFromClaudePath(path: string, home = process.env.HOME ?? "", projectsRoot = transcriptStoreRoots().claude): string {
+  // A CLAUDE_CONFIG_DIR store need not be named .claude, so its projects root is matched by prefix first.
+  const configured = path.startsWith(`${projectsRoot}/`) ? path.slice(projectsRoot.length + 1).split(/[/\\]/) : [];
+  const encoded = configured.length > 1 ? configured[0] : path.match(/\.claude[/\\]projects[/\\]([^/\\]+)[/\\]/)?.[1];
+  if (!encoded) return "~";
+  return decodeProject(encoded.replace(/^-/, ""), home);
 }
 
 export function projectFromTranscriptPath(path: string, source: TranscriptSource): string {

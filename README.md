@@ -62,12 +62,14 @@ dejavu query '<locator from search results>' 'What did we decide?'
 
 `dejavu` detects these local stores:
 
-| Agent | Local data |
-| --- | --- |
-| Claude Code | JSONL transcripts under `~/.claude/projects` |
-| Codex | JSONL transcripts under `~/.codex/sessions` |
-| Pi | JSONL transcripts under `~/.pi/agent/sessions` |
-| OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema |
+| Agent | Local data | Selected by |
+| --- | --- | --- |
+| Claude Code | JSONL transcripts under `~/.claude/projects` | `CLAUDE_CONFIG_DIR` → `$CLAUDE_CONFIG_DIR/projects` |
+| Codex | JSONL transcripts under `~/.codex/sessions` | `CODEX_HOME` → `$CODEX_HOME/sessions` |
+| Pi | JSONL transcripts under `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
+| OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
+
+Each variable is the one the agent itself honors. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
 
 It also reads Claude Code Markdown memory under `~/.claude/projects/*/memory/`. Set `CLAUDE_CONFIG_DIR` or pass `--root` to use another Claude store.
 
@@ -192,7 +194,7 @@ dejavu index update
 dejavu index rebuild
 ```
 
-Search and `find` update the index automatically. `update` performs the same incremental refresh explicitly. `rebuild` discards the index and recreates it from the current JSONL and OpenCode stores. A schema change triggers the same rebuild on the next refresh. Set `DEJAVU_INDEX_PATH` to use another database path.
+Search and `find` update the index automatically. `update` performs the same incremental refresh explicitly. `rebuild` discards the index and recreates it from the current JSONL and OpenCode stores. A schema change triggers the same rebuild on the next refresh. Set `DEJAVU_INDEX_PATH` to use another database path. The index records the store each row came from, and every lookup is limited to the stores the current environment selects, so one shared index file never returns rows from another store.
 
 ## Updates
 

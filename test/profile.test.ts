@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { explainProfile, measureTranscript, nestedCallSites, profileSessions, type ProfileReport } from "../src/profile.ts";
 import { listIndexedSessions, refreshTranscriptIndex } from "../src/transcript-index.ts";
 import { countEvents, type TranscriptEvent } from "../src/transcript-view.ts";
+import type { TranscriptStore } from "../src/transcript-types.ts";
 
 const events: TranscriptEvent[] = [
   { index: 5, kind: "tool_call", name: "Read", callId: "a", input: { file: "private-file", limit: 5 }, timestamp: "2026-09-08T10:00:00Z" },
@@ -73,10 +74,11 @@ test("project selection reports limits and filters visible-message dates", async
     for (const [name, day, project] of [["old", "01", "/work/reel"], ["new", "08", "/work/reel"], ["other", "09", "/work/other"]]) {
       await writeFile(join(store, `${name}.jsonl`), JSON.stringify({ type: "user", timestamp: `2026-09-${day}T10:00:00Z`, cwd: project, message: { role: "user", content: "test context" } }));
     }
-    await refreshTranscriptIndex([{ source: "claude", kind: "jsonl", path: store }], index);
-    const all = listIndexedSessions({ project: "reel", limit: 1 }, index);
+    const stores: TranscriptStore[] = [{ source: "claude", kind: "jsonl", path: store }];
+    await refreshTranscriptIndex(stores, index);
+    const all = listIndexedSessions({ project: "reel", limit: 1 }, stores, index);
     expect(all.total).toBe(2);
     expect(all.paths).toEqual([join(store, "new.jsonl")]);
-    expect(listIndexedSessions({ project: "reel", since: "2026-09-05", limit: 10 }, index).total).toBe(1);
+    expect(listIndexedSessions({ project: "reel", since: "2026-09-05", limit: 10 }, stores, index).total).toBe(1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
