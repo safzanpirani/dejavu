@@ -217,23 +217,35 @@ export function buildWindowedContext(messages: SerializedMessage[], question: st
   const matches = messages.map((message, index) => ({
     index, score: keywords.filter((keyword) => message.text.toLowerCase().includes(keyword)).length,
   })).filter(({ score }) => score > 0).sort((a, b) => b.score - a.score).map(({ index }) => index);
-  const included = new Set<number>();
-  for (let i = 0; i < Math.min(bookends, messages.length); i++) included.add(i);
-  for (let i = Math.max(0, messages.length - bookends); i < messages.length; i++) included.add(i);
-  for (const index of matches) included.add(index);
   const charBudget = tokenBudget * 4;
-  const currentChars = () => [...included].reduce((sum, index) => sum + messages[index]!.charCount + 20, 0);
+  const included = new Set<number>();
+  let used = 0;
+  const include = (index: number) => {
+    if (included.has(index)) return;
+    included.add(index);
+    used += messages[index]!.charCount + 20;
+  };
+  const fits = (index: number) => used + messages[index]!.charCount + 20 <= charBudget * 0.8;
+  for (let i = 0; i < Math.min(bookends, messages.length); i++) include(i);
+  for (let i = Math.max(0, messages.length - bookends); i < messages.length; i++) include(i);
+  // The best match always goes in; later matches only while they fit, since a common keyword can match most of a long session.
+  const kept: number[] = [];
+  for (const index of matches) {
+    if (kept.length > 0 && !included.has(index) && !fits(index)) continue;
+    include(index);
+    kept.push(index);
+  }
   let radius = 1;
-  while (currentChars() < charBudget * 0.8 && radius < messages.length) {
+  while (used < charBudget * 0.8 && radius < messages.length) {
     const previousSize = included.size;
-    for (const index of matches) for (let distance = -radius; distance <= radius; distance++) {
+    for (const index of kept) for (let distance = -radius; distance <= radius; distance++) {
       const candidate = index + distance;
-      if (candidate >= 0 && candidate < messages.length) included.add(candidate);
+      if (candidate >= 0 && candidate < messages.length && fits(candidate)) include(candidate);
     }
     if (included.size === previousSize) break;
     radius++;
   }
-  for (let i = bookends; i < messages.length && currentChars() < charBudget * 0.8; i++) included.add(i);
+  for (let i = bookends; i < messages.length && used < charBudget * 0.8; i++) if (fits(i)) include(i);
   const parts: string[] = [];
   let previous = -1;
   for (const index of [...included].sort((a, b) => a - b)) {

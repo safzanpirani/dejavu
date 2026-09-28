@@ -196,7 +196,18 @@ describe("query preparation", () => {
       text: index === 6 ? "the distinctive marmalade decision" : `filler ${index}`,
       charCount: 500,
     }));
-    expect(buildWindowedContext(messages, "What was the marmalade decision?", 100)).toMatch(/messages? omitted/);
+    const windowed = buildWindowedContext(messages, "What was the marmalade decision?", 100);
+    expect(windowed).toMatch(/messages? omitted/);
+    expect(windowed).toContain("marmalade");
+  });
+
+  test("keeps keyword matches within the token budget", () => {
+    const messages = Array.from({ length: 400 }, (_, index) => ({
+      role: index % 2 ? "assistant" : "user", text: `session note ${index} ${"x".repeat(1000)}`, charCount: 1020,
+    }));
+    const windowed = buildWindowedContext(messages, "what was this session about", 10_000);
+    expect(windowed.length).toBeLessThan(10_000 * 4);
+    expect(windowed).toMatch(/messages? omitted/);
   });
 
   test("reports the detected source in query results", async () => {
