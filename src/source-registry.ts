@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import type { SourceSelector, TranscriptSource, TranscriptStore } from "./transcript-types.ts";
 
 const SOURCE_NAMES = new Set<SourceSelector>(["all", "claude", "codex", "pi", "opencode"]);
@@ -26,6 +26,7 @@ export interface TranscriptStoreRoots {
  * home-directory default; it never adds a second store:
  * Claude Code `$CLAUDE_CONFIG_DIR/projects`, Codex `$CODEX_HOME/sessions`,
  * Pi `$PI_CODING_AGENT_DIR/sessions`, OpenCode `$OPENCODE_DB` or `$XDG_DATA_HOME/opencode/*.db`.
+ * With no Pi variable, discovery also covers sibling Pi profiles such as `~/.pi/juna/sessions`.
  */
 export function transcriptStoreRoots(env: StoreEnv = process.env, home = homedir()): TranscriptStoreRoots {
   const configured = (value: string | undefined, fallback: string) => value ? resolve(value) : fallback;
@@ -53,6 +54,7 @@ export async function discoverTranscriptStores(
     { source: "claude", kind: "jsonl", path: roots.claude },
     { source: "codex", kind: "jsonl", path: roots.codex },
     { source: "pi", kind: "jsonl", path: roots.pi },
+    ...(env.PI_CODING_AGENT_DIR ? [] : await piProfileStores(home, roots.pi)),
     ...roots.opencode.map((path): TranscriptStore => ({ source: "opencode", kind: "sqlite", path })),
   ];
   const selected = candidates.filter((store) => selector === "all" || store.source === selector);
@@ -63,6 +65,17 @@ export async function discoverTranscriptStores(
   return present.filter((store): store is TranscriptStore => store !== null);
 }
 
+/** Session directories of Pi profiles kept beside the default `~/.pi/agent`. */
+async function piProfileStores(home: string, primary: string): Promise<TranscriptStore[]> {
+  const piHome = join(home, ".pi");
+  const entries = await readdir(piHome, { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isDirectory())
+    .map((entry) => join(piHome, entry.name, "sessions"))
+    .filter((path) => path !== primary)
+    .sort()
+    .map((path): TranscriptStore => ({ source: "pi", kind: "jsonl", path }));
+}
+
 export function sourceFromLocator(locator: string, roots: TranscriptStoreRoots = transcriptStoreRoots()): TranscriptSource {
   if (locator.startsWith("opencode://")) return "opencode";
   for (const source of ["claude", "codex", "pi"] as const) {
@@ -70,6 +83,6 @@ export function sourceFromLocator(locator: string, roots: TranscriptStoreRoots =
   }
   if (locator.includes("/.claude/projects/")) return "claude";
   if (locator.includes("/.codex/sessions/")) return "codex";
-  if (locator.includes("/.pi/agent/sessions/")) return "pi";
+  if (/[/\\]\.pi[/\\][^/\\]+[/\\]sessions[/\\]/.test(locator)) return "pi";
   throw new Error(`cannot determine transcript source from locator: ${locator} (use a transcript path or opencode:// locator from search results)`);
 }

@@ -66,7 +66,7 @@ dejavu query '<locator from search results>' 'What did we decide?'
 | --- | --- | --- |
 | Claude Code | JSONL transcripts under `~/.claude/projects` | `CLAUDE_CONFIG_DIR` → `$CLAUDE_CONFIG_DIR/projects` |
 | Codex | JSONL transcripts under `~/.codex/sessions` | `CODEX_HOME` → `$CODEX_HOME/sessions` |
-| Pi | JSONL transcripts under `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
+| Pi | JSONL transcripts under `~/.pi/agent/sessions` and sibling profiles such as `~/.pi/juna/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
 | OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
 
 Each variable is the one the agent itself honors. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.

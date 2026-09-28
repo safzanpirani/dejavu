@@ -93,6 +93,25 @@ describe("store resolution from agent environment variables", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  test("discovery adds sibling Pi profiles only when PI_CODING_AGENT_DIR is unset", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dejavu-pi-profiles-"));
+    try {
+      for (const profile of ["agent", "juna", "zeta"]) await mkdir(join(root, ".pi", profile, "sessions"), { recursive: true });
+      await mkdir(join(root, ".pi", "cache"), { recursive: true });
+      expect((await discoverTranscriptStores("pi", root, {})).map((store) => store.path)).toEqual([
+        join(root, ".pi", "agent", "sessions"),
+        join(root, ".pi", "juna", "sessions"),
+        join(root, ".pi", "zeta", "sessions"),
+      ]);
+      expect((await discoverTranscriptStores("pi", root, { PI_CODING_AGENT_DIR: join(root, ".pi", "juna") })).map((store) => store.path))
+        .toEqual([join(root, ".pi", "juna", "sessions")]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  test("locators under any Pi profile resolve to Pi", () => {
+    expect(sourceFromLocator("/home/owner/.pi/juna/sessions/--work-app--/s.jsonl", transcriptStoreRoots({}, home))).toBe("pi");
+  });
+
   test("locators and project names resolve under a CLAUDE_CONFIG_DIR store", () => {
     const roots = transcriptStoreRoots({ CLAUDE_CONFIG_DIR: "/home/owner/.claude-rakhi", CODEX_HOME: "/srv/cx" }, home);
     expect(sourceFromLocator("/home/owner/.claude-rakhi/projects/-work-app/s.jsonl", roots)).toBe("claude");
