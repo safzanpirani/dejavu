@@ -171,9 +171,13 @@ function integer(value: string | undefined, flag: string, fallback: number): num
   return parsed;
 }
 
-function rejectUnknownFlags(args: string[]): void {
-  const unknown = args.find((arg) => arg.startsWith("-") && arg !== "-");
+// Arguments after a bare `--` are operands, even when they begin with a dash.
+let operands: string[] = [];
+
+function rejectUnknownFlags(args: string[], isFlag = (arg: string) => arg.startsWith("-") && arg !== "-"): void {
+  const unknown = args.find(isFlag);
   if (unknown) die(`unknown flag: ${unknown}`);
+  args.push(...operands.splice(0));
 }
 
 function optionalBound(args: string[], flag: string, minimum = 1): number | undefined {
@@ -201,6 +205,8 @@ async function main(): Promise<void> {
     console.log(VERSION);
     return;
   }
+  const separator = args.indexOf("--");
+  if (separator >= 0) operands = args.splice(separator).slice(1);
   const json = pullFlag(args, "--json");
   const quiet = pullFlag(args, "-q", "--quiet");
   if (args[0] === "self-update") {
@@ -284,7 +290,7 @@ async function main(): Promise<void> {
     }
     if (verb === "show") {
       // Claude project keys emitted by memory list begin with a single hyphen.
-      rejectUnknownFlags(args.filter((arg) => !/^-[^-]/.test(arg)));
+      rejectUnknownFlags(args, (arg) => arg.startsWith("--"));
       const selector = args.shift() ?? die("memory show needs a project slug, project substring, or memory file path");
       if (args.length > 0) die(`memory show accepts one selector (unexpected: '${args[0]}')`);
       const result = await showMemory(selector, root);

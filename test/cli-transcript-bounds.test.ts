@@ -32,6 +32,11 @@ test("CLI removes tool-only turns and applies explicit transcript JSON bounds wi
     expect(JSON.parse(page.stdout)).toMatchObject({ events: [{ kind: "assistant", index: 3, text: "an…" }], window: { nextEvent: 5, usedChars: 3 } });
     const full = await run(["transcript", path, "--full", "--from-event", "3", "--limit", "1", "--json"]);
     expect(JSON.parse(full.stdout).events[0].text).toBe("answer");
+    const separated = await run(["transcript", "--json", "--", path]);
+    expect(separated.code).toBe(0);
+    expect(JSON.parse(separated.stdout).events.length).toBeGreaterThan(0);
+    const dashed = await run(["show", "--json", "--", "--not-a-flag.jsonl"]);
+    expect(dashed.stderr).not.toContain("unknown flag");
     const cap = await run(["show", path, "--max-chars", "3", "--json"]);
     expect(JSON.parse(cap.stdout).messages[0].text).toBe("hel [...]");
     for (const flags of [["--budget-chars=0"], ["--max-chars="], ["--from-event=-1"], ["--full", "--tool-chars=3"]]) {
