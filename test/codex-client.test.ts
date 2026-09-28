@@ -21,7 +21,19 @@ beforeAll(async () => {
     if (mode === 'missing') process.exit(0);
     if (mode === 'event-fail') {
       await Bun.write(output, 'partial answer');
-      console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'private-transcript-sentinel' } }));
+      console.log(JSON.stringify({ type: 'turn.failed', error: { message: 'unauthorized (401)' } }));
+      process.exit(0);
+    }
+    if (mode === 'auth-fail') {
+      console.error('private-transcript-sentinel');
+      console.log(JSON.stringify({ type: 'error', message: 'Reconnecting... 1/5 (unauthorized (401))' }));
+      console.log(JSON.stringify({ type: 'error', message: 'workspace routing discovery unauthorized (401)' }));
+      process.exit(1);
+    }
+    if (mode === 'retry-ok') {
+      await Bun.write(output, 'recovered');
+      console.log(JSON.stringify({ type: 'error', message: 'Reconnecting... 1/5' }));
+      console.log(JSON.stringify({ type: 'turn.completed' }));
       process.exit(0);
     }
     await Bun.write(output, mode === 'empty' ? '   ' : JSON.stringify({ args, prompt, cwd: process.cwd() }));
@@ -81,7 +93,17 @@ describe("Codex subprocess contract", () => {
   test("rejects missing, empty, and failed final answers", async () => {
     await expect(run("missing")).rejects.toThrow("empty response");
     await expect(run("empty")).rejects.toThrow("empty response");
-    await expect(run("event-fail")).rejects.toThrow("codex query failed");
+    await expect(run("event-fail")).rejects.toThrow("codex query failed: unauthorized (401)");
+  });
+
+  test("reports the API error behind a failed exit, but never child stderr", async () => {
+    const message = await run("auth-fail").then(() => "", (caught: Error) => caught.message);
+    expect(message).toContain("codex query failed: workspace routing discovery unauthorized (401)");
+    expect(message).not.toContain("private-transcript-sentinel");
+  });
+
+  test("ignores retry errors in a turn that completed", async () => {
+    expect((await run("retry-ok")).answer).toBe("recovered");
   });
 
   test("bounds a stalled child", async () => {

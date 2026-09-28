@@ -78,21 +78,28 @@ export async function completeViaCodex(
     ]).catch((error) => { stop(); throw error; });
     if (signal?.aborted) throw new Error("query was cancelled");
     if (timedOut) throw new Error(`query model timed out after ${timeoutMs}ms`);
-    if (exitCode !== 0) {
-      throw new Error(`codex exec failed (exit ${exitCode}); check codex login status and access to ${model}`);
-    }
     let usage: Completion["usage"];
+    let failed: string | undefined;
+    let lastError: string | undefined;
+    let completed = false;
     for (const line of stdout.split("\n")) {
       let event;
       try { event = JSON.parse(line); } catch { continue; }
       if (!event || typeof event !== "object") continue;
-      if (event.type === "turn.failed" || event.type === "error") {
-        throw new Error(`codex query failed; check codex login status and access to ${model}`);
-      }
+      // Event messages come from the model API, unlike stderr, which may log the prompt.
+      if (event.type === "turn.failed") failed = eventMessage(event.error?.message) ?? "turn failed";
+      if (event.type === "error") lastError = eventMessage(event.message) ?? "error";
+      if (event.type === "turn.completed") completed = true;
       if (event.type === "turn.completed" && typeof event.usage?.input_tokens === "number"
         && typeof event.usage?.output_tokens === "number") {
         usage = { inputTokens: event.usage.input_tokens, outputTokens: event.usage.output_tokens };
       }
+    }
+    // Codex reports retries as error events, so one only fails a turn that never completed.
+    const failure = failed ?? (completed ? undefined : lastError);
+    if (failure) throw new Error(`codex query failed: ${failure}; check codex login status and access to ${model}`);
+    if (exitCode !== 0) {
+      throw new Error(`codex exec failed (exit ${exitCode}); check codex login status and access to ${model}`);
     }
     const answer = await readFile(output, "utf8").catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return "";
@@ -105,4 +112,8 @@ export async function completeViaCodex(
     if (abort) signal?.removeEventListener("abort", abort);
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function eventMessage(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 300) : undefined;
 }
