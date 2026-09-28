@@ -161,6 +161,17 @@ describe("transcript loading", () => {
     expect(texts(await loadRecallMessages(path, "claude"))).toEqual(["root", "active"]);
   });
 
+  test("follows Claude's branch across compaction boundaries", async () => {
+    const path = `/tmp/dejavu-claude-${crypto.randomUUID()}.jsonl`;
+    await writeRows(path, [
+      claudeMessage("a", null, "user", "before compaction"),
+      claudeMessage("b", "a", "assistant", "early answer"),
+      { type: "system", subtype: "compact_boundary", uuid: "c", parentUuid: null, logicalParentUuid: "b" },
+      claudeMessage("d", "c", "user", "after compaction"),
+    ]);
+    expect(texts(await loadRecallMessages(path, "claude"))).toEqual(["before compaction", "early answer", "after compaction"]);
+  });
+
   test("loads only user and assistant Codex response items", async () => {
     const path = `/tmp/dejavu-codex-${crypto.randomUUID()}.jsonl`;
     await writeRows(path, [

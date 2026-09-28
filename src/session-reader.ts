@@ -13,6 +13,8 @@ export interface TreeEntry {
   parentId?: string | null;
   uuid?: string;
   parentUuid?: string | null;
+  /** Claude's compact_boundary rows restart parentUuid at null and link the pre-compaction branch here. */
+  logicalParentUuid?: string | null;
   leafUuid?: string;
   message?: { role?: string; content?: unknown };
   payload?: { type?: string; role?: string; content?: unknown };
@@ -65,7 +67,8 @@ function claudeBranch(entries: TreeEntry[]): TreeEntry[] {
   const branch: TreeEntry[] = [];
   while (current) {
     branch.push(current);
-    current = current.parentUuid ? byId.get(current.parentUuid) : undefined;
+    const parent = current.parentUuid ?? current.logicalParentUuid;
+    current = parent ? byId.get(parent) : undefined;
   }
   return branch.reverse();
 }
