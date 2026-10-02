@@ -13,6 +13,8 @@ mod model_client;
 pub mod opencode;
 pub mod paths;
 pub mod pool;
+mod profile;
+mod query;
 pub mod reader;
 pub mod sources;
 pub mod types;
