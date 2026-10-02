@@ -14,9 +14,13 @@ pub mod opencode;
 pub mod paths;
 pub mod pool;
 pub mod reader;
+pub mod render;
+pub mod scrub;
 pub mod sources;
 pub mod types;
 mod update;
+pub mod view;
+pub mod window;
 
 use args::{Args, die};
 
