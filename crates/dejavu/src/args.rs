@@ -135,7 +135,7 @@ impl Args {
 pub fn js_integer(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Some(0).filter(|_| false);
+        return None;
     }
     let parsed: f64 = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
         i64::from_str_radix(hex, 16).ok()? as f64

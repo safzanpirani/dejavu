@@ -2,14 +2,12 @@
 // warn: the launcher retries on first use. Bun skips this hook for untrusted packages.
 "use strict";
 
-const fs = require("node:fs");
-const path = require("node:path");
-const { ensureBinary, packageRoot } = require("./npm-binary.cjs");
+const { ensureBinary, isSourceCheckout } = require("./npm-binary.cjs");
 
 const log = (message) => process.stderr.write(`${message}\n`);
 
-// `bun install` in a source checkout runs this hook too; the checkout runs from source.
-if (!fs.existsSync(path.join(packageRoot, ".git"))) ensureBinary({ log })
+// `bun install` in a source checkout runs this hook too; the checkout runs its own cargo build.
+if (!isSourceCheckout()) ensureBinary({ log })
   .then((binary) => log(`dejavu: installed binary at ${binary}`))
   .catch((error) => {
     log(`dejavu: ${error instanceof Error ? error.message : String(error)}`);
