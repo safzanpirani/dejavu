@@ -18,7 +18,7 @@ npm install -g @safzanpirani/dejavu
 bun add -g @safzanpirani/dejavu
 ```
 
-The package downloads the checksum-verified binary for your platform from the matching GitHub release. Bun skips install scripts for untrusted packages, so the first `dejavu` run fetches the binary instead. If no binary is available, the launcher runs the bundled source with Bun 1.4.2 or newer.
+The package downloads the checksum-verified binary for your platform from the matching GitHub release. Bun skips install scripts for untrusted packages, so the first `dejavu` run fetches the binary instead. If no verified binary is available for your platform, the launcher reports it and exits.
 
 Or download the binary for your platform from the [latest release](https://github.com/safzanpirani/dejavu/releases/latest) and put it on your `PATH`:
 
@@ -30,12 +30,13 @@ ln -sf dejavu ~/.local/bin/deja
 
 Releases ship `dejavu-darwin-arm64`, `dejavu-darwin-x64`, `dejavu-linux-x64`, `dejavu-linux-arm64`, and `dejavu-windows-x64.exe`, with SHA-256 sums in `checksums.txt`.
 
-To run from source instead, install [Bun](https://bun.sh/) 1.4.2 or newer, clone the repository, and link the CLI:
+To run from source instead, install [Rust](https://rustup.rs/) 1.88 or newer, clone the repository, and install the CLI:
 
 ```bash
-bun install
-bun link
+scripts/install-local.sh
 ```
+
+The script builds the release binary and installs `dejavu` and the `deja` link in `~/.local/bin`. Set `DEST` to install somewhere else.
 
 `dejavu` is the primary command. The package also installs `deja` as a compatibility alias for existing scripts and agent instructions.
 
@@ -217,13 +218,15 @@ Run `dejavu --help` for the complete flag reference.
 ## Development
 
 ```bash
-bun run check
-bun run build:local
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+scripts/install-local.sh
 ```
 
-Pushing a `v*` tag that matches the `package.json` version runs `.github/workflows/release.yml`. It runs the checks, builds every platform binary, publishes them with checksums as a GitHub release, and publishes the npm package with the `NPM_TOKEN` repository secret.
+`.github/workflows/ci.yml` runs the same checks on Linux, macOS, and Windows for every push and pull request. Pushing a `v*` tag that matches the version in `Cargo.toml` and `package.json` runs `.github/workflows/release.yml`. It tests, builds every platform binary with Cargo on native runners (static musl binaries on Linux), publishes them with checksums as a GitHub release, and publishes the npm package with the `NPM_TOKEN` repository secret.
 
-The macOS build script applies an ad hoc signature because Bun 1.4 can emit an invalid arm64 signature. The code keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
+The code keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
 
 ## License
 

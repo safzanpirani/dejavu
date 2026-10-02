@@ -23,6 +23,18 @@ function binaryPath() {
   return path.join(packageRoot, "native", process.platform === "win32" ? "dejavu.exe" : "dejavu");
 }
 
+/** A git checkout (a worktree has a .git file) rather than an installed package. */
+function isSourceCheckout() {
+  return fs.existsSync(path.join(packageRoot, ".git"));
+}
+
+/** The checkout's own release build, or undefined before the first `cargo build --release`. */
+function sourceBinary() {
+  const targetDir = process.env.CARGO_TARGET_DIR || path.join(packageRoot, "target");
+  const binary = path.join(targetDir, "release", process.platform === "win32" ? "dejavu.exe" : "dejavu");
+  return fs.existsSync(binary) ? binary : undefined;
+}
+
 function pinnedChecksums() {
   try {
     return JSON.parse(fs.readFileSync(path.join(packageRoot, "checksums.json"), "utf8"));
@@ -63,4 +75,4 @@ async function ensureBinary(options = {}) {
   return destination;
 }
 
-module.exports = { assetName, binaryPath, ensureBinary, packageRoot };
+module.exports = { assetName, binaryPath, ensureBinary, isSourceCheckout, packageRoot, sourceBinary };

@@ -1,6 +1,6 @@
 {
   "name": "@safzanpirani/dejavu",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Agent-first local search for coding-agent transcripts and project memory",
   "license": "MIT",
   "type": "module",
@@ -12,15 +12,13 @@
     "bin/",
     "scripts/npm-binary.cjs",
     "scripts/npm-postinstall.cjs",
-    "src/",
     "skills/",
     "checksums.json",
     "README.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18",
-    "bun": ">=1.4.2"
+    "node": ">=18"
   },
   "os": [
     "darwin",
@@ -45,14 +43,9 @@
   },
   "packageManager": "bun@1.4.2",
   "scripts": {
-    "dejavu": "bun run src/cli.ts",
-    "deja": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
-    "build:local": "bun build --compile src/cli.ts --outfile dist/dejavu && codesign --force --sign - dist/dejavu",
-    "build:linux": "bun build --compile --target=bun-linux-x64 src/cli.ts --outfile dist/dejavu-linux-x64",
-    "build:linux-arm64": "bun build --compile --target=bun-linux-arm64 src/cli.ts --outfile dist/dejavu-linux-arm64",
     "postinstall": "node scripts/npm-postinstall.cjs"
   },
   "devDependencies": {
