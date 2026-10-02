@@ -254,6 +254,7 @@ impl TempDir {
                 "{prefix}{}-{nanos:x}{unique:x}",
                 std::process::id()
             ));
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             {

@@ -387,6 +387,8 @@ pub fn summary_line(result: &QueryResult) -> String {
 mod tests {
     use super::*;
     use crate::codex_client::{CodexDeps, complete_via_codex_with};
+    // Used by the tests that run fake executables, which are shell scripts.
+    #[cfg(unix)]
     use crate::model_client::{SYSTEM_PROMPT, build_prompt, complete_via_pi_with};
     use crate::types::RecallBlock;
     use std::cell::RefCell;

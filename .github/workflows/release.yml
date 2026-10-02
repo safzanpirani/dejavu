@@ -83,7 +83,7 @@ jobs:
           test "$version" = "${GITHUB_REF_NAME#v}" || { echo "binary reports $version"; exit 1; }
       - name: Check static linking
         if: contains(matrix.target, 'musl')
-        run: file "dist/${{ matrix.asset }}" | tee /dev/stderr | grep -q 'statically linked'
+        run: file "dist/${{ matrix.asset }}" | tee /dev/stderr | grep -qE 'statically linked|static-pie linked'
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

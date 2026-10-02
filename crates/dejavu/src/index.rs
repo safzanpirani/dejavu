@@ -346,9 +346,21 @@ struct FileRow {
 }
 
 /// `fs.stat(path).mtimeMs` as Bun computes it.
+#[cfg(unix)]
 fn mtime_ms(metadata: &std::fs::Metadata) -> f64 {
     use std::os::unix::fs::MetadataExt;
     metadata.mtime() as f64 * 1000.0 + metadata.mtime_nsec() as f64 / 1e6
+}
+
+/// `fs.stat(path).mtimeMs` from the modification time the platform reports.
+#[cfg(not(unix))]
+fn mtime_ms(metadata: &std::fs::Metadata) -> f64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as f64 * 1000.0 + f64::from(d.subsec_nanos()) / 1e6)
+        .unwrap_or(0.0)
 }
 
 /// A JavaScript number as SQLite stores it: integers as INTEGER, others as REAL.
