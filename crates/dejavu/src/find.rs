@@ -21,6 +21,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 const CANDIDATE_CAP: usize = 40;
+
+/// Store path -> ranked index matches for one term.
+type ByStore = HashMap<String, Vec<StoreSearchMatch>>;
 const USER_WEIGHT: usize = 5;
 
 /// `/[/\\](subagents|tool-results|subagent-artifacts)[/\\]/`
@@ -369,40 +372,38 @@ pub fn find_sessions(
     let max_parallel = options.max_parallel;
 
     // term index -> store path -> ranked matches from the transcript index (without snippets).
-    let mut indexed: Vec<HashMap<String, Vec<StoreSearchMatch>>> = Vec::new();
+    let mut indexed: Vec<ByStore> = Vec::new();
     let mut reader: Option<IndexReader> = None;
     if let Some(index_path) = backend.index_path()
         && !options.no_index
         && cleaned.iter().all(|term| js::len(term) >= 3)
     {
-        let attempt =
-            || -> Result<(IndexReader, Vec<HashMap<String, Vec<StoreSearchMatch>>>), String> {
-                let refreshed =
-                    refresh_transcript_index(&stores, &index_path, false, max_parallel)?;
-                let skipped: HashSet<&str> =
-                    refreshed.skipped.iter().map(|d| d.path.as_str()).collect();
-                let indexed_stores: Vec<TranscriptStore> = stores
+        let attempt = || -> Result<(IndexReader, Vec<ByStore>), String> {
+            let refreshed = refresh_transcript_index(&stores, &index_path, false, max_parallel)?;
+            let skipped: HashSet<&str> =
+                refreshed.skipped.iter().map(|d| d.path.as_str()).collect();
+            let indexed_stores: Vec<TranscriptStore> = stores
+                .iter()
+                .filter(|store| !skipped.contains(store.path.as_str()))
+                .cloned()
+                .collect();
+            let reader = IndexReader::open(&index_path)?;
+            let mut per_term = Vec::new();
+            for term in &cleaned {
+                let mut by_store: HashMap<String, Vec<StoreSearchMatch>> = indexed_stores
                     .iter()
-                    .filter(|store| !skipped.contains(store.path.as_str()))
-                    .cloned()
+                    .map(|store| (store.path.clone(), Vec::new()))
                     .collect();
-                let reader = IndexReader::open(&index_path)?;
-                let mut per_term = Vec::new();
-                for term in &cleaned {
-                    let mut by_store: HashMap<String, Vec<StoreSearchMatch>> = indexed_stores
-                        .iter()
-                        .map(|store| (store.path.clone(), Vec::new()))
-                        .collect();
-                    for row in reader.grouped_matches(term, &indexed_stores, 800, TieBreak::Date)? {
-                        let found = row.into_match();
-                        if let Some(list) = by_store.get_mut(&found.store) {
-                            list.push(found.matched);
-                        }
+                for row in reader.grouped_matches(term, &indexed_stores, 800, TieBreak::Date)? {
+                    let found = row.into_match();
+                    if let Some(list) = by_store.get_mut(&found.store) {
+                        list.push(found.matched);
                     }
-                    per_term.push(by_store);
                 }
-                Ok((reader, per_term))
-            };
+                per_term.push(by_store);
+            }
+            Ok((reader, per_term))
+        };
         // The filesystem scanner remains the compatibility fallback.
         if let Ok((open, per_term)) = attempt() {
             reader = Some(open);
@@ -568,24 +569,33 @@ pub fn find_sessions(
     });
     candidates.truncate(CANDIDATE_CAP);
 
-    // OpenCode candidates score from snippets; fetch the index's now.
+    // OpenCode candidates score from snippets; fetch the index's now, one lookup per term.
     if let Some(reader) = &reader {
-        for candidate in candidates
-            .iter()
-            .filter(|c| c.source == TranscriptSource::Opencode)
-        {
-            let Some(per_term) = open_code_matches.get_mut(&candidate.path) else {
+        for (term_index, term) in cleaned.iter().enumerate() {
+            let paths: Vec<&str> = candidates
+                .iter()
+                .filter(|c| c.source == TranscriptSource::Opencode)
+                .filter(|c| c.raw_counts.iter().any(|(t, _)| t == term))
+                .filter(|c| {
+                    open_code_matches
+                        .get(&c.path)
+                        .and_then(|m| m.get(&term_index))
+                        .is_some_and(|(_, needs)| *needs)
+                })
+                .map(|c| c.path.as_str())
+                .collect();
+            if paths.is_empty() {
                 continue;
-            };
-            for (term_index, (found, needs_snippets)) in per_term.iter_mut() {
-                if *needs_snippets
-                    && candidate
-                        .raw_counts
-                        .iter()
-                        .any(|(t, _)| *t == cleaned[*term_index])
+            }
+            let mut snippets = reader.snippets(term, &paths, 4)?;
+            let paths: Vec<String> = paths.into_iter().map(str::to_string).collect();
+            for path in paths {
+                if let Some((found, needs)) = open_code_matches
+                    .get_mut(&path)
+                    .and_then(|m| m.get_mut(&term_index))
                 {
-                    found.snippets = reader.snippets(&cleaned[*term_index], &found.path, 4)?;
-                    *needs_snippets = false;
+                    found.snippets = snippets.remove(&path).unwrap_or_default();
+                    *needs = false;
                 }
             }
         }

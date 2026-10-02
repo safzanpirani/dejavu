@@ -348,13 +348,26 @@ pub fn search_sessions(
     }
     candidates.sort_by(|(a, _), (b, _)| rank(a, b));
     candidates.truncate(limit);
-    let mut matches = Vec::with_capacity(candidates.len());
-    for (mut found, from_index) in candidates {
-        if from_index && let Some(reader) = &reader {
-            found.snippets = reader.snippets(needle, &found.path, snippet_limit)?;
+    let indexed_paths: Vec<&str> = candidates
+        .iter()
+        .filter(|(_, from_index)| *from_index)
+        .map(|(found, _)| found.path.as_str())
+        .collect();
+    let mut snippets = match &reader {
+        Some(reader) if !indexed_paths.is_empty() => {
+            reader.snippets(needle, &indexed_paths, snippet_limit)?
         }
-        matches.push(found);
-    }
+        _ => HashMap::new(),
+    };
+    let matches: Vec<StoreSearchMatch> = candidates
+        .into_iter()
+        .map(|(mut found, from_index)| {
+            if from_index {
+                found.snippets = snippets.remove(&found.path).unwrap_or_default();
+            }
+            found
+        })
+        .collect();
 
     let mut sources = Vec::new();
     for scan in scans.iter().filter(|scan| scan.diagnostic.is_none()) {

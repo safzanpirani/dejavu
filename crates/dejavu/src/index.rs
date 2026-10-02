@@ -1036,55 +1036,64 @@ impl IndexReader {
         Ok(rows)
     }
 
-    /// The first `limit` matching messages of one transcript, in index order,
-    /// as snippets around the query. The rowid range of the transcript's rows
-    /// bounds the full-text lookup.
+    /// The first `limit` matching messages of each transcript in `paths`, in
+    /// index order, as snippets around the query (the TypeScript's per-path
+    /// `MATCH ... AND r.path = ? ORDER BY r.id LIMIT ?`). The full-text lookup
+    /// runs once for all paths: each lookup decodes every trigram's doclist, so
+    /// one per path would repeat that work.
     pub fn snippets(
         &self,
         query: &str,
-        path: &str,
+        paths: &[&str],
         limit: usize,
-    ) -> Result<Vec<TranscriptSnippet>, String> {
-        let (low, high): (Option<i64>, Option<i64>) = self
+    ) -> Result<HashMap<String, Vec<TranscriptSnippet>>, String> {
+        let mut out: HashMap<String, Vec<TranscriptSnippet>> = HashMap::new();
+        if paths.is_empty() || limit == 0 {
+            return Ok(out);
+        }
+        let sql = format!(
+            "WITH hits AS MATERIALIZED (SELECT rowid AS id FROM messages WHERE messages MATCH ?)
+      SELECT r.path, r.id FROM hits JOIN message_rows r ON r.id = hits.id WHERE r.path IN ({})",
+            placeholders(paths.len())
+        );
+        let mut values: Vec<SqlValue> = vec![SqlValue::Text(fts_literal(query))];
+        values.extend(paths.iter().map(|p| SqlValue::Text(p.to_string())));
+        let mut ids: HashMap<String, Vec<i64>> = HashMap::new();
+        {
+            let mut statement = self.database.prepare(&sql).map_err(sql_error)?;
+            let mut rows = statement
+                .query(params_from_iter(values))
+                .map_err(sql_error)?;
+            while let Some(row) = rows.next().map_err(sql_error)? {
+                ids.entry(js_text(row.get_ref(0).map_err(sql_error)?))
+                    .or_default()
+                    .push(row.get(1).map_err(sql_error)?);
+            }
+        }
+        let mut fetch = self
             .database
-            .query_row(
-                "SELECT MIN(id), MAX(id) FROM message_rows WHERE path = ?",
-                [path],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .prepare_cached("SELECT role, text FROM message_rows WHERE id = ?")
             .map_err(sql_error)?;
-        let (Some(low), Some(high)) = (low, high) else {
-            return Ok(Vec::new());
-        };
-        let mut statement = self
-            .database
-            .prepare_cached(
-                "
-      SELECT r.role, r.text FROM messages JOIN message_rows r ON r.id = messages.rowid
-      WHERE messages MATCH ? AND r.path = ? AND messages.rowid >= ? AND messages.rowid <= ? ORDER BY r.id LIMIT ?
-    ",
-            )
-            .map_err(sql_error)?;
-        statement
-            .query_map(
-                params![
-                    fts_literal(query),
-                    path,
-                    low,
-                    high,
-                    limit.min(i64::MAX as usize) as i64
-                ],
-                |row| {
-                    let role = js_text(row.get_ref(0)?);
-                    let text = js_text(row.get_ref(1)?);
-                    Ok(TranscriptSnippet {
-                        role,
-                        text: snippet_around(&text, query),
-                    })
-                },
-            )
-            .and_then(|rows| rows.collect())
-            .map_err(sql_error)
+        for (path, mut row_ids) in ids {
+            row_ids.sort_unstable();
+            row_ids.truncate(limit);
+            let mut snippets = Vec::with_capacity(row_ids.len());
+            for id in row_ids {
+                snippets.push(
+                    fetch
+                        .query_row([id], |row| {
+                            let text = js_text(row.get_ref(1)?);
+                            Ok(TranscriptSnippet {
+                                role: js_text(row.get_ref(0)?),
+                                text: snippet_around(&text, query),
+                            })
+                        })
+                        .map_err(sql_error)?,
+                );
+            }
+            out.insert(path, snippets);
+        }
+        Ok(out)
     }
 }
 
@@ -1124,15 +1133,17 @@ pub fn search_transcript_index_matches(
         return Ok(Vec::new());
     }
     let reader = IndexReader::open(path)?;
-    reader
+    let mut found: Vec<IndexedStoreMatch> = reader
         .grouped_matches(query, stores, limit, TieBreak::Date)?
         .into_iter()
-        .map(|row| {
-            let mut found = row.into_match();
-            found.matched.snippets = reader.snippets(query, &found.matched.path, snippet_limit)?;
-            Ok(found)
-        })
-        .collect()
+        .map(GroupedRow::into_match)
+        .collect();
+    let paths: Vec<&str> = found.iter().map(|m| m.matched.path.as_str()).collect();
+    let mut snippets = reader.snippets(query, &paths, snippet_limit)?;
+    for item in &mut found {
+        item.matched.snippets = snippets.remove(&item.matched.path).unwrap_or_default();
+    }
+    Ok(found)
 }
 
 /// `transcriptIndexStatus(path)`: counts of an existing index, or `exists: false`.
