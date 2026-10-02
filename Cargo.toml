@@ -13,8 +13,9 @@ repository = "https://github.com/safzanpirani/dejavu"
 # approval: list it in your report with the reason.
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-# preserve_order keeps object keys in insertion order, as JSON.stringify does.
-serde_json = { version = "1", features = ["preserve_order"] }
+# preserve_order keeps object keys in insertion order, as JSON.stringify does;
+# float_roundtrip parses every float to the nearest double, as JSON.parse does.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = "3"
 sha2 = "0.11"
