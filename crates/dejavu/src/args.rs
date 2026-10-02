@@ -75,7 +75,13 @@ impl Args {
     pub fn value(&mut self, names: &[&str]) -> Option<String> {
         for name in names {
             let prefix = format!("{name}=");
-            let Some(index) = self.items.iter().position(|arg| arg == name || arg.starts_with(&prefix)) else { continue };
+            let Some(index) = self
+                .items
+                .iter()
+                .position(|arg| arg == name || arg.starts_with(&prefix))
+            else {
+                continue;
+            };
             let arg = self.items.remove(index);
             if let Some(value) = arg.strip_prefix(&prefix) {
                 return Some(value.to_string());
@@ -135,14 +141,18 @@ impl Args {
 pub fn js_integer(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Some(0).filter(|_| false);
+        return None;
     }
-    let parsed: f64 = if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+    let parsed: f64 = if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
         i64::from_str_radix(hex, 16).ok()? as f64
     } else {
         trimmed.parse().ok()?
     };
-    (parsed.is_finite() && parsed.fract() == 0.0 && parsed.abs() <= 9_007_199_254_740_991.0).then_some(parsed as i64)
+    (parsed.is_finite() && parsed.fract() == 0.0 && parsed.abs() <= 9_007_199_254_740_991.0)
+        .then_some(parsed as i64)
 }
 
 #[cfg(test)]

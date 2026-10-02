@@ -1,9 +1,18 @@
 //! dejavu: search and query coding-agent transcripts. A port of the Bun CLI;
 //! command names, flags, text output, `--json` shapes, and exit codes match it.
 
+// The base modules export API for commands not yet ported.
+#![allow(dead_code)]
+
 mod args;
-pub mod js;
 mod commands;
+pub mod js;
+pub mod opencode;
+pub mod paths;
+pub mod pool;
+pub mod reader;
+pub mod sources;
+pub mod types;
 
 use args::{Args, die};
 
@@ -150,7 +159,10 @@ fn main() {
         println!("{VERSION}");
         return;
     }
-    let common = Common { json: args.flag(&["--json"]), quiet: args.flag(&["-q", "--quiet"]) };
+    let common = Common {
+        json: args.flag(&["--json"]),
+        quiet: args.flag(&["-q", "--quiet"]),
+    };
     let outcome = match args.first() {
         Some("self-update") => commands::self_update::run(args, common),
         Some("profile") => commands::profile::run(args, common),
