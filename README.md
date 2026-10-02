@@ -10,6 +10,8 @@ Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`.
 
 ## Quick start
 
+Dejavu is a single native binary. It needs no Bun, Node, or other runtime to run.
+
 Install from npm:
 
 ```bash
@@ -30,9 +32,12 @@ ln -sf dejavu ~/.local/bin/deja
 
 Releases ship `dejavu-darwin-arm64`, `dejavu-darwin-x64`, `dejavu-linux-x64`, `dejavu-linux-arm64`, and `dejavu-windows-x64.exe`, with SHA-256 sums in `checksums.txt`.
 
-To run from source instead, install [Rust](https://rustup.rs/) 1.88 or newer, clone the repository, and install the CLI:
+To run from source instead, install [Rust](https://rustup.rs/) 1.88 or newer and clone the repository. Build the binary with Cargo, or build and install it with the script:
 
 ```bash
+cargo build --release
+./target/release/dejavu --help
+
 scripts/install-local.sh
 ```
 
@@ -226,7 +231,7 @@ scripts/install-local.sh
 
 `.github/workflows/ci.yml` runs the same checks on Linux, macOS, and Windows for every push and pull request. Pushing a `v*` tag that matches the version in `Cargo.toml` and `package.json` runs `.github/workflows/release.yml`. It tests, builds every platform binary with Cargo on native runners (static musl binaries on Linux), publishes them with checksums as a GitHub release, and publishes the npm package with the `NPM_TOKEN` repository secret.
 
-The code keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
+The CLI is one Rust crate in `crates/dejavu`. It keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
 
 ## License
 

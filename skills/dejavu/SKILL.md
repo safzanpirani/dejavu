@@ -100,8 +100,9 @@ Use `--model <codex-model-id>` or `--model codex/<id>` for a Codex override, sti
 
 Answer the user's question. Include the source and locator when they help the user inspect or resume the conversation. Treat transcript facts as historical evidence. Verify current files, deployments, hosts, and services separately when the answer depends on present state.
 
-If `dejavu` is not on `PATH`, use the source checkout:
+If `dejavu` is not on `PATH`, build it from the source checkout:
 
 ```sh
-bun run /path/to/dejavu/src/cli.ts --help
+cd /path/to/dejavu && cargo build --release
+/path/to/dejavu/target/release/dejavu --help
 ```
