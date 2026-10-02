@@ -1,5 +1,5 @@
 //! Session loading (`session-reader.ts`): the visible user/assistant messages of
-//! a transcript, following the active branch of Pi and Claude trees.
+//! a transcript, following the active branch of Pi, Claude, and Droid trees.
 //!
 //! Hot paths (`extract_visible_message`, `load_recall_messages`) deserialize
 //! into small lenient structs that skip unused fields (tool output, Claude's
@@ -485,6 +485,19 @@ impl<'de, const FULL: bool> Deserialize<'de> for Envelope<FULL> {
 }
 
 impl<const FULL: bool> Envelope<FULL> {
+    /// [`Envelope::into_recall`] after dropping Droid's injected user text blocks.
+    fn into_recall_from(
+        mut self,
+        source: TranscriptSource,
+    ) -> Option<(&'static str, Vec<RecallBlock>)> {
+        if source == TranscriptSource::Droid && self.role.0.as_deref() == Some("user") {
+            self.content
+                .0
+                .retain(|block| !block.text().is_some_and(is_droid_injected_text));
+        }
+        self.into_recall()
+    }
+
     /// `normalizeEnvelope`: a user or assistant message with at least one kept block.
     fn into_recall(self) -> Option<(&'static str, Vec<RecallBlock>)> {
         let role = match self.role.0.as_deref() {
@@ -556,6 +569,14 @@ impl<'de, const FULL: bool> Deserialize<'de> for Row<FULL> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         deserialize_lenient(d)
     }
+}
+
+/// Droid writes harness context (tool catalogs, skill lists, system information)
+/// into the conversation as user text blocks that begin with `<system-reminder>`.
+/// They are not part of what the user said, so recall, search, and views skip them.
+pub fn is_droid_injected_text(text: &str) -> bool {
+    text.trim_start_matches(crate::query::js_space)
+        .starts_with("<system-reminder>")
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +713,24 @@ fn pi_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
     walk(nodes, &by_id, last, |node| node.link(LINK_PARENT_ID))
 }
 
+/// Droid's active branch: from the last `message` row up through `parentId`.
+/// Only `message` rows are tree nodes; `session_start`, `agent_turn_outcome`, and
+/// the other bookkeeping rows are neither the leaf nor on the branch.
+fn droid_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
+    let mut by_id = HashMap::new();
+    let mut last = None;
+    for (index, node) in nodes.iter().enumerate() {
+        if node.node_type() != Some("message") {
+            continue;
+        }
+        last = Some(index);
+        if let Some(key) = truthy_link(node, LINK_ID).and_then(JsRef::key) {
+            by_id.insert(key, index);
+        }
+    }
+    walk(nodes, &by_id, last, |node| node.link(LINK_PARENT_ID))
+}
+
 /// Claude's active branch: from the recorded `last-prompt` leaf (or the last row
 /// with a uuid) up through `parentUuid`, crossing compaction boundaries through
 /// `logicalParentUuid`.
@@ -790,7 +829,7 @@ pub fn parse_jsonl(text: &str) -> Vec<TreeEntry> {
 }
 
 /// `loadBranchEntries(locator, source)`: the raw rows of a JSONL transcript,
-/// reduced to the active branch for Pi and Claude.
+/// reduced to the active branch for Pi, Claude, and Droid.
 pub fn load_branch_entries(
     locator: &str,
     source: TranscriptSource,
@@ -803,6 +842,7 @@ pub fn branch_entries(entries: Vec<TreeEntry>, source: TranscriptSource) -> Vec<
     let branch = match source {
         TranscriptSource::Pi => pi_branch(&entries),
         TranscriptSource::Claude => claude_branch(&entries),
+        TranscriptSource::Droid => droid_branch(&entries),
         _ => return entries,
     };
     take_indices(entries, &branch)
@@ -845,19 +885,19 @@ pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<Re
         .filter_map(parse_json_line::<Row<true>>);
     let to_message = |envelope: Option<Envelope<true>>| {
         envelope
-            .and_then(Envelope::into_recall)
+            .and_then(|envelope| envelope.into_recall_from(source))
             .map(|(role, content)| RecallMessage {
                 role: role.to_string(),
                 content,
             })
     };
     match source {
-        TranscriptSource::Pi | TranscriptSource::Claude => {
+        TranscriptSource::Pi | TranscriptSource::Claude | TranscriptSource::Droid => {
             let rows: Vec<Row<true>> = rows.collect();
-            let branch = if source == TranscriptSource::Pi {
-                pi_branch(&rows)
-            } else {
-                claude_branch(&rows)
+            let branch = match source {
+                TranscriptSource::Pi => pi_branch(&rows),
+                TranscriptSource::Droid => droid_branch(&rows),
+                _ => claude_branch(&rows),
             };
             take_indices(rows, &branch)
                 .into_iter()
@@ -918,6 +958,7 @@ pub struct VisibleMessage {
 /// `extractVisibleMessage(line, source)`: one JSONL row's visible user or
 /// assistant text (text blocks joined by a space), its date (`timestamp`'s
 /// first 10 units), and its `cwd`. `None` for other rows and empty text.
+/// Droid's injected `<system-reminder>` user blocks do not count as text.
 pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<VisibleMessage> {
     let row = parse_json_line::<Row<false>>(line)?;
     let envelope = if source == TranscriptSource::Codex {
@@ -932,7 +973,7 @@ pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<V
     } else {
         row.message?
     };
-    let (role, content) = envelope.into_recall()?;
+    let (role, content) = envelope.into_recall_from(source)?;
     let mut text = String::new();
     let mut first = true;
     for block in &content {
@@ -1273,6 +1314,99 @@ mod tests {
             serialize_recall_messages(&two),
             "[user]\nq\n\n[assistant]\na\nb"
         );
+    }
+
+    fn droid_rows() -> Vec<Value> {
+        let reminder = |text: &str| json!({ "type": "text", "text": format!("<system-reminder>{text}</system-reminder>") });
+        vec![
+            json!({ "type": "session_start", "id": "sess", "title": "t", "cwd": "/work/app", "owner": "o", "version": 2 }),
+            json!({ "type": "message", "id": "m0", "timestamp": "2026-09-01T10:00:00Z", "message": { "role": "user", "visibility": "llm_only", "content": [reminder("tools"), reminder("skills")] } }),
+            json!({ "type": "message", "id": "m1", "parentId": "m0", "timestamp": "2026-09-01T10:00:01Z", "message": { "role": "user", "content": [reminder("system info"), { "type": "text", "text": "fix the build" }] } }),
+            json!({ "type": "message", "id": "m2", "parentId": "m1", "message": { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "plan" },
+                { "type": "text", "text": "abandoned answer" },
+            ] } }),
+            json!({ "type": "agent_turn_outcome", "turnId": "x", "reason": "done" }),
+            json!({ "type": "message", "id": "m3", "parentId": "m1", "message": { "role": "assistant", "content": [
+                { "type": "text", "text": "running" },
+                { "type": "tool_use", "id": "t1", "name": "Execute", "input": { "command": "make" } },
+            ] } }),
+            json!({ "type": "message", "id": "m4", "parentId": "m3", "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": false }] } }),
+            json!({ "type": "message", "id": "m5", "parentId": "m4", "message": { "role": "assistant", "content": [{ "type": "text", "text": "built" }] } }),
+            json!({ "type": "agent_turn_outcome", "turnId": "y", "reason": "done" }),
+        ]
+    }
+
+    #[test]
+    fn droid_follows_the_last_message_branch_and_drops_injected_reminders() {
+        let text = rows(&droid_rows());
+        let messages = recall_messages_from_text(&text, TranscriptSource::Droid);
+        assert_eq!(
+            serialize_recall_messages(&messages),
+            "[user]\nfix the build\n\n[assistant]\nrunning\n[tool call: Execute]\n{\"command\":\"make\"}\n\n[assistant]\nbuilt"
+        );
+        // The branch holds message rows only: session_start and agent_turn_outcome are
+        // neither the leaf nor on the walk, and the abandoned fork (line 4) is skipped.
+        let lines: Vec<usize> = branch_entries(parse_jsonl(&text), TranscriptSource::Droid)
+            .iter()
+            .map(|entry| entry.line)
+            .collect();
+        assert_eq!(lines, [2, 3, 6, 7, 8]);
+        // Claude keeps reminder text as written.
+        let claude = rows(&[claude("u1", None, "user", "<system-reminder>kept")]);
+        assert_eq!(
+            texts(&recall_messages_from_text(
+                &claude,
+                TranscriptSource::Claude
+            )),
+            ["<system-reminder>kept"]
+        );
+    }
+
+    #[test]
+    fn droid_visible_messages_skip_reminders_and_bookkeeping_rows() {
+        let droid = TranscriptSource::Droid;
+        let rows = droid_rows();
+        let visible: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| extract_visible_message(&row.to_string(), droid).map(|message| message.text))
+            .collect();
+        assert_eq!(
+            visible,
+            [
+                None,
+                None,
+                Some("fix the build".into()),
+                Some("abandoned answer".into()),
+                None,
+                Some("running".into()),
+                None,
+                Some("built".into()),
+                None,
+            ]
+        );
+        let message = extract_visible_message(&rows[2].to_string(), droid).unwrap();
+        assert_eq!(
+            (message.role, message.date.as_deref(), message.project),
+            ("user", Some("2026-09-01"), None)
+        );
+        // Leading whitespace before the tag still marks an injected block; assistant
+        // text and Claude rows are never filtered.
+        let padded = json!({ "type": "message", "message": { "role": "user", "content": [{ "type": "text", "text": "\n  <system-reminder>x" }] } });
+        assert!(extract_visible_message(&padded.to_string(), droid).is_none());
+        assert!(extract_visible_message(&padded.to_string(), TranscriptSource::Claude).is_some());
+        let assistant = json!({ "type": "message", "message": { "role": "assistant", "content": "<system-reminder>quoted" } });
+        assert!(extract_visible_message(&assistant.to_string(), droid).is_some());
+    }
+
+    #[test]
+    fn droid_without_messages_has_an_empty_branch() {
+        let text = rows(&[
+            json!({ "type": "session_start", "id": "sess", "cwd": "/w" }),
+            json!({ "type": "agent_turn_outcome" }),
+        ]);
+        assert!(recall_messages_from_text(&text, TranscriptSource::Droid).is_empty());
+        assert!(branch_entries(parse_jsonl(&text), TranscriptSource::Droid).is_empty());
     }
 
     #[test]

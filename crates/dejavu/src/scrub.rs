@@ -713,7 +713,7 @@ pub fn parse_drop_list(values: &[String]) -> Result<Vec<usize>, String> {
 mod tests {
     use super::*;
     use crate::opencode::opencode_locator;
-    use crate::view::tests::{TempDir, opencode_legacy_fixture};
+    use crate::view::tests::{TempDir, droid_file, opencode_legacy_fixture};
     use serde_json::json;
 
     fn claude_file(dir: &TempDir) -> String {
@@ -856,6 +856,55 @@ mod tests {
         assert!(error.contains("no event #99"), "{error}");
         let error = scrub_transcript_at(&path, &options(&[], &[], false), 1).unwrap_err();
         assert!(error.contains("at least one"));
+    }
+
+    #[test]
+    fn droid_redacts_a_tool_call_and_its_result_and_keeps_the_tree() {
+        let dir = TempDir::new("scrub");
+        let path = droid_file(&dir);
+        let before = read_lines(&path);
+        let result = scrub_transcript_at(&path, &options(&[3], &["make"], false), 1).unwrap();
+        assert_eq!(result.source, TranscriptSource::Droid);
+        assert_eq!(result.dropped_events, [3, 4]);
+        assert_eq!(
+            result.backup.as_deref(),
+            Some(format!("{path}.bak-1").as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(result.backup.unwrap()).unwrap(),
+            before
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        );
+        let after = read_lines(&path);
+        assert_eq!(after.len(), before.len());
+        assert_eq!(
+            after[4]["message"]["content"][2],
+            json!({ "type": "tool_use", "id": "t1", "name": "Execute", "input": { "command": "[redacted]" } })
+        );
+        assert_eq!(
+            after[5]["message"]["content"][0],
+            json!({ "type": "tool_result", "tool_use_id": "t1", "content": [{ "type": "text", "text": "[redacted]" }], "is_error": true })
+        );
+        // Ids, parent links, and the session_start row are untouched.
+        for (old, new) in before.iter().zip(&after) {
+            assert_eq!(old["id"], new["id"]);
+            assert_eq!(old["parentId"], new["parentId"]);
+        }
+        assert_eq!(after[0], before[0]);
+        let events = load_transcript_events(&path, TranscriptSource::Droid)
+            .unwrap()
+            .events;
+        assert_eq!(events.len(), 6);
+        let leftovers: Vec<_> = std::fs::read_dir(std::path::Path::new(&path).parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
     }
 
     #[test]

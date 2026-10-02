@@ -12,7 +12,10 @@ use crate::opencode::{
     parse_opencode_locator,
 };
 use crate::paths::{compact_home, js_lower, project_from_transcript_path};
-use crate::reader::{TreeEntry, load_branch_entries, load_recall_messages, parse_json_line};
+use crate::reader::{
+    TreeEntry, branch_entries, is_droid_injected_text, load_branch_entries, load_recall_messages,
+    parse_json_line, parse_jsonl, read_text,
+};
 use crate::sources::{default_roots, source_from_locator};
 use crate::types::{RecallBlock, RecallMessage, TranscriptSource};
 use rusqlite::Connection;
@@ -312,11 +315,17 @@ pub fn load_transcript_events(
     if source == TranscriptSource::Opencode {
         return load_opencode_events(locator);
     }
+    if source == TranscriptSource::Droid {
+        return load_droid_events(locator);
+    }
     let entries = load_branch_entries(locator, source)?;
     let (project, events) = match source {
         TranscriptSource::Claude => (
             claude_project(locator, &entries),
-            entries.iter().flat_map(claude_events).collect(),
+            entries
+                .iter()
+                .flat_map(|entry| claude_events(entry, false))
+                .collect(),
         ),
         TranscriptSource::Pi => (
             project_from_transcript_path(locator, TranscriptSource::Pi),
@@ -394,7 +403,9 @@ fn dialogue(role: &str, text: String) -> EventBody {
     }
 }
 
-fn claude_events(entry: &TreeEntry) -> Vec<TranscriptEvent> {
+/// The events of one Claude-shaped row. `skip_injected` drops Droid's
+/// `<system-reminder>` user text (Claude keeps its reminders as written).
+fn claude_events(entry: &TreeEntry, skip_injected: bool) -> Vec<TranscriptEvent> {
     let Some(message) = entry.message() else {
         return Vec::new();
     };
@@ -402,10 +413,11 @@ fn claude_events(entry: &TreeEntry) -> Vec<TranscriptEvent> {
         Some(role @ ("user" | "assistant")) => role,
         _ => return Vec::new(),
     };
+    let injected = |text: &str| skip_injected && role == "user" && is_droid_injected_text(text);
     let timestamp = entry.timestamp();
     match message.get("content") {
         Some(Value::String(content)) => {
-            if js_trim(content).is_empty() {
+            if js_trim(content).is_empty() || injected(content) {
                 Vec::new()
             } else {
                 vec![TranscriptEvent::at(
@@ -422,7 +434,13 @@ fn claude_events(entry: &TreeEntry) -> Vec<TranscriptEvent> {
                 let block = raw.as_object()?;
                 let reference = line_ref(entry, Some(position));
                 let body = match block.get("type").and_then(Value::as_str) {
-                    Some("text") => dialogue(role, nonblank(block.get("text"))?),
+                    Some("text") => {
+                        let text = nonblank(block.get("text"))?;
+                        if injected(&text) {
+                            return None;
+                        }
+                        dialogue(role, text)
+                    }
                     Some("thinking") => EventBody::Thinking {
                         text: nonblank(block.get("thinking"))?,
                     },
@@ -452,6 +470,37 @@ fn claude_events(entry: &TreeEntry) -> Vec<TranscriptEvent> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Droid: ~/.factory/sessions/<encoded cwd>/<session id>.jsonl
+//
+// Message rows hold Claude-shaped content; the project comes from the
+// `session_start` row, which is not on the message branch.
+
+fn load_droid_events(locator: &str) -> Result<LoadedEvents, String> {
+    let entries = parse_jsonl(&read_text(locator)?);
+    let project = droid_project(locator, &entries);
+    let events = branch_entries(entries, TranscriptSource::Droid)
+        .iter()
+        .flat_map(|entry| claude_events(entry, true))
+        .collect();
+    Ok(LoadedEvents {
+        project,
+        events: name_results(events),
+    })
+}
+
+fn droid_project(locator: &str, entries: &[TreeEntry]) -> String {
+    match entries
+        .iter()
+        .find(|entry| entry.kind() == Some("session_start"))
+        .and_then(TreeEntry::cwd)
+        .filter(|cwd| !cwd.is_empty())
+    {
+        Some(cwd) => compact_home(cwd).to_string(),
+        None => project_from_transcript_path(locator, TranscriptSource::Droid),
     }
 }
 
@@ -1389,6 +1438,108 @@ pub(crate) mod tests {
         assert_eq!(
             js::stringify(&loaded.events[4]),
             r#"{"kind":"tool_result","callId":"t1","output":"a\nb","isError":false,"ref":{"line":3,"block":0},"index":4,"name":"Bash"}"#
+        );
+    }
+
+    pub(crate) fn droid_file(dir: &TempDir) -> String {
+        let reminder =
+            json!({ "type": "text", "text": "<system-reminder>tool catalog</system-reminder>" });
+        dir.write_jsonl(
+            ".factory/sessions/-work-app/sess.jsonl",
+            &[
+                json!({ "type": "session_start", "id": "sess", "title": "t", "cwd": "/work/droid", "owner": "o", "version": 2 }),
+                json!({ "type": "message", "id": "m0", "timestamp": "2026-09-01T10:00:00Z", "message": { "role": "user", "visibility": "llm_only", "content": [reminder] } }),
+                json!({ "type": "message", "id": "m1", "parentId": "m0", "timestamp": "2026-09-01T10:00:01Z", "message": { "role": "user", "content": [reminder, { "type": "text", "text": "fix the build" }] } }),
+                json!({ "type": "message", "id": "m2", "parentId": "m1", "message": { "role": "assistant", "content": [{ "type": "text", "text": "abandoned" }] } }),
+                json!({ "type": "message", "id": "m3", "parentId": "m1", "timestamp": "2026-09-01T10:00:02Z", "message": { "role": "assistant", "content": [
+                    { "type": "thinking", "thinking": "plan" },
+                    { "type": "text", "text": "running" },
+                    { "type": "tool_use", "id": "t1", "name": "Execute", "input": { "command": "make" } },
+                ] } }),
+                json!({ "type": "message", "id": "m4", "parentId": "m3", "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": [{ "type": "text", "text": "make: *** Error 2" }], "is_error": true }] } }),
+                json!({ "type": "message", "id": "m5", "parentId": "m4", "message": { "role": "assistant", "content": [{ "type": "text", "text": "built" }] } }),
+                json!({ "type": "agent_turn_outcome", "turnId": "x", "reason": "done" }),
+            ],
+        )
+    }
+
+    #[test]
+    fn droid_renders_like_claude_on_the_active_branch_without_injected_reminders() {
+        let dir = TempDir::new("transcript");
+        let path = droid_file(&dir);
+        let loaded = load_transcript_events(&path, TranscriptSource::Droid).unwrap();
+        assert_eq!(loaded.project, "/work/droid");
+        assert_eq!(
+            refs(&loaded.events),
+            vec![
+                json!({ "line": 3, "block": 1 }),
+                json!({ "line": 5, "block": 0 }),
+                json!({ "line": 5, "block": 1 }),
+                json!({ "line": 5, "block": 2 }),
+                json!({ "line": 6, "block": 0 }),
+                json!({ "line": 7, "block": 0 }),
+            ]
+        );
+        assert_eq!(
+            bare(&loaded.events),
+            vec![
+                json!({ "kind": "user", "text": "fix the build", "timestamp": "2026-09-01T10:00:01Z" }),
+                json!({ "kind": "thinking", "text": "plan", "timestamp": "2026-09-01T10:00:02Z" }),
+                json!({ "kind": "assistant", "text": "running", "timestamp": "2026-09-01T10:00:02Z" }),
+                json!({ "kind": "tool_call", "name": "Execute", "input": { "command": "make" }, "callId": "t1", "timestamp": "2026-09-01T10:00:02Z" }),
+                json!({ "kind": "tool_result", "callId": "t1", "output": "make: *** Error 2", "isError": true, "name": "Execute" }),
+                json!({ "kind": "assistant", "text": "built" }),
+            ]
+        );
+
+        let view = view_transcript(&path, TranscriptViewOptions::default()).unwrap();
+        assert_eq!(view.source, TranscriptSource::Droid);
+        assert_eq!(
+            js::stringify(&view.counts),
+            r#"{"user":1,"assistant":2,"thinking":1,"toolCalls":1,"toolResults":1}"#
+        );
+        let text = render_transcript(&view, RenderTranscriptOptions::default());
+        assert!(text.contains("▶ Execute make"), "{text}");
+        assert!(text.contains("◀ Execute error"), "{text}");
+        assert!(!text.contains("system-reminder") && !text.contains("abandoned"));
+
+        let shown = show_session(&path, &ShowOptions::default()).unwrap();
+        assert_eq!(shown.source, TranscriptSource::Droid);
+        let shown: Vec<_> = shown
+            .messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.text.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("user", "fix the build"),
+                ("assistant", "running\n[tool: Execute]"),
+                ("assistant", "built"),
+            ]
+        );
+
+        let profile =
+            crate::profile::measure_transcript(&crate::profile::profile_view(&view), 2000).unwrap();
+        let profile = serde_json::to_value(&profile).unwrap();
+        assert_eq!(profile["source"], "droid");
+        assert_eq!(profile["project"], "/work/droid");
+        assert_eq!(profile["metrics"]["toolCalls"], 1);
+        assert_eq!(profile["metrics"]["errorFlaggedResults"], 1);
+    }
+
+    #[test]
+    fn droid_project_falls_back_to_the_session_directory() {
+        let dir = TempDir::new("transcript");
+        let path = dir.write_jsonl(
+            ".factory/sessions/-work-app/s.jsonl",
+            &[json!({ "type": "message", "id": "m0", "message": { "role": "user", "content": "hi" } })],
+        );
+        let loaded = load_transcript_events(&path, TranscriptSource::Droid).unwrap();
+        assert_eq!(loaded.project, "work/app");
+        assert_eq!(
+            bare(&loaded.events),
+            vec![json!({ "kind": "user", "text": "hi" })]
         );
     }
 
