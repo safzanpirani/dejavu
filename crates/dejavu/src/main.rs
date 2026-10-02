@@ -1,17 +1,21 @@
 //! dejavu: search and query coding-agent transcripts. A port of the Bun CLI;
 //! command names, flags, text output, `--json` shapes, and exit codes match it.
 
-// Some flag helpers wait for commands that are not ported yet.
-#[allow(dead_code)]
+// Modules export API for commands that are not ported yet.
+#![allow(dead_code)]
+
 mod args;
+mod codex_client;
 mod commands;
 pub mod js;
-// Not called until the query and profile commands are ported.
-#[allow(dead_code)]
-mod codex_client;
 mod memory;
-#[allow(dead_code)]
 mod model_client;
+pub mod opencode;
+pub mod paths;
+pub mod pool;
+pub mod reader;
+pub mod sources;
+pub mod types;
 mod update;
 
 use args::{Args, die};
