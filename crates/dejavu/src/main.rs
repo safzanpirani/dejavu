@@ -13,6 +13,7 @@ pub mod js;
 mod memory;
 mod model_client;
 pub mod opencode;
+pub mod pack;
 pub mod paths;
 pub mod pool;
 pub mod reader;

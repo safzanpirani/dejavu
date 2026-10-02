@@ -49,7 +49,12 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     if common.json {
         println!("{}", js::pretty(&result));
     } else {
-        println!("{}", search::render_search(&result));
+        println!(
+            "{}",
+            crate::render::render_search(
+                &serde_json::to_value(&result).map_err(|e| e.to_string())?
+            )
+        );
     }
     report_skipped_stores(&result.skipped_stores, common.quiet);
     if !common.quiet && !common.json {

@@ -394,46 +394,6 @@ fn rank(a: &StoreSearchMatch, b: &StoreSearchMatch) -> Ordering {
         .then_with(|| locale_compare(&b.date, &a.date))
 }
 
-fn plural(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
-}
-
-/// `renderSearch(result)`.
-pub fn render_search(result: &SearchResult) -> String {
-    if result.matches.is_empty() {
-        return format!(
-            "No sessions found matching \"{}\".\n\nSearch is literal, not semantic. Retry with one exact distinctive token or phrase.",
-            result.query
-        );
-    }
-    let sections: Vec<String> = result
-        .matches
-        .iter()
-        .map(|found| {
-            let snippets: Vec<String> = found
-                .snippets
-                .iter()
-                .map(|snippet| format!("  [{}] {}", snippet.role, snippet.text))
-                .collect();
-            format!(
-                "{} · {} · {} · {}\nTranscript: {}\n{}",
-                found.date,
-                found.source,
-                found.project,
-                plural(found.count, "match", "matches"),
-                found.path,
-                snippets.join("\n")
-            )
-        })
-        .collect();
-    format!(
-        "Found {} matching \"{}\":\n\n{}",
-        plural(result.matches.len(), "session", "sessions"),
-        result.query,
-        sections.join("\n\n---\n\n")
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

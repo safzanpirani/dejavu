@@ -763,68 +763,6 @@ pub fn find_sessions(
     })
 }
 
-/// `renderFind(result)`.
-pub fn render_find(result: &FindResult) -> String {
-    if result.hits.is_empty() {
-        return format!(
-            "No sessions found for: {}.\n\nTerms are literal (AND). Try fewer or different exact terms, or drop filters.",
-            result.terms.join(", ")
-        );
-    }
-    let relaxed = if result.required_terms.len() < result.terms.len() {
-        format!(
-            "No session matched all {} terms; showing sessions matching {}.\n\n",
-            result.terms.len(),
-            result.required_terms.len()
-        )
-    } else {
-        String::new()
-    };
-    let sections: Vec<String> = result
-        .hits
-        .iter()
-        .map(|hit| {
-            let counts: Vec<String> = hit
-                .term_counts
-                .entries()
-                .into_iter()
-                .map(|(term, count)| {
-                    format!("{term}×{}(u{})", count.user + count.assistant, count.user)
-                })
-                .collect();
-            let mut lines = vec![format!(
-                "{} · {} · {} · {}",
-                hit.date,
-                hit.source,
-                hit.project,
-                counts.join(" ")
-            )];
-            if !hit.opening_prompt.is_empty() {
-                lines.push(format!("Opened with: {}", hit.opening_prompt));
-            }
-            for found in hit.matches.iter().take(3) {
-                let date = match &found.date {
-                    Some(date) if !date.is_empty() => format!(" {date}"),
-                    _ => String::new(),
-                };
-                lines.push(format!("  [{}{date}] {}", found.role, found.text));
-            }
-            lines.push(format!("Transcript: {}", hit.path));
-            if let Some(resume) = &hit.resume {
-                lines.push(format!("Resume: {resume}"));
-            }
-            lines.join("\n")
-        })
-        .collect();
-    format!(
-        "{relaxed}Found {} session{} for {}:\n\n{}",
-        result.hits.len(),
-        if result.hits.len() == 1 { "" } else { "s" },
-        result.terms.join(" + "),
-        sections.join("\n\n---\n\n")
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
