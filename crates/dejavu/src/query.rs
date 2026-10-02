@@ -1,8 +1,8 @@
 //! `querySession` from `core.ts`: answer a question about one transcript with
 //! a model, windowing long sessions around the question's terms.
 //!
-//! [`prepare_recall_messages`] is public because the search agent's `find`
-//! code uses the same preparation.
+//! [`prepare_recall_messages`] is public because `show` and `find` use the
+//! same preparation.
 
 use std::collections::BTreeSet;
 use std::path::Path;

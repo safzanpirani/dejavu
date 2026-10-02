@@ -1021,17 +1021,6 @@ impl Default for ShowOptions {
     }
 }
 
-/// `prepareRecallMessages`: user and assistant messages that have content.
-/// (Recall blocks never include thinking, so there is nothing else to drop.)
-pub fn prepare_recall_messages(messages: Vec<RecallMessage>) -> Vec<RecallMessage> {
-    messages
-        .into_iter()
-        .filter(|message| {
-            (message.role == "user" || message.role == "assistant") && !message.content.is_empty()
-        })
-        .collect()
-}
-
 /// `showSession(locator, options)`.
 pub fn show_session(locator: &str, options: &ShowOptions) -> Result<ShowResult, String> {
     if options.max_chars == Some(0) {
@@ -1041,7 +1030,7 @@ pub fn show_session(locator: &str, options: &ShowOptions) -> Result<ShowResult, 
         return Err("--full cannot be combined with --max-chars".into());
     }
     let source = source_from_locator(locator, default_roots())?;
-    let messages = prepare_recall_messages(load_recall_messages(locator, None)?);
+    let messages = crate::query::prepare_recall_messages(load_recall_messages(locator, None)?);
     show_messages(locator, source, messages, options)
 }
 
