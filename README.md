@@ -1,6 +1,6 @@
 # dejavu
 
-Agents lose useful context when work moves between Claude Code, Codex, Pi, and OpenCode. `dejavu` gives them one local command for finding earlier sessions and project memories.
+Agents lose useful context when work moves between Claude Code, Codex, Pi, OpenCode, and Droid. `dejavu` gives them one local command for finding earlier sessions and project memories.
 
 `dejavu` is agent-first. An agent can search past sessions, inspect the relevant conversation, and recover decisions, commands, errors, and file changes. The agent can then verify that historical context against the current workspace. Humans can run the same commands from a terminal.
 
@@ -74,6 +74,7 @@ dejavu query '<locator from search results>' 'What did we decide?'
 | Codex | JSONL transcripts under `~/.codex/sessions` | `CODEX_HOME` → `$CODEX_HOME/sessions` |
 | Pi | JSONL transcripts under `~/.pi/agent/sessions` and sibling profiles such as `~/.pi/juna/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
 | OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
+| Factory Droid | JSONL transcripts under `~/.factory/sessions`; only `*.jsonl` session files are read | `FACTORY_HOME_OVERRIDE` → `$FACTORY_HOME_OVERRIDE/.factory/sessions` |
 
 Each variable is the one the agent itself honors. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
 
@@ -87,7 +88,7 @@ It also reads Claude Code Markdown memory under `~/.claude/projects/*/memory/`. 
 dejavu --source codex session-recall.ts --max-parallel 4 --json
 ```
 
-Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode` to narrow the search.
+Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode|droid` to narrow the search.
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
@@ -134,7 +135,7 @@ dejavu transcript '<locator>' --full --thinking
 dejavu transcript '<locator>' --no-tools --json
 ```
 
-`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, and OpenCode sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal. Use `--color` or `--no-color` to override.
+`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, and Droid sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal. Use `--color` or `--no-color` to override.
 
 ```bash
 dejavu transcript '<locator>' --no-tools --max-chars 1500 --budget-chars 8000 --json
@@ -167,7 +168,7 @@ dejavu scrub '<locator>' --drop 12 --drop 30-34 --dry-run
 dejavu scrub '<locator>' --drop 12 --pattern "secret-host" --pattern "api key"
 ```
 
-`scrub` edits the transcript in place after writing a `.bak-<epoch>` copy next to it. `--drop` replaces the content of the numbered events from `dejavu transcript` with a placeholder while keeping ids, types, and parent links intact, so the session still resumes. Dropping a tool call also drops its result. `--pattern` removes every line that contains the text, case-insensitively, from every string field in every record, including tool result copies stored outside the message and branches that are no longer active. `--placeholder` changes the replacement text and `--dry-run` reports without writing. Claude, Codex, and Pi files are rewritten line by line; OpenCode rows are updated in a transaction after the database file is copied.
+`scrub` edits the transcript in place after writing a `.bak-<epoch>` copy next to it. `--drop` replaces the content of the numbered events from `dejavu transcript` with a placeholder while keeping ids, types, and parent links intact, so the session still resumes. Dropping a tool call also drops its result. `--pattern` removes every line that contains the text, case-insensitively, from every string field in every record, including tool result copies stored outside the message and branches that are no longer active. `--placeholder` changes the replacement text and `--dry-run` reports without writing. Claude, Codex, Pi, and Droid files are rewritten line by line; OpenCode rows are updated in a transaction after the database file is copied.
 
 ### Search agent memory
 

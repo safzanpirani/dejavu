@@ -66,7 +66,7 @@ fn help() -> String {
   {B}dejavu --version{R}
 
 search flags
-  -s, --source NAME      all, claude, codex, pi, or opencode (default all)
+  -s, --source NAME      all, claude, codex, pi, opencode, or droid (default all)
   -n, --limit N          transcripts to return (default {default_search_limit})
       --snippets N       snippets per transcript (integer >= 1; default {default_snippet_limit})
       --max-parallel N   local store/file workers (default {default_max_parallel})
@@ -137,11 +137,12 @@ common flags
   -q, --quiet            suppress stderr diagnostics
   -h, --help             show this help
 
-Search covers detected Claude, Codex, Pi, and OpenCode stores by default.
+Search covers detected Claude, Codex, Pi, OpenCode, and Droid stores by default.
 Each agent's variable replaces its home-directory store: CLAUDE_CONFIG_DIR
 ($CLAUDE_CONFIG_DIR/projects), CODEX_HOME ($CODEX_HOME/sessions),
-PI_CODING_AGENT_DIR ($PI_CODING_AGENT_DIR/sessions), and XDG_DATA_HOME
-($XDG_DATA_HOME/opencode/*.db) or OPENCODE_DB for OpenCode. Without
+PI_CODING_AGENT_DIR ($PI_CODING_AGENT_DIR/sessions), XDG_DATA_HOME
+($XDG_DATA_HOME/opencode/*.db) or OPENCODE_DB for OpenCode, and
+FACTORY_HOME_OVERRIDE ($FACTORY_HOME_OVERRIDE/.factory/sessions). Without
 PI_CODING_AGENT_DIR, Pi search also covers sibling profiles (~/.pi/*/sessions).
 Memory commands read Claude's cross-project Markdown memory corpus.
 Memory selectors accept exact listed project keys, unique project substrings, or file paths.

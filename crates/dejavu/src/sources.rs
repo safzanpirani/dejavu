@@ -5,7 +5,7 @@ use crate::paths::{is_absolute, join, resolve};
 use crate::types::{SourceSelector, StoreKind, TranscriptSource, TranscriptStore};
 use std::sync::OnceLock;
 
-/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, or `opencode`.
+/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `opencode`, or `droid`.
 pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
     if value == "all" {
         return Ok(SourceSelector::All);
@@ -13,7 +13,9 @@ pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
     TranscriptSource::from_name(value)
         .map(SourceSelector::Only)
         .ok_or_else(|| {
-            format!("source must be one of: all, claude, codex, pi, opencode (got '{value}')")
+            format!(
+                "source must be one of: all, claude, codex, pi, opencode, droid (got '{value}')"
+            )
         })
 }
 
@@ -42,6 +44,7 @@ pub struct TranscriptStoreRoots {
     pub codex: String,
     pub pi: String,
     pub opencode: Vec<String>,
+    pub droid: String,
 }
 
 impl TranscriptStoreRoots {
@@ -52,6 +55,7 @@ impl TranscriptStoreRoots {
             TranscriptSource::Codex => Some(&self.codex),
             TranscriptSource::Pi => Some(&self.pi),
             TranscriptSource::Opencode => None,
+            TranscriptSource::Droid => Some(&self.droid),
         }
     }
 }
@@ -66,7 +70,9 @@ pub fn default_roots() -> &'static TranscriptStoreRoots {
 /// agent does. A set (non-empty) variable replaces the home-directory default:
 /// Claude `$CLAUDE_CONFIG_DIR/projects`, Codex `$CODEX_HOME/sessions`, Pi
 /// `$PI_CODING_AGENT_DIR/sessions` (a leading `~` expands), OpenCode `$OPENCODE_DB`
-/// (relative to the data dir; `:memory:` disables it) or `$XDG_DATA_HOME/opencode/*.db`.
+/// (relative to the data dir; `:memory:` disables it) or `$XDG_DATA_HOME/opencode/*.db`,
+/// Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (the variable replaces the
+/// home directory, not the Factory directory).
 pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots {
     let set = |key: &str| env(key).filter(|value| !value.is_empty());
     let configured =
@@ -106,6 +112,11 @@ pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots
             "sessions",
         ]),
         opencode,
+        droid: join(&[
+            &configured(set("FACTORY_HOME_OVERRIDE"), home.to_string()),
+            ".factory",
+            "sessions",
+        ]),
     }
 }
 
@@ -116,7 +127,7 @@ pub fn discover_stores(selector: SourceSelector) -> Vec<TranscriptStore> {
 
 /// `discoverTranscriptStores(selector, home, env)`: the selected stores that
 /// exist, in order Claude, Codex, Pi (then sibling Pi profiles under `~/.pi`
-/// when `PI_CODING_AGENT_DIR` is unset), OpenCode.
+/// when `PI_CODING_AGENT_DIR` is unset), OpenCode, Droid.
 pub fn discover_transcript_stores(
     selector: SourceSelector,
     home: &str,
@@ -147,6 +158,7 @@ pub fn discover_transcript_stores(
         kind: StoreKind::Sqlite,
         path,
     }));
+    candidates.push(jsonl(TranscriptSource::Droid, roots.droid));
     candidates
         .into_iter()
         .filter(|store| selector.matches(store.source) && std::fs::metadata(&store.path).is_ok())
@@ -173,7 +185,7 @@ fn pi_profile_dirs(home: &str, primary: &str) -> Vec<String> {
 
 /// `sourceFromLocator(locator, roots)`: `opencode://` locators, paths under a
 /// configured root, then the default `.claude/projects/`, `.codex/sessions/`,
-/// and `.pi/<profile>/sessions/` layouts.
+/// `.pi/<profile>/sessions/`, and `.factory/sessions/` layouts.
 pub fn source_from_locator(
     locator: &str,
     roots: &TranscriptStoreRoots,
@@ -185,6 +197,7 @@ pub fn source_from_locator(
         TranscriptSource::Claude,
         TranscriptSource::Codex,
         TranscriptSource::Pi,
+        TranscriptSource::Droid,
     ] {
         let root = roots.jsonl_root(source).unwrap_or_default();
         if locator.len() > root.len()
@@ -202,6 +215,9 @@ pub fn source_from_locator(
     }
     if has_pi_profile_segment(locator) {
         return Ok(TranscriptSource::Pi);
+    }
+    if locator.contains("/.factory/sessions/") {
+        return Ok(TranscriptSource::Droid);
     }
     Err(format!(
         "cannot determine transcript source from locator: {locator} (use a transcript path or opencode:// locator from search results)"
@@ -253,6 +269,7 @@ mod tests {
                 codex: "/home/owner/.codex/sessions".into(),
                 pi: "/home/owner/.pi/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.local/share"),
+                droid: "/home/owner/.factory/sessions".into(),
             }
         );
         assert_eq!(
@@ -273,6 +290,7 @@ mod tests {
                 ("CODEX_HOME", "/home/owner/.codex-rakhi"),
                 ("PI_CODING_AGENT_DIR", "~/.pi-rakhi"),
                 ("XDG_DATA_HOME", "/home/owner/.rakhi-data"),
+                ("FACTORY_HOME_OVERRIDE", "/home/owner/rakhi"),
             ]),
             HOME,
         );
@@ -283,6 +301,7 @@ mod tests {
                 codex: "/home/owner/.codex-rakhi/sessions".into(),
                 pi: "/home/owner/.pi-rakhi/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.rakhi-data"),
+                droid: "/home/owner/rakhi/.factory/sessions".into(),
             }
         );
         assert_eq!(
@@ -402,6 +421,55 @@ mod tests {
     }
 
     #[test]
+    fn discovery_finds_the_droid_store_under_home_or_factory_home_override() {
+        let root = temp_root("droid-store");
+        for dir in [
+            ".factory/sessions",
+            "other/.factory/sessions",
+            ".claude/projects",
+        ] {
+            std::fs::create_dir_all(format!("{root}/{dir}")).unwrap();
+        }
+        assert_eq!(
+            paths(discover_transcript_stores(
+                SourceSelector::All,
+                &root,
+                &env(&[])
+            )),
+            [
+                format!("{root}/.claude/projects"),
+                format!("{root}/.factory/sessions")
+            ]
+        );
+        let droid = SourceSelector::Only(TranscriptSource::Droid);
+        let stores = discover_transcript_stores(
+            droid,
+            &root,
+            &env(&[("FACTORY_HOME_OVERRIDE", &format!("{root}/other"))]),
+        );
+        assert_eq!(stores[0].kind, StoreKind::Jsonl);
+        assert_eq!(paths(stores), [format!("{root}/other/.factory/sessions")]);
+        // An empty override falls back to the home directory; a missing store is not listed.
+        assert_eq!(
+            paths(discover_transcript_stores(
+                droid,
+                &root,
+                &env(&[("FACTORY_HOME_OVERRIDE", "")])
+            )),
+            [format!("{root}/.factory/sessions")]
+        );
+        assert!(
+            discover_transcript_stores(
+                droid,
+                &root,
+                &env(&[("FACTORY_HOME_OVERRIDE", &format!("{root}/none"))])
+            )
+            .is_empty()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn locators_resolve_to_sources() {
         let roots = transcript_store_roots(&env(&[]), HOME);
         assert_eq!(
@@ -422,6 +490,15 @@ mod tests {
         );
         assert!(source_from_locator("/elsewhere/.pi//sessions/a.jsonl", &roots).is_err());
         assert_eq!(
+            source_from_locator("/home/owner/.factory/sessions/-work-app/s.jsonl", &roots),
+            Ok(TranscriptSource::Droid)
+        );
+        assert_eq!(
+            source_from_locator("/elsewhere/.factory/sessions/-x/s.jsonl", &roots),
+            Ok(TranscriptSource::Droid)
+        );
+        assert!(source_from_locator("/home/owner/.factory/auth.json", &roots).is_err());
+        assert_eq!(
             source_from_locator("/tmp/x.jsonl", &roots).unwrap_err(),
             "cannot determine transcript source from locator: /tmp/x.jsonl (use a transcript path or opencode:// locator from search results)"
         );
@@ -429,8 +506,13 @@ mod tests {
             &env(&[
                 ("CLAUDE_CONFIG_DIR", "/home/owner/.claude-rakhi"),
                 ("CODEX_HOME", "/srv/cx"),
+                ("FACTORY_HOME_OVERRIDE", "/srv/fh"),
             ]),
             HOME,
+        );
+        assert_eq!(
+            source_from_locator("/srv/fh/.factory/sessions/-work/s.jsonl", &roots),
+            Ok(TranscriptSource::Droid)
         );
         assert_eq!(
             source_from_locator(
@@ -462,7 +544,11 @@ mod tests {
         );
         assert_eq!(
             parse_source("gemini").unwrap_err(),
-            "source must be one of: all, claude, codex, pi, opencode (got 'gemini')"
+            "source must be one of: all, claude, codex, pi, opencode, droid (got 'gemini')"
+        );
+        assert_eq!(
+            parse_source("droid"),
+            Ok(SourceSelector::Only(TranscriptSource::Droid))
         );
     }
 }
