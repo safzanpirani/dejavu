@@ -39,7 +39,8 @@ Fix anything else that differs, or record it here with the reason.
 - Port each module's `test/*.test.ts` cases into Rust unit tests in that module.
 - Check parity on real data with `scripts/parity.sh <args>` (needs
   `mbx build --release -p dejavu`). It gives each side its own index under
-  `$TMPDIR/dejavu-parity`, so neither touches `~/.cache/dejavu`.
+  `$TMPDIR/dejavu-parity-<checkout hash>`, so neither touches `~/.cache/dejavu`
+  and parallel worktrees do not collide.
 - Never run `dejavu query` or `profile --explain` for real: they call a paid model.
   Test them with a fake `codex` executable.
 - Transcripts hold private data and secrets. Never paste transcript content into

@@ -45,7 +45,9 @@ pub fn number(value: f64) -> serde_json::Value {
     if value.is_finite() && value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
         serde_json::Value::from(value as i64)
     } else {
-        serde_json::Number::from_f64(value).map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null)
+        serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null)
     }
 }
 

@@ -7,7 +7,8 @@
 #   PARITY_STDERR=1 scripts/parity.sh show <locator>   # also diff stderr
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-work=${PARITY_DIR:-${TMPDIR:-/tmp}/dejavu-parity}
+# One directory per checkout, so parallel worktrees do not overwrite each other.
+work=${PARITY_DIR:-${TMPDIR:-/tmp}/dejavu-parity-$(printf %s "$root" | shasum | cut -c1-8)}
 mkdir -p "$work"
 rust=${DEJAVU_RUST:-$root/target/release/dejavu}
 export DEJAVU_NO_UPDATE_CHECK=1 NO_COLOR=1

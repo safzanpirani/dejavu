@@ -4,8 +4,8 @@
 // Some flag helpers wait for commands that are not ported yet.
 #[allow(dead_code)]
 mod args;
-pub mod js;
 mod commands;
+pub mod js;
 // Not called until the query and profile commands are ported.
 #[allow(dead_code)]
 mod codex_client;
@@ -159,7 +159,10 @@ fn main() {
         println!("{VERSION}");
         return;
     }
-    let common = Common { json: args.flag(&["--json"]), quiet: args.flag(&["-q", "--quiet"]) };
+    let common = Common {
+        json: args.flag(&["--json"]),
+        quiet: args.flag(&["-q", "--quiet"]),
+    };
     let outcome = match args.first() {
         Some("self-update") => commands::self_update::run(args, common),
         Some("profile") => commands::profile::run(args, common),
