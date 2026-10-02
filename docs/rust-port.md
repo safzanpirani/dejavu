@@ -25,6 +25,17 @@ Known, accepted differences: elapsed-time fields, and a surrogate pair cut by a
 character limit (Rust drops the whole pair; JavaScript keeps a lone surrogate).
 Fix anything else that differs, or record it here with the reason.
 
+`scrub` differs on purpose in how it writes, never in what it writes:
+
+- JSONL transcripts are written to a temporary file in the same directory and
+  renamed over the original, so a crash cannot leave a half-written transcript.
+- A JSONL file with a line that is not valid JSON is refused before anything is
+  written. The TypeScript wrote the backup, then threw a JSON parse error.
+- OpenCode backups use `VACUUM INTO`, which includes pages still in the WAL; a
+  plain file copy of a live WAL database can miss recent writes.
+- A `--drop` range of more than ten million events is rejected instead of
+  allocated.
+
 ## Rules for the port
 
 - `crates/dejavu` is one binary crate. Dependencies are listed in the root

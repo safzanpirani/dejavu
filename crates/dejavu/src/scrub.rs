@@ -1015,6 +1015,14 @@ mod tests {
     }
 
     #[test]
+    fn rewritten_records_keep_javascript_float_digits() {
+        // Needs serde_json's float_roundtrip: the fast parser is one ULP off for these.
+        let text = "[0.0027873299999999998,0.00046433399999999995,0.0009192660000000001]";
+        let value: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(js::stringify(&value), text);
+    }
+
+    #[test]
     fn parse_drop_list_accepts_numbers_ranges_and_comma_lists() {
         let values = |list: &[&str]| list.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         assert_eq!(
