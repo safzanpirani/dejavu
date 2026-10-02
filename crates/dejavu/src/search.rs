@@ -503,7 +503,7 @@ mod tests {
         let stores: Vec<TranscriptStore> = (0..6)
             .map(|i| jsonl(TranscriptSource::Claude, &format!("/store-{i}")))
             .collect();
-        let delays = [120u64, 90, 60, 30, 10, 5];
+        let delays = [480u64, 360, 240, 120, 40, 20];
         let store_done = Mutex::new(Vec::new());
         let file_done = Mutex::new(Vec::new());
         let (active_stores, peak_stores) = (AtomicUsize::new(0), AtomicUsize::new(0));

@@ -983,7 +983,7 @@ mod tests {
         let paths: Vec<String> = (0..6)
             .map(|i| format!("{STORE}/-Users-me-Development-p{i}/{i}aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl"))
             .collect();
-        let delays = [120u64, 90, 60, 30, 10, 5];
+        let delays = [480u64, 360, 240, 120, 40, 20];
         let done = Mutex::new(Vec::new());
         let (active, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
         struct Tracked<'a> {
