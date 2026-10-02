@@ -12,11 +12,18 @@ pub enum TranscriptSource {
     Codex,
     Pi,
     Opencode,
+    Droid,
 }
 
 impl TranscriptSource {
     /// Every source, in discovery order.
-    pub const ALL: [TranscriptSource; 4] = [Self::Claude, Self::Codex, Self::Pi, Self::Opencode];
+    pub const ALL: [TranscriptSource; 5] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Pi,
+        Self::Opencode,
+        Self::Droid,
+    ];
 
     /// The source's name as the CLI and JSON spell it.
     pub fn as_str(self) -> &'static str {
@@ -25,6 +32,7 @@ impl TranscriptSource {
             Self::Codex => "codex",
             Self::Pi => "pi",
             Self::Opencode => "opencode",
+            Self::Droid => "droid",
         }
     }
 
@@ -195,5 +203,13 @@ mod tests {
             Some(TranscriptSource::Pi)
         );
         assert_eq!(TranscriptSource::from_name("all"), None);
+        assert_eq!(
+            TranscriptSource::from_name("droid"),
+            Some(TranscriptSource::Droid)
+        );
+        assert_eq!(
+            serde_json::to_string(&TranscriptSource::Droid).unwrap(),
+            r#""droid""#
+        );
     }
 }

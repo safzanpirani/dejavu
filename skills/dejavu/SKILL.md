@@ -1,6 +1,6 @@
 ---
 name: dejavu
-description: Search and query past Claude Code, Codex, Pi, and OpenCode transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory. Do not use for shell history, Git history, or repository code search.
+description: Search and query past Claude Code, Codex, Pi, OpenCode, and Factory Droid transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory. Do not use for shell history, Git history, or repository code search.
 ---
 
 # Dejavu
@@ -28,7 +28,7 @@ dejavu find deploy timeout --project payments-api --since 2w
 dejavu find controlmaster --user --source claude
 ```
 
-Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-DD` or `7d`/`2w`/`3m`, `--user` requires every term in user messages, `-n` limits results, `--paths` prints only locators (one per line, for piping into `dejavu show` or `dejavu query`), and `--max-parallel N` bounds local store and candidate work with a default of 4. Resume commands cover Claude (`claude --resume`), Codex (`codex resume`), and Pi (`pi --session <path>`). Prefer `dejavu find` over plain search whenever the goal is identifying a whole session rather than a phrase.
+Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-DD` or `7d`/`2w`/`3m`, `--user` requires every term in user messages, `-n` limits results, `--paths` prints only locators (one per line, for piping into `dejavu show` or `dejavu query`), and `--max-parallel N` bounds local store and candidate work with a default of 4. Resume commands cover Claude (`claude --resume`), Codex (`codex resume`), Pi (`pi --session <path>`), and Droid (`droid --resume <id>`). Prefer `dejavu find` over plain search whenever the goal is identifying a whole session rather than a phrase.
 
 ## Read a transcript without model cost
 
@@ -40,7 +40,7 @@ For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 
 
 `dejavu show <locator>` prints the parsed conversation as `[user]`/`[assistant]` turns (tool calls summarized, long messages truncated; `--full` disables truncation). `--around TERM` prints only messages containing TERM plus three turns of context — use it to jump to the relevant region of a long session. Use `show` to confirm a session is the right one before resuming it or paying for `dejavu query`.
 
-`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, and OpenCode. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits the event list (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
+`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, OpenCode, and Droid. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits the event list (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
 
 ## Redact a transcript
 
@@ -48,20 +48,21 @@ For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 
 
 ## Find a transcript
 
-Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), and `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`). Keep these set to search only the current user's history on a shared account:
+Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). Keep these set to search only the current user's history on a shared account:
 
 ```sh
 dejavu --json 'session-recall.ts'
 dejavu --json 'Cannot find module'
 ```
 
-The search covers Claude Code, Codex, Pi, and OpenCode. Narrow it only when the user names a source or broad results are noisy:
+The search covers Claude Code, Codex, Pi, OpenCode, and Factory Droid. Narrow it only when the user names a source or broad results are noisy:
 
 ```sh
 dejavu --source claude --max-parallel 4 --json 'distinctive phrase'
 dejavu --source codex --json 'functionName'
 dejavu --source pi --json 'package-name'
 dejavu --source opencode --json 'exact error text'
+dejavu --source droid --json 'exact error text'
 ```
 
 Search is case-insensitive fixed-string matching, not semantic search. Spaces mean exact spaces. Use one distinctive token or phrase. Run separate searches for unrelated terms, then compare their locators. `--max-parallel N` also bounds local store and file work for plain search. It defaults to 4 and requires an integer greater than or equal to 1. Results remain deterministic when work completes out of order. Dejavu reports unreadable OpenCode SQLite stores on stderr and continues with readable stores. JSON results include the same paths in `skippedStores`.
@@ -100,8 +101,9 @@ Use `--model <codex-model-id>` or `--model codex/<id>` for a Codex override, sti
 
 Answer the user's question. Include the source and locator when they help the user inspect or resume the conversation. Treat transcript facts as historical evidence. Verify current files, deployments, hosts, and services separately when the answer depends on present state.
 
-If `dejavu` is not on `PATH`, use the source checkout:
+If `dejavu` is not on `PATH`, build it from the source checkout:
 
 ```sh
-bun run /path/to/dejavu/src/cli.ts --help
+cd /path/to/dejavu && cargo build --release
+/path/to/dejavu/target/release/dejavu --help
 ```

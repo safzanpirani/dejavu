@@ -179,25 +179,40 @@ pub fn project_from_claude_path(path: &str) -> String {
 /// `projectFromClaudePath(path, home, projectsRoot)`: decodes the project directory
 /// under the configured projects root, else under any `.claude/projects/`.
 pub fn project_from_claude_path_with(path: &str, home: &str, projects_root: &str) -> String {
+    project_from_encoded_dir(path, home, projects_root, ".claude", "projects")
+}
+
+/// `projectFromDroidPath(path)` with `$HOME` and the default Droid store root.
+pub fn project_from_droid_path(path: &str) -> String {
+    project_from_droid_path_with(path, env_home(), &default_roots().droid)
+}
+
+/// Decodes a Droid session directory (`sessions/-Users-dev-app/<id>.jsonl`)
+/// under the configured sessions root, else under any `.factory/sessions/`.
+/// Droid encodes the working directory the way Claude does.
+pub fn project_from_droid_path_with(path: &str, home: &str, sessions_root: &str) -> String {
+    project_from_encoded_dir(path, home, sessions_root, ".factory", "sessions")
+}
+
+/// The project of a transcript kept in `<root>/<encoded cwd>/<session>.jsonl`,
+/// where the fallback layout is `<dir>/<sub>/<encoded cwd>/`.
+fn project_from_encoded_dir(path: &str, home: &str, root: &str, dir: &str, sub: &str) -> String {
     let mut encoded: Option<&str> = None;
-    if path.len() > projects_root.len()
-        && path.starts_with(projects_root)
-        && path.as_bytes()[projects_root.len()] == b'/'
-    {
-        let rest = &path[projects_root.len() + 1..];
+    if path.len() > root.len() && path.starts_with(root) && path.as_bytes()[root.len()] == b'/' {
+        let rest = &path[root.len() + 1..];
         if let Some(cut) = rest.find(['/', '\\']) {
             encoded = Some(&rest[..cut]);
         }
     }
     if encoded.is_none() {
-        // /\.claude[/\\]projects[/\\]([^/\\]+)[/\\]/
+        // /\.<dir>[/\\]<sub>[/\\]([^/\\]+)[/\\]/, e.g. `.claude/projects/<encoded>/`
         let b = path.as_bytes();
-        for (i, _) in path.match_indices(".claude") {
-            let p = i + 7;
-            if !(b.get(p).is_some_and(|&c| is_sep(c)) && path[p + 1..].starts_with("projects")) {
+        for (i, _) in path.match_indices(dir) {
+            let p = i + dir.len();
+            if !(b.get(p).is_some_and(|&c| is_sep(c)) && path[p + 1..].starts_with(sub)) {
                 continue;
             }
-            let q = p + 9;
+            let q = p + 1 + sub.len();
             if !b.get(q).is_some_and(|&c| is_sep(c)) {
                 continue;
             }
@@ -219,24 +234,56 @@ pub fn project_from_claude_path_with(path: &str, home: &str, projects_root: &str
     }
 }
 
-/// `projectFromTranscriptPath(path, source)`: Claude and Pi decode the path; others are `~`.
+/// `projectFromTranscriptPath(path, source)`: Claude, Pi, and Droid decode the path; others are `~`.
 pub fn project_from_transcript_path(path: &str, source: TranscriptSource) -> String {
     match source {
         TranscriptSource::Claude => project_from_claude_path(path),
         TranscriptSource::Pi => project_from_pi_path(path),
+        TranscriptSource::Droid => project_from_droid_path(path),
         _ => "~".to_string(),
     }
 }
 
 /// `projectFromTranscriptText(path, source, text)`: a Codex transcript's first
-/// `session_meta` cwd (home-compacted); other sources derive the project from the path.
+/// `session_meta` cwd or a Droid transcript's `session_start` cwd (home-compacted);
+/// other sources, and transcripts without that row, derive the project from the path.
 pub fn project_from_transcript_text(path: &str, source: TranscriptSource, text: &str) -> String {
-    if source == TranscriptSource::Codex
-        && let Some(cwd) = codex_session_cwd(text)
-    {
-        return compact_home(&cwd).to_string();
+    let cwd = match source {
+        TranscriptSource::Codex => codex_session_cwd(text),
+        TranscriptSource::Droid => droid_session_cwd(text),
+        _ => None,
+    };
+    match cwd {
+        Some(cwd) => compact_home(&cwd).to_string(),
+        None => project_from_transcript_path(path, source),
     }
-    project_from_transcript_path(path, source)
+}
+
+/// The `cwd` of a Droid transcript's `session_start` row, when it is a non-empty
+/// string. Droid writes that row first; later rows never carry a `cwd`.
+pub fn droid_session_cwd(text: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Start {
+        #[serde(rename = "type")]
+        kind: Option<serde_json::Value>,
+        cwd: Option<serde_json::Value>,
+    }
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(row) = crate::reader::parse_json_line::<Start>(line) else {
+            continue;
+        };
+        if row.kind.as_ref().and_then(|v| v.as_str()) != Some("session_start") {
+            continue;
+        }
+        return match row.cwd {
+            Some(serde_json::Value::String(cwd)) if !cwd.is_empty() => Some(cwd),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// The `payload.cwd` of the first `session_meta` row that has a non-empty one.
@@ -489,6 +536,41 @@ mod tests {
         assert_eq!(normalize("a/../.."), "..");
         assert_eq!(resolve("/a/b/../c/"), "/a/c");
         assert_eq!(resolve("/"), "/");
+    }
+
+    #[test]
+    fn droid_projects_come_from_session_start_or_the_session_directory() {
+        assert_eq!(
+            project_from_droid_path_with(
+                "/Users/dev/.factory/sessions/-Users-dev-Development-app/s.jsonl",
+                "/Users/dev",
+                "/elsewhere/sessions"
+            ),
+            "Development/app"
+        );
+        assert_eq!(
+            project_from_droid_path_with(
+                "/srv/fh/.factory/sessions/-Users-dev/s.jsonl",
+                "/Users/dev",
+                "/srv/fh/.factory/sessions"
+            ),
+            "~"
+        );
+        assert_eq!(
+            project_from_droid_path_with("/x/s.jsonl", "/Users/dev", "/r"),
+            "~"
+        );
+        let text = "{\"type\":\"session_start\",\"id\":\"s\",\"cwd\":\"/w/app\"}\n{\"type\":\"message\"}\n";
+        assert_eq!(droid_session_cwd(text).as_deref(), Some("/w/app"));
+        assert_eq!(
+            droid_session_cwd("{\"type\":\"session_start\",\"cwd\":\"\"}"),
+            None
+        );
+        assert_eq!(droid_session_cwd("not json\n"), None);
+        assert_eq!(
+            project_from_transcript_text("/x.jsonl", TranscriptSource::Droid, text),
+            "/w/app"
+        );
     }
 
     #[test]
