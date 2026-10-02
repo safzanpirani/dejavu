@@ -1,8 +1,10 @@
 # Rust port
 
-Dejavu 0.5.0 replaces the Bun/TypeScript CLI with one Rust binary. The
-TypeScript under `src/` and `test/` stays on this branch as the reference
-implementation until the port reaches parity, then it is deleted.
+Dejavu 0.5.0 replaces the Bun/TypeScript CLI with one Rust binary. The port
+was checked against the TypeScript output on real transcripts, command by
+command, and the TypeScript was then deleted. Tag `v0.4.2` holds the last
+TypeScript release; compare against it with `git worktree add <dir> v0.4.2`
+and `bun run <dir>/src/cli.ts`.
 
 ## Contract
 
@@ -59,7 +61,7 @@ Search, `find`, `pack`, and the index differ in these ways:
   files are missing. Bun's read-only open failed there, so `index status`
   printed `not built`.
 
-## Rules for the port
+## Rules for changes
 
 - `crates/dejavu` is one binary crate. Dependencies are listed in the root
   `Cargo.toml`; adding one needs the integrator's approval (say why in your report).
@@ -70,11 +72,9 @@ Search, `find`, `pack`, and the index differ in these ways:
   `slice`), for `JSON.stringify(x, null, 2)` (`pretty`), and for floats in JSON
   (`number`). `serde_json` is built with `preserve_order`, so declare struct fields
   in the TypeScript object's key order and build `Value` objects in insertion order.
-- Port each module's `test/*.test.ts` cases into Rust unit tests in that module.
-- Check parity on real data with `scripts/parity.sh <args>` (needs
-  `mbx build --release -p dejavu`). It gives each side its own index under
-  `$TMPDIR/dejavu-parity-<checkout hash>`, so neither touches `~/.cache/dejavu`
-  and parallel worktrees do not collide.
+- Compare against the TypeScript on real data with each side given its own
+  index (`DEJAVU_INDEX_PATH`), so neither touches `~/.cache/dejavu`. Run one Bun
+  process at a time under a timeout: Bun's `pack` exhausted memory on large stores.
 - Never run `dejavu query` or `profile --explain` for real: they call a paid model.
   Test them with a fake `codex` executable.
 - Transcripts hold private data and secrets. Never paste transcript content into

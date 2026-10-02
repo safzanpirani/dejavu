@@ -41,15 +41,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "packageManager": "bun@1.4.2",
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test",
     "postinstall": "node scripts/npm-postinstall.cjs"
-  },
-  "devDependencies": {
-    "@types/bun": "1.4.2",
-    "typescript": "5.9.3"
   }
 }
