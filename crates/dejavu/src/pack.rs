@@ -5,9 +5,10 @@
 //! (up to `find`'s cap of 40) at once and kept them all in memory before taking
 //! the first `limit` that had a match. A few large candidates held over a
 //! gigabyte and the command did not finish. Here candidates load in rank order,
-//! `max_parallel` at a time, each view is reduced to its kept events as soon as
-//! it loads, and loading stops once `limit` sessions have excerpts. The selected
-//! sessions are the same; only candidates past that point go unexamined.
+//! at most as many at once as sessions are still needed (and `max_parallel`),
+//! each view is reduced to its kept events as soon as it loads, and loading
+//! stops once `limit` sessions have excerpts. The selected sessions are the
+//! same; only candidates past that point go unexamined.
 
 use crate::find::{FindOptions, FindResult};
 use crate::opencode::encode_uri_component;
@@ -163,28 +164,29 @@ pub fn pack_sessions(
         .map(|term| js_lower(term).into_owned())
         .collect();
 
-    // Load in rank order, a pool's width at a time, until `limit` sessions have excerpts.
-    let width = options.find.max_parallel.max(1);
+    // Load in rank order, at most as many at once as sessions are still
+    // needed (and --max-parallel), until `limit` sessions have excerpts.
     let mut selected: Vec<TranscriptView> = Vec::new();
     let mut skipped_sessions = Vec::new();
-    for chunk in candidates.chunks(width) {
+    let mut next = 0;
+    while selected.len() < limit && next < candidates.len() {
+        let width = (limit - selected.len())
+            .min(options.find.max_parallel)
+            .max(1);
+        let chunk = &candidates[next..(next + width).min(candidates.len())];
+        next += chunk.len();
         let loaded = map_pool(chunk, width, |path, _| {
             view(path).map(|loaded| keep_matching(loaded, &needles, context))
         })?;
         for (path, outcome) in chunk.iter().zip(loaded) {
             match outcome {
-                Ok(kept) if !kept.events.is_empty() && selected.len() < limit => {
-                    selected.push(kept)
-                }
+                Ok(kept) if !kept.events.is_empty() => selected.push(kept),
                 Ok(_) => {}
                 Err(error) => skipped_sessions.push(SkippedSession {
                     path: path.to_string(),
                     error,
                 }),
             }
-        }
-        if selected.len() >= limit {
-            break;
         }
     }
 
@@ -477,9 +479,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.sessions.len(), 1);
         assert_eq!(result.sessions[0].view.path, "/s0");
-        let mut seen = loaded.into_inner().unwrap();
-        seen.sort();
-        assert_eq!(seen, ["/s0", "/s1"]);
+        assert_eq!(loaded.into_inner().unwrap(), ["/s0"]);
     }
 
     #[test]
