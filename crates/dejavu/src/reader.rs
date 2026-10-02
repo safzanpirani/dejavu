@@ -464,15 +464,18 @@ struct Envelope<const FULL: bool> {
     kind: JsStr,
     role: JsStr,
     content: Content<FULL>,
+    /// Droid's `visibility`: `llm_only` marks text the harness sent to the model only.
+    visibility: JsStr,
 }
 
 impl<const FULL: bool> LenientFields for Envelope<FULL> {
-    const NAMES: &'static [&'static str] = &["type", "role", "content"];
+    const NAMES: &'static [&'static str] = &["type", "role", "content", "visibility"];
     fn set<'de, A: MapAccess<'de>>(&mut self, field: usize, map: &mut A) -> Result<(), A::Error> {
         match field {
             0 => self.kind = map.next_value()?,
             1 => self.role = map.next_value()?,
-            _ => self.content = map.next_value()?,
+            2 => self.content = map.next_value()?,
+            _ => self.visibility = map.next_value()?,
         }
         Ok(())
     }
@@ -490,6 +493,9 @@ impl<const FULL: bool> Envelope<FULL> {
         mut self,
         source: TranscriptSource,
     ) -> Option<(&'static str, Vec<RecallBlock>)> {
+        if source == TranscriptSource::Droid && is_droid_model_only(self.visibility.0.as_deref()) {
+            return None;
+        }
         if source == TranscriptSource::Droid && self.role.0.as_deref() == Some("user") {
             self.content
                 .0
@@ -574,6 +580,12 @@ impl<'de, const FULL: bool> Deserialize<'de> for Row<FULL> {
 /// Droid writes harness context (tool catalogs, skill lists, system information)
 /// into the conversation as user text blocks that begin with `<system-reminder>`.
 /// They are not part of what the user said, so recall, search, and views skip them.
+/// Droid marks harness messages the user never saw (continuation prompts,
+/// interruption notices, older reminders) with `visibility: "llm_only"`.
+pub fn is_droid_model_only(visibility: Option<&str>) -> bool {
+    visibility == Some("llm_only")
+}
+
 pub fn is_droid_injected_text(text: &str) -> bool {
     text.trim_start_matches(crate::query::js_space)
         .starts_with("<system-reminder>")
@@ -1361,6 +1373,26 @@ mod tests {
             )),
             ["<system-reminder>kept"]
         );
+    }
+
+    #[test]
+    fn droid_drops_model_only_messages() {
+        let hidden = json!({ "type": "message", "id": "c", "parentId": "a", "message": {
+            "role": "user", "visibility": "llm_only",
+            "content": [{ "type": "text", "text": "Continue where you left off." }] } });
+        let shown = json!({ "type": "message", "id": "d", "parentId": "c", "message": {
+            "role": "user", "visibility": "user_only",
+            "content": [{ "type": "text", "text": "Request interrupted" }] } });
+        let text = rows(&[message("a", None, "user", "ask"), hidden.clone(), shown]);
+        assert_eq!(
+            texts(&recall_messages_from_text(&text, TranscriptSource::Droid)),
+            ["ask", "Request interrupted"]
+        );
+        assert!(extract_visible_message(&hidden.to_string(), TranscriptSource::Droid).is_none());
+        // Other sources ignore the field.
+        let claude = json!({ "type": "user", "uuid": "u", "message": {
+            "role": "user", "visibility": "llm_only", "content": [{ "type": "text", "text": "kept" }] } });
+        assert!(extract_visible_message(&claude.to_string(), TranscriptSource::Claude).is_some());
     }
 
     #[test]

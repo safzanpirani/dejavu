@@ -413,6 +413,11 @@ fn claude_events(entry: &TreeEntry, skip_injected: bool) -> Vec<TranscriptEvent>
         Some(role @ ("user" | "assistant")) => role,
         _ => return Vec::new(),
     };
+    if skip_injected
+        && crate::reader::is_droid_model_only(message.get("visibility").and_then(Value::as_str))
+    {
+        return Vec::new();
+    }
     let injected = |text: &str| skip_injected && role == "user" && is_droid_injected_text(text);
     let timestamp = entry.timestamp();
     match message.get("content") {
