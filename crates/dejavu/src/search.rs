@@ -99,9 +99,10 @@ pub fn read_prefix(path: &str, bytes: u64) -> Result<String, String> {
 }
 
 /// `readTranscriptProject(path, source)`: a Codex transcript's `session_meta`
-/// cwd from its first 128 KiB; other sources decode the path.
+/// cwd or a Droid transcript's `session_start` cwd from its first 128 KiB;
+/// other sources decode the path.
 pub fn read_transcript_project(path: &str, source: TranscriptSource) -> String {
-    if source != TranscriptSource::Codex {
+    if !matches!(source, TranscriptSource::Codex | TranscriptSource::Droid) {
         return project_from_transcript_path(path, source);
     }
     match read_prefix(path, 128 * 1024) {

@@ -6,7 +6,10 @@ use crate::DEFAULT_MAX_PARALLEL;
 use crate::index::{IndexReader, TieBreak, refresh_transcript_index};
 use crate::js;
 use crate::opencode::iso_date_from_millis;
-use crate::paths::{date_from_path, js_lower, project_from_claude_path, project_from_pi_path};
+use crate::paths::{
+    date_from_path, js_lower, project_from_claude_path, project_from_droid_path,
+    project_from_pi_path,
+};
 use crate::pool::map_pool;
 use crate::reader::extract_visible_message;
 use crate::scan::locale_compare;
@@ -200,12 +203,14 @@ fn matches_project(project: &str, needle: &str, source: TranscriptSource) -> boo
     if haystack.contains(query.as_ref()) {
         return true;
     }
-    // Claude and Pi encode both directory separators and literal hyphens as '-'.
+    // Claude, Pi, and Droid encode both directory separators and literal hyphens as '-'.
     // Their decoded paths cannot distinguish these characters.
-    matches!(source, TranscriptSource::Claude | TranscriptSource::Pi)
-        && haystack
-            .replace('-', "/")
-            .contains(&query.replace('-', "/"))
+    matches!(
+        source,
+        TranscriptSource::Claude | TranscriptSource::Pi | TranscriptSource::Droid
+    ) && haystack
+        .replace('-', "/")
+        .contains(&query.replace('-', "/"))
 }
 
 /// `path.basename(path)`.
@@ -248,6 +253,10 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
             opened.then(|| format!("codex resume {id}"))
         }
         TranscriptSource::Pi => Some(format!("pi --session {path}")),
+        TranscriptSource::Droid => Some(format!(
+            "droid --resume {}",
+            name.strip_suffix(".jsonl").unwrap_or(name)
+        )),
         TranscriptSource::Opencode => None,
     }
 }
@@ -544,6 +553,11 @@ pub fn find_sessions(
                 &needle,
                 candidate.source,
             ),
+            TranscriptSource::Droid => matches_project(
+                &project_from_droid_path(&candidate.path),
+                &needle,
+                candidate.source,
+            ),
             _ => true,
         });
     }
@@ -813,6 +827,14 @@ mod tests {
                 "opencode:///x/opencode.db#ses_1"
             ),
             None
+        );
+        assert_eq!(
+            resume_command(
+                TranscriptSource::Droid,
+                "/x/.factory/sessions/-proj/abc-123.jsonl"
+            )
+            .as_deref(),
+            Some("droid --resume abc-123")
         );
         assert!(is_noise_path("/a/subagents/b.jsonl"));
         assert!(!is_noise_path("/a/subagents.jsonl"));
