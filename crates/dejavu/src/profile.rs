@@ -1447,4 +1447,105 @@ echo '{"type":"turn.completed","usage":{"input_tokens":900,"output_tokens":40}}'
             })
         );
     }
+
+    /// Compares measurements, JSON, text, and the explanation prompt with
+    /// output the TypeScript wrote for synthetic events. Run with
+    /// `DEJAVU_PROFILE_FIXTURE=<json> cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn profiles_match_typescript_fixtures() {
+        let path = std::env::var("DEJAVU_PROFILE_FIXTURE").expect("DEJAVU_PROFILE_FIXTURE");
+        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        for (number, case) in cases.iter().enumerate() {
+            let view = &case["view"];
+            let null = Value::Null;
+            let events = view["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| {
+                    let index = event
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .map(|i| i as usize);
+                    let text = |key: &str| event.get(key).and_then(Value::as_str);
+                    match text("kind").unwrap() {
+                        "tool_call" => ProfileEvent::ToolCall {
+                            index,
+                            name: text("name").unwrap(),
+                            call_id: text("callId"),
+                            input: event.get("input").unwrap_or(&null),
+                            timestamp: text("timestamp"),
+                        },
+                        "tool_result" => ProfileEvent::ToolResult {
+                            index,
+                            call_id: text("callId"),
+                            output: text("output").unwrap(),
+                            is_error: event["isError"].as_bool().unwrap(),
+                            timestamp: text("timestamp"),
+                        },
+                        _ => ProfileEvent::Other { index },
+                    }
+                })
+                .collect();
+            let source = TranscriptSource::from_name(view["source"].as_str().unwrap()).unwrap();
+            let profile_view = ProfileView {
+                path: view["path"].as_str().unwrap(),
+                source,
+                project: view["project"].as_str().unwrap(),
+                events,
+            };
+            let threshold = case["threshold"].as_u64().unwrap() as usize;
+            let profile = measure_transcript(&profile_view, threshold).unwrap();
+            let mut report = ProfileReport {
+                version: 1,
+                sessions: vec![profile],
+                oversized_threshold: threshold,
+                matched_sessions: 3,
+                omitted_sessions: number % 2,
+                diagnostics: if number % 3 == 0 {
+                    vec![Diagnostic {
+                        path: "/x".into(),
+                        error: "bad".into(),
+                    }]
+                } else {
+                    vec![]
+                },
+                limitations: vec!["l1".into()],
+                explanation: None,
+            };
+            let prompt = std::cell::RefCell::new(String::new());
+            let complete = |_: &str, text: &str, _: &Cancel| {
+                *prompt.borrow_mut() = text.to_string();
+                Ok(Completion {
+                    answer: if number % 4 == 0 {
+                        "{\"observations\":[]}"
+                    } else {
+                        "nope"
+                    }
+                    .into(),
+                    transport: "codex",
+                    usage: None,
+                })
+            };
+            report.explanation = Some(explain_profile(&report, &Cancel::new(), &complete));
+            assert_eq!(
+                prompt.into_inner(),
+                case["prompt"].as_str().unwrap(),
+                "case {number} prompt"
+            );
+            assert_eq!(
+                js::pretty(&report),
+                case["json"].as_str().unwrap(),
+                "case {number} json"
+            );
+            assert_eq!(
+                render_profile(&report),
+                case["text"].as_str().unwrap(),
+                "case {number} text"
+            );
+        }
+        eprintln!("{} cases match", cases.len());
+    }
 }

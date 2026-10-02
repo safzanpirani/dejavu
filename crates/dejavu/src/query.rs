@@ -780,4 +780,62 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":1200,"output_tokens":30
         .unwrap_err();
         assert_eq!(error, "query was cancelled");
     }
+
+    /// Compares the prepared conversation with output the TypeScript wrote for
+    /// synthetic sessions. Run with `DEJAVU_PREP_FIXTURE=<json> cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn prepared_conversations_match_typescript_fixtures() {
+        let path = std::env::var("DEJAVU_PREP_FIXTURE").expect("DEJAVU_PREP_FIXTURE");
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        for (number, case) in cases.iter().enumerate() {
+            let messages: Vec<RecallMessage> = case["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|message| RecallMessage {
+                    role: message["role"].as_str().unwrap().into(),
+                    content: message["content"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|block| match block["type"].as_str().unwrap() {
+                            "text" => RecallBlock::Text {
+                                text: block["text"].as_str().unwrap().into(),
+                            },
+                            "toolCall" => RecallBlock::ToolCall {
+                                name: block["name"].as_str().unwrap().into(),
+                                arguments: block["arguments"].clone(),
+                            },
+                            _ => RecallBlock::Image,
+                        })
+                        .collect(),
+                })
+                .collect();
+            let prepared = prepare_recall_messages(messages);
+            assert_eq!(
+                prepared.len() as u64,
+                case["preparedCount"].as_u64().unwrap()
+            );
+            let (conversation, windowed) = prepare_conversation(
+                &prepared,
+                case["question"].as_str().unwrap(),
+                case["contextWindow"].as_u64().unwrap(),
+                &reader::serialize_recall_messages,
+            );
+            assert_eq!(
+                windowed,
+                case["wasWindowed"].as_bool().unwrap(),
+                "case {number}"
+            );
+            assert_eq!(
+                conversation,
+                case["conversation"].as_str().unwrap(),
+                "case {number}"
+            );
+        }
+        eprintln!("{} cases match", cases.len());
+    }
 }
