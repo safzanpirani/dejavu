@@ -52,6 +52,22 @@ pub trait Backend: Sync {
         scan::search_matching_lines(query, path, max).unwrap_or_default()
     }
 
+    /// Visits [`Backend::find_lines`] in order until `visit` returns false.
+    /// [`Disk`] streams them, so long lines are never all held at once.
+    fn visit_lines(
+        &self,
+        query: &str,
+        path: &str,
+        max: usize,
+        visit: &mut dyn FnMut(&str) -> bool,
+    ) {
+        for line in self.find_lines(query, path, max) {
+            if !visit(&line) {
+                return;
+            }
+        }
+    }
+
     fn search_opencode(
         &self,
         query: &str,
@@ -83,7 +99,17 @@ pub trait Backend: Sync {
 /// The real stores and the default index.
 pub struct Disk;
 
-impl Backend for Disk {}
+impl Backend for Disk {
+    fn visit_lines(
+        &self,
+        query: &str,
+        path: &str,
+        max: usize,
+        visit: &mut dyn FnMut(&str) -> bool,
+    ) {
+        let _ = scan::visit_matching_lines(query, path, max, visit);
+    }
+}
 
 /// `Bun.file(path).slice(0, bytes).text()`.
 pub fn read_prefix(path: &str, bytes: u64) -> Result<String, String> {
@@ -299,13 +325,20 @@ pub fn search_sessions(
         .collect();
     let lowered = js_lower(needle).into_owned();
     let file_matches = map_pool(&file_tasks, max_parallel, |(store, item), _| {
-        let lines = backend.find_lines(needle, &item.path, snippet_limit.saturating_mul(20));
-        let visible: Vec<_> = lines
-            .iter()
-            .filter_map(|line| extract_visible_message(line, store.source))
-            .filter(|message| js_lower(&message.text).contains(lowered.as_str()))
-            .take(snippet_limit)
-            .collect();
+        let mut visible = Vec::new();
+        backend.visit_lines(
+            needle,
+            &item.path,
+            snippet_limit.saturating_mul(20),
+            &mut |line| {
+                if let Some(message) = extract_visible_message(line, store.source)
+                    && js_lower(&message.text).contains(lowered.as_str())
+                {
+                    visible.push(message);
+                }
+                visible.len() < snippet_limit
+            },
+        );
         if visible.is_empty() {
             return None;
         }

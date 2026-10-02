@@ -26,7 +26,7 @@ pub struct Literal {
     ascii: bool,
 }
 
-const CHUNK: usize = 4 << 20;
+const CHUNK: usize = 1 << 20;
 
 impl Literal {
     pub fn new(query: &str) -> Literal {
@@ -159,6 +159,29 @@ pub fn count_matching_lines(path: &str, literal: &Literal) -> std::io::Result<us
         true
     })?;
     Ok(count)
+}
+
+/// Visits the first `max` non-empty lines that contain the literal, decoded
+/// as UTF-8 (lossy), until `visit` returns false.
+pub fn visit_matching_lines(
+    query: &str,
+    path: &str,
+    max: usize,
+    visit: &mut dyn FnMut(&str) -> bool,
+) -> Result<(), String> {
+    let literal = Literal::new(query);
+    let mut seen = 0;
+    if max == 0 {
+        return Ok(());
+    }
+    scan_lines(path, &literal, false, |line| {
+        if line.is_empty() {
+            return true;
+        }
+        seen += 1;
+        visit(&String::from_utf8_lossy(line)) && seen < max
+    })
+    .map_err(|error| crate::reader::fs_error(&error, "open", path))
 }
 
 /// `searchMatchingLines(query, filePath, maxMatches)`: the first `max` lines

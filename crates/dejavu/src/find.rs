@@ -649,15 +649,14 @@ pub fn find_sessions(
                 }
             } else {
                 for (term, _) in &candidate.raw_counts {
-                    let lines = backend.find_lines(term, &candidate.path, 400);
                     let (mut user, mut assistant) = (0, 0);
                     let lowered = js_lower(term).into_owned();
-                    for line in &lines {
+                    backend.visit_lines(term, &candidate.path, 400, &mut |line| {
                         let Some(message) = extract_visible_message(line, candidate.source) else {
-                            continue;
+                            return true;
                         };
                         if !js_lower(&message.text).contains(lowered.as_str()) {
-                            continue;
+                            return true;
                         }
                         if message.role == "user" {
                             user += 1;
@@ -684,7 +683,8 @@ pub fn find_sessions(
                                 });
                             }
                         }
-                    }
+                        true
+                    });
                     term_counts.set(term, TermCount { user, assistant });
                     score += user * USER_WEIGHT + assistant;
                 }
