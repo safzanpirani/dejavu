@@ -618,11 +618,35 @@ pub struct RealProfile;
 impl ProfileDeps for RealProfile {
     fn select_sessions(
         &self,
-        _project: &str,
-        _since: Option<&str>,
-        _limit: usize,
+        project: &str,
+        since: Option<&str>,
+        limit: usize,
     ) -> Result<SessionSelection, String> {
-        Err("profile --project needs the transcript index, which is not ported yet".into())
+        let since = since
+            .map(|value| crate::find::parse_since(value, None))
+            .transpose()?;
+        let stores = crate::sources::discover_stores(crate::types::SourceSelector::All);
+        let path = crate::index::default_index_path();
+        let refreshed = crate::index::refresh_transcript_index(
+            &stores,
+            &path,
+            false,
+            crate::DEFAULT_MAX_PARALLEL,
+        )?;
+        let (paths, total) =
+            crate::index::list_indexed_sessions(project, since.as_deref(), limit, &stores, &path)?;
+        Ok(SessionSelection {
+            paths,
+            total,
+            skipped: refreshed
+                .skipped
+                .into_iter()
+                .map(|item| Diagnostic {
+                    path: item.path,
+                    error: item.error,
+                })
+                .collect(),
+        })
     }
 
     fn profile_session(&self, locator: &str, threshold: usize) -> Result<SessionProfile, String> {

@@ -36,6 +36,29 @@ Fix anything else that differs, or record it here with the reason.
 - A `--drop` range of more than ten million events is rejected instead of
   allocated.
 
+Search, `find`, `pack`, and the index differ in these ways:
+
+- The index file, schema, rows, and refresh bookkeeping are the same, so the
+  Rust and Bun binaries share `~/.cache/dejavu/transcripts.sqlite`. The head
+  hash is Zig's `std.hash.Wyhash` (`Bun.hash`), and `mtime_ms` uses Bun's
+  `sec * 1000 + nsec / 1e6`.
+- Direct scans (`--no-index`, and terms under three characters) no longer run
+  `rg` or `grep`. They count matching lines as `rg -i -c -F` did, skip hidden
+  entries and symlinks, and stop at a NUL byte in non-JSONL files. A machine
+  without `rg` and `grep` counted occurrences in the TypeScript; it now counts
+  lines like every other machine.
+- Count ties in direct scans break by an approximation of `localeCompare`
+  (CLDR root order over ASCII). Ties among `find` candidates from direct scans
+  keep directory order; the TypeScript kept `rg`'s output order, which varied
+  between runs.
+- `pack` loads ranked candidates in order, only as many at once as sessions are
+  still needed, and stops once `--limit` sessions have excerpts. The selected
+  sessions are the same. `skippedSessions` lists only the candidates it loaded;
+  the TypeScript loaded all 40 and listed every unreadable one.
+- `index status` and `profile --project` read an index whose `-wal` and `-shm`
+  files are missing. Bun's read-only open failed there, so `index status`
+  printed `not built`.
+
 ## Rules for the port
 
 - `crates/dejavu` is one binary crate. Dependencies are listed in the root

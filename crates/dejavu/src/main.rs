@@ -7,22 +7,28 @@
 mod args;
 mod codex_client;
 mod commands;
+pub mod find;
+pub mod index;
 pub mod js;
 mod memory;
 mod model_client;
 pub mod opencode;
+pub mod pack;
 pub mod paths;
 pub mod pool;
 mod profile;
 mod query;
 pub mod reader;
 pub mod render;
+pub mod scan;
 pub mod scrub;
+pub mod search;
 pub mod sources;
 pub mod types;
 mod update;
 pub mod view;
 pub mod window;
+pub mod wyhash;
 
 use args::{Args, die};
 
