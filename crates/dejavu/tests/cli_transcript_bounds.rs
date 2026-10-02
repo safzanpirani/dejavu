@@ -15,10 +15,20 @@ fn stdout_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// Removes the fixture directory even when an assertion fails.
+struct Cleanup(std::path::PathBuf);
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn removes_tool_only_turns_and_applies_explicit_transcript_json_bounds() {
     let root = std::env::temp_dir().join(format!("dejavu-bounds-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
+    let _cleanup = Cleanup(root.clone());
     let directory = root.join(".claude/projects/demo");
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("fixture.jsonl");
@@ -123,5 +133,4 @@ fn removes_tool_only_turns_and_applies_explicit_transcript_json_bounds() {
         ),
         "{text}"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
