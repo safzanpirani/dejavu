@@ -16,9 +16,13 @@ pub mod pool;
 mod profile;
 mod query;
 pub mod reader;
+pub mod render;
+pub mod scrub;
 pub mod sources;
 pub mod types;
 mod update;
+pub mod view;
+pub mod window;
 
 use args::{Args, die};
 
