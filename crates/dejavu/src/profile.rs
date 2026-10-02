@@ -625,8 +625,52 @@ impl ProfileDeps for RealProfile {
         Err("profile --project needs the transcript index, which is not ported yet".into())
     }
 
-    fn profile_session(&self, _locator: &str, _threshold: usize) -> Result<SessionProfile, String> {
-        Err("profile needs the transcript view, which is not ported yet".into())
+    fn profile_session(&self, locator: &str, threshold: usize) -> Result<SessionProfile, String> {
+        let view =
+            crate::view::view_transcript(locator, crate::view::TranscriptViewOptions::default())?;
+        measure_transcript(&profile_view(&view), threshold)
+    }
+}
+
+/// The measured shape of a transcript view (`viewTranscript(path)`: tools
+/// on, thinking off).
+pub fn profile_view(view: &crate::view::TranscriptView) -> ProfileView<'_> {
+    use crate::view::EventBody;
+    let events = view
+        .events
+        .iter()
+        .map(|event| match &event.body {
+            EventBody::ToolCall {
+                name,
+                input,
+                call_id,
+            } => ProfileEvent::ToolCall {
+                index: event.index,
+                name,
+                call_id: call_id.as_deref(),
+                input,
+                timestamp: event.timestamp.as_deref(),
+            },
+            EventBody::ToolResult {
+                call_id,
+                output,
+                is_error,
+                ..
+            } => ProfileEvent::ToolResult {
+                index: event.index,
+                call_id: call_id.as_deref(),
+                output,
+                is_error: *is_error,
+                timestamp: event.timestamp.as_deref(),
+            },
+            _ => ProfileEvent::Other { index: event.index },
+        })
+        .collect();
+    ProfileView {
+        path: &view.path,
+        source: view.source,
+        project: &view.project,
+        events,
     }
 }
 
