@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/safzanpirani/dejavu"
+
+# Every third-party crate the port may use. Adding one needs the integrator's
+# approval: list it in your report with the reason.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps object keys in insertion order, as JSON.stringify does.
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+ureq = "3"
+sha2 = "0.11"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

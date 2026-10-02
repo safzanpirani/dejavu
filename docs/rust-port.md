@@ -1,0 +1,71 @@
+# Rust port
+
+Dejavu 0.5.0 replaces the Bun/TypeScript CLI with one Rust binary. The
+TypeScript under `src/` and `test/` stays on this branch as the reference
+implementation until the port reaches parity, then it is deleted.
+
+## Contract
+
+The CLI is an API that agents and skills call. The port keeps, byte for byte
+where practical:
+
+- command names, aliases, flags, defaults, and usage errors (`✗ message`, exit 1);
+- `--help` text (already identical);
+- text output and stderr diagnostics (`skipped unreadable ...`, timing lines);
+- every `--json` shape: key names, key order, nesting, `null` versus missing;
+- exit codes (`profile` exits 1 on diagnostics, and so on);
+- locators: JSONL paths and `opencode://<db>#<session>`;
+- environment variables: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`,
+  `XDG_DATA_HOME`, `OPENCODE_DB`, `DEJAVU_INDEX_PATH`, `DEJAVU_NO_UPDATE_CHECK`,
+  `DEJAVU_QUERY_VIA_PI`, `CODEX_THREAD_ID`, `CLAUDE_SESSION_ID`, `NO_COLOR`;
+- release asset names `dejavu-<platform>-<arch>[.exe]`, `checksums.txt`, the npm
+  package `@safzanpirani/dejavu`, and `dejavu self-update`.
+
+Known, accepted differences: elapsed-time fields, and a surrogate pair cut by a
+character limit (Rust drops the whole pair; JavaScript keeps a lone surrogate).
+Fix anything else that differs, or record it here with the reason.
+
+## Rules for the port
+
+- `crates/dejavu` is one binary crate. Dependencies are listed in the root
+  `Cargo.toml`; adding one needs the integrator's approval (say why in your report).
+  Prefer the standard library. Threads come from `std::thread::scope`; no async runtime.
+- Build and test with `mbx` (`mbx build`, `mbx test -p dejavu`, `mbx clippy -p dejavu
+  --all-targets -- -D warnings`). Run `cargo fmt`.
+- Use `crate::js` for anything that counts or cuts characters (`len`, `prefix`,
+  `slice`), for `JSON.stringify(x, null, 2)` (`pretty`), and for floats in JSON
+  (`number`). `serde_json` is built with `preserve_order`, so declare struct fields
+  in the TypeScript object's key order and build `Value` objects in insertion order.
+- Port each module's `test/*.test.ts` cases into Rust unit tests in that module.
+- Check parity on real data with `scripts/parity.sh <args>` (needs
+  `mbx build --release -p dejavu`). It gives each side its own index under
+  `$TMPDIR/dejavu-parity`, so neither touches `~/.cache/dejavu`.
+- Never run `dejavu query` or `profile --explain` for real: they call a paid model.
+  Test them with a fake `codex` executable.
+- Transcripts hold private data and secrets. Never paste transcript content into
+  commits, docs, test fixtures, or reports. Write synthetic fixtures.
+- Commit on your own branch with plain `git commit`. Never pass `-c user.*`,
+  `--author`, or set identity variables. Do not push.
+
+## Module map
+
+| TypeScript | Rust | Owner |
+| --- | --- | --- |
+| `cli.ts` | `main.rs`, `args.rs`, `commands/*.rs` | integrator; each owner fills its commands |
+| `transcript-types.ts`, `source-registry.ts`, `transcript-paths.ts`, `opencode-store.ts`, `session-reader.ts` | `types.rs`, `sources.rs`, `paths.rs`, `opencode.rs`, `reader.rs` | base |
+| `transcript-view.ts`, `transcript-window.ts`, `render.ts`, `transcript-scrub.ts` | `view.rs`, `window.rs`, `render.rs`, `scrub.rs`; commands `show`, `transcript`, `scrub` | views |
+| `transcript-index.ts`, `search-backend.ts`, `core.ts` (search), `find.ts`, `pack.ts` | `index.rs`, `scan.rs`, `search.rs`, `find.rs`, `pack.rs`; commands search, `find`, `pack`, `index` | search |
+| `profile.ts`, `core.ts` (`querySession`) | `profile.rs`, `query.rs`; commands `profile`, `query` | profile |
+| `update.ts`, `codex-client.ts`, `model-client.ts`, `memory.ts`, release and npm | `update.rs`, `codex_client.rs`, `model_client.rs`, `memory.rs`; commands `self-update`, `memory`; `.github/workflows`, `scripts/`, `bin/` | leaves |
+
+`show` renders with `render.rs` but its data comes from `find.ts`'s `showSession`;
+the views owner ports `showSession` into `view.rs` or `find.rs` and coordinates
+through the integrator.
+
+## Performance targets
+
+Measured on the 0.4.2 Bun binary against ~9 GB of local transcripts: indexed search
+0.2–0.4 s, `find` 5–7 s, `--no-index` search 11 s, and `pack deployment --limit 1`
+did not finish in 60 s (one run held 1.4 GB for 4 minutes). The port must make
+`find` and `pack` interactive (well under a second warm) and fix the `pack` blow-up
+at its cause, not by lowering limits.

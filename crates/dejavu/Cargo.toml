@@ -1,0 +1,19 @@
+[package]
+name = "dejavu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent-first local search for coding-agent transcripts and project memory"
+
+[[bin]]
+name = "dejavu"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+ureq.workspace = true
+sha2.workspace = true
