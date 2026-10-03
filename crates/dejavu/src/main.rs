@@ -7,6 +7,7 @@
 mod args;
 mod codex_client;
 mod commands;
+mod droid_active;
 pub mod find;
 pub mod index;
 pub mod js;
@@ -114,7 +115,7 @@ last flags (where a session left off: its card plus the newest dialogue turns)
                          no argument: newest session in the current Git repo (or directory);
                          terms: find's best match in this repo, else anywhere;
                          a locator or session id: that session.
-                         Active CODEX_THREAD_ID/CLAUDE_CODE_SESSION_ID sessions are skipped.
+                         The active Claude, Codex, or Droid session is skipped.
   -p, --project SUBSTR   sessions whose project contains SUBSTR, not the current repo
       --anywhere         newest session in any project
       --list             session cards only; -n/--limit N of them (default 5)

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `last` and `pack` skip the active Droid session. Droid exports no session ID, so dejavu finds the nearest `droid` parent process, reads its working directory, and treats the newest transcript in that directory's session folder as the active one. Before this, `dejavu last` run inside Droid returned the session asking.
+
 ## 0.5.1
 
 - `dejavu last` shows where a session left off: its card and the newest user/assistant turns within a character budget. With no argument it picks the newest session in the current Git repo, skipping the active one. It also accepts `find` terms, a transcript locator, or a session ID. `--list` prints recent session cards.

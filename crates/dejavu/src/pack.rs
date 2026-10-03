@@ -94,7 +94,8 @@ pub(crate) fn is_uuid(value: &str) -> bool {
 
 /// The running agent's session ids, so a lookup skips the session asking.
 /// Claude Code exports `CLAUDE_CODE_SESSION_ID`; `CLAUDE_SESSION_ID` is kept
-/// for wrappers that set the older name.
+/// for wrappers that set the older name. Droid exports none, so its session
+/// is inferred from the process tree.
 pub(crate) fn active_session_ids() -> Vec<String> {
     [
         "CODEX_THREAD_ID",
@@ -104,6 +105,7 @@ pub(crate) fn active_session_ids() -> Vec<String> {
     .iter()
     .filter_map(|key| std::env::var(key).ok())
     .filter(|value| !value.is_empty())
+    .chain(crate::droid_active::active_droid_session())
     .collect()
 }
 
