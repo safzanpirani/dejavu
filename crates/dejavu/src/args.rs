@@ -30,6 +30,18 @@ pub fn stderr_is_tty() -> bool {
     std::io::stderr().is_terminal()
 }
 
+/// Consumes `--color`/`--no-color` and decides whether stdout gets ANSI
+/// colors: forced on, forced off, or on for a terminal unless `NO_COLOR` is set.
+pub fn color_choice(args: &mut Args, json: bool) -> bool {
+    let force = args.flag(&["--color"]);
+    let off = args.flag(&["--no-color"]);
+    force
+        || (!off
+            && !json
+            && stdout_is_tty()
+            && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()))
+}
+
 /// Command-line arguments with the operands after a bare `--` held apart:
 /// those are positional even when they begin with a dash.
 #[derive(Debug, Default, Clone)]

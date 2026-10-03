@@ -32,6 +32,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     let snippets = args.integer(&["--snippets"], "--snippets", DEFAULT_SNIPPET_LIMIT);
     let max_parallel = args.integer(&["--max-parallel"], "--max-parallel", DEFAULT_MAX_PARALLEL);
     let no_index = args.flag(&["--no-index"]);
+    let color = args::color_choice(&mut args, common.json);
     args.reject_unknown_flags();
     let query = args.items.join(" ");
     let query = query.trim();
@@ -52,7 +53,8 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         println!(
             "{}",
             crate::render::render_search(
-                &serde_json::to_value(&result).map_err(|e| e.to_string())?
+                &serde_json::to_value(&result).map_err(|e| e.to_string())?,
+                color
             )
         );
     }

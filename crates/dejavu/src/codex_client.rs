@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-pub const DEFAULT_CODEX_QUERY_MODEL: &str = "gpt-5.6-luna";
+pub const DEFAULT_CODEX_QUERY_MODEL: &str = "gpt-6-luna";
 pub const CODEX_QUERY_REASONING: &str = "medium";
 const TIMEOUT: Duration = Duration::from_millis(120_000);
 
@@ -523,7 +523,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens"
             timeout: Some(Duration::from_millis(timeout_ms)),
         };
         complete_via_codex_with(
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             "private transcript and question",
             cancel,
             &deps,
@@ -558,7 +558,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens"
             assert!(args.contains(&expected), "{expected}");
         }
         let after = |flag: &str| args[args.iter().position(|arg| *arg == flag).unwrap() + 1];
-        assert_eq!(after("--model"), "gpt-5.6-luna");
+        assert_eq!(after("--model"), "gpt-6-luna");
         assert_eq!(after("--sandbox"), "read-only");
         assert_eq!(*args.last().unwrap(), "-");
         let cwd = lines[1].strip_prefix("CWD=").unwrap();

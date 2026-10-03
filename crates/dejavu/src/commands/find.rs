@@ -19,6 +19,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     let paths_only = args.flag(&["--paths"]);
     let max_parallel = args.integer(&["--max-parallel"], "--max-parallel", DEFAULT_MAX_PARALLEL);
     let no_index = args.flag(&["--no-index"]);
+    let color = args::color_choice(&mut args, common.json);
     args.reject_unknown_flags();
     if args.is_empty() {
         die("find needs one or more terms");
@@ -41,7 +42,10 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     } else {
         println!(
             "{}",
-            crate::render::render_find(&serde_json::to_value(&result).map_err(|e| e.to_string())?)
+            crate::render::render_find(
+                &serde_json::to_value(&result).map_err(|e| e.to_string())?,
+                color
+            )
         );
     }
     report_skipped_stores(&result.skipped_stores, common.quiet);

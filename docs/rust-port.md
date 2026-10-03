@@ -68,6 +68,11 @@ Search, `find`, `pack`, and the index differ in these ways:
   Prefer the standard library. Threads come from `std::thread::scope`; no async runtime.
 - Build and test with `mbx` (`mbx build`, `mbx test -p dejavu`, `mbx clippy -p dejavu
   --all-targets -- -D warnings`). Run `cargo fmt`.
+- Colored output goes through `render::Paint`; Markdown styling lives in
+  `markdown.rs` and runs only when color is on. Styles end with their own off
+  codes (`22`, `23`, `39`, ...) instead of a full reset so they nest with
+  search-term highlights. Plain output must stay byte-identical to the
+  uncolored renderer; the render tests strip ANSI and compare.
 - Use `crate::js` for anything that counts or cuts characters (`len`, `prefix`,
   `slice`), for `JSON.stringify(x, null, 2)` (`pretty`), and for floats in JSON
   (`number`). `serde_json` is built with `preserve_order`, so declare struct fields

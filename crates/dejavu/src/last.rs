@@ -387,7 +387,11 @@ pub fn render_last(result: &LastResult, color: bool) -> String {
     if result.sessions.is_empty() {
         return "No matching sessions.".to_string();
     }
-    let cards: Vec<String> = result.sessions.iter().map(render_card).collect();
+    let cards: Vec<String> = result
+        .sessions
+        .iter()
+        .map(|card| render_card(card, color))
+        .collect();
     let mut out = cards.join("\n\n---\n\n");
     if result.tail.is_none() && result.total > result.sessions.len() {
         out.push_str(&format!(
@@ -414,7 +418,8 @@ pub fn render_last(result: &LastResult, color: bool) -> String {
     out
 }
 
-fn render_card(card: &SessionCard) -> String {
+fn render_card(card: &SessionCard, color: bool) -> String {
+    let paint = crate::render::Paint { color };
     let mut lines = vec![format!(
         "{} · {} · {}",
         card.date, card.source, card.project
@@ -422,11 +427,14 @@ fn render_card(card: &SessionCard) -> String {
     if !card.opening_prompt.is_empty() {
         lines.push(format!(
             "Opened with: {}",
-            crate::js::prefix(&card.opening_prompt, 300)
+            paint.markdown(crate::js::prefix(&card.opening_prompt, 300))
         ));
     }
     if let Some(request) = &card.last_request {
-        lines.push(format!("Last request: {}", crate::js::prefix(request, 500)));
+        lines.push(format!(
+            "Last request: {}",
+            paint.markdown(crate::js::prefix(request, 500))
+        ));
     }
     lines.push(format!("Transcript: {}", card.path));
     if let Some(resume) = &card.resume {

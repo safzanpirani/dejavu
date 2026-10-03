@@ -727,13 +727,13 @@ mod tests {
                 resolved.id.as_str(),
                 resolved.reasoning_effort
             ),
-            ("codex", "gpt-5.6-luna", Some("medium"))
+            ("codex", "gpt-6-luna", Some("medium"))
         );
         assert_eq!(resolved.context_window, 128_000);
         let missing = resolve_query_model(&dir.join("nonexistent"), None).unwrap();
         assert_eq!(
             (missing.provider.as_str(), missing.id.as_str()),
-            ("codex", "gpt-5.6-luna")
+            ("codex", "gpt-6-luna")
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

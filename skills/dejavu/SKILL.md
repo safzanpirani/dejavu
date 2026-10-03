@@ -41,7 +41,7 @@ Then:
 
 ## Find a session from a vague memory
 
-When the request is "find that chat where we ...", use `dejavu find` with two or three literal terms. It requires all terms per session (falling back to the best subset), weights user-message matches above assistant ones, and prints a session card: opening user prompt, matching user messages with dates, per-term counts, transcript path, and a resume command for Claude and Codex sessions.
+When the request is "find that chat where we ...", use `dejavu find` with two or three literal terms. It requires all terms per session (falling back to the best subset), weights user-message matches above assistant ones, and prints a session card: opening user prompt, matching user messages with dates, per-term counts, transcript path, and a resume command for Claude, Codex, Pi, Droid, and OpenCode sessions.
 
 ```sh
 dejavu find workshop codex colleagues
@@ -104,7 +104,7 @@ The default is deterministic and invokes no model. It measures outer calls, resu
 
 Repeated calls are candidates for review, not proven waste. Nested call sites are lexical hints, not executed counts; aliases, loops, templates, and computed access limit coverage. First-result latency includes waiting and is not model reasoning time. Project mode selects sessions by their last indexed visible-message date and measures each entire selected session. Check `omittedSessions` and `diagnostics` for coverage limits. Exit 1 signals skipped sources or an explanation failure even when measurements are available.
 
-`--explain` sends only bounded metrics and event references through Codex exec to `gpt-5.6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
+`--explain` sends only bounded metrics and event references through Codex exec to `gpt-6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
 
 ## Ask about one transcript
 
@@ -114,7 +114,7 @@ Use a focused question after selecting a result:
 dejavu query '<locator from search results>' 'What did we decide, and which files changed?' --json
 ```
 
-`dejavu query` sends the selected conversation context through `codex exec` to `gpt-5.6-luna` with medium reasoning by default and may incur model usage. It requires an authenticated Codex CLI. Query only the transcript needed for the request. The loader removes thinking, developer instructions, and tool output. It follows branches where the source supports them and windows large transcripts around question terms. The model-backed query stays serial and does not accept `--max-parallel`.
+`dejavu query` sends the selected conversation context through `codex exec` to `gpt-6-luna` with medium reasoning by default and may incur model usage. It requires an authenticated Codex CLI. Query only the transcript needed for the request. The loader removes thinking, developer instructions, and tool output. It follows branches where the source supports them and windows large transcripts around question terms. The model-backed query stays serial and does not accept `--max-parallel`.
 
 Use `--model <codex-model-id>` or `--model codex/<id>` for a Codex override, still at medium reasoning. The default ignores Pi model settings. Codex runs ephemerally with transcript input on stdin, a read-only sandbox, project/skill instructions disabled, and a 120-second timeout. It uses the OpenAI provider and existing Codex authentication without changing user configuration. An explicit non-Codex `--model provider/id` retains the legacy HTTP/Pi path and reads provider settings from `~/.pi/agent` or `--agent-dir`. Do not rewrite model configuration unless the user asks.
 

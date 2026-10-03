@@ -1399,7 +1399,7 @@ mod tests {
     fn sends_bounded_measurements_without_raw_context_and_validates_evidence() {
         let prompt = std::cell::RefCell::new(String::new());
         let complete = |model: &str, text: &str, _: &Cancel| {
-            assert_eq!(model, "gpt-5.6-luna");
+            assert_eq!(model, "gpt-6-luna");
             *prompt.borrow_mut() = text.to_string();
             Ok(Completion {
                 answer: "```json\n{\"observations\":[{\"summary\":\"Review the repeated read before deciding it is redundant.\",\"evidence\":[\"S1#8\"]}]}\n```".into(),
@@ -1423,7 +1423,7 @@ mod tests {
         let json = js::stringify(&explained.explanation);
         assert_eq!(
             json,
-            "{\"model\":\"gpt-5.6-luna\",\"reasoningEffort\":\"medium\",\"observations\":[{\"summary\":\"Review the repeated read before deciding it is redundant.\",\"evidence\":[\"S1#8\"]}],\"usage\":{\"inputTokens\":10,\"outputTokens\":2}}"
+            "{\"model\":\"gpt-6-luna\",\"reasoningEffort\":\"medium\",\"observations\":[{\"summary\":\"Review the repeated read before deciding it is redundant.\",\"evidence\":[\"S1#8\"]}],\"usage\":{\"inputTokens\":10,\"outputTokens\":2}}"
         );
         assert!(render_profile(&explained).contains("\nLuna analysis · medium reasoning\n- Review the repeated read before deciding it is redundant. [S1#8]\n"));
     }
@@ -1461,7 +1461,7 @@ mod tests {
         let result = explain_profile(&report(), &Cancel::new(), &failed);
         assert_eq!(
             js::stringify(&result),
-            "{\"model\":\"gpt-5.6-luna\",\"reasoningEffort\":\"medium\",\"error\":\"query was cancelled\"}"
+            "{\"model\":\"gpt-6-luna\",\"reasoningEffort\":\"medium\",\"error\":\"query was cancelled\"}"
         );
         assert_eq!(report().sessions[0].metrics.tool_calls, 4);
     }

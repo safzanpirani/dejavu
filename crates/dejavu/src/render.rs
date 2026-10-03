@@ -47,7 +47,8 @@ fn truthy_text(value: &Value) -> Option<String> {
 
 /// `renderSearch(result)` over a `SearchResult` in JSON form
 /// (`query`, `matches[]` with `date`, `source`, `project`, `count`, `path`, `snippets[]`).
-pub fn render_search(result: &Value) -> String {
+pub fn render_search(result: &Value, color: bool) -> String {
+    let paint = Paint { color };
     let query = display(field(result, "query"));
     let matches = items(field(result, "matches"));
     if matches.is_empty() {
@@ -55,16 +56,18 @@ pub fn render_search(result: &Value) -> String {
             "No sessions found matching \"{query}\".\n\nSearch is literal, not semantic. Retry with one exact distinctive token or phrase."
         );
     }
+    let terms = [query.clone()];
     let sections: Vec<String> = matches
         .iter()
         .map(|item| {
             let snippets: Vec<String> = items(field(item, "snippets"))
                 .iter()
                 .map(|snippet| {
-                    format!(
-                        "  [{}] {}",
-                        display(field(snippet, "role")),
-                        display(field(snippet, "text"))
+                    paint.snippet(
+                        &display(field(snippet, "role")),
+                        "",
+                        &display(field(snippet, "text")),
+                        &terms,
                     )
                 })
                 .collect();
@@ -74,21 +77,28 @@ pub fn render_search(result: &Value) -> String {
             } else {
                 "es"
             };
+            let tally = format!("{} match{suffix}", display(count));
             format!(
-                "{} · {} · {} · {} match{suffix}\nTranscript: {}\n{}",
-                display(field(item, "date")),
-                display(field(item, "source")),
-                display(field(item, "project")),
-                display(count),
-                display(field(item, "path")),
+                "{}\n{}\n{}",
+                paint.heading(
+                    &display(field(item, "date")),
+                    &display(field(item, "source")),
+                    &display(field(item, "project")),
+                    &paint.dim(&tally),
+                ),
+                paint.labeled("Transcript", &paint.dim(&display(field(item, "path")))),
                 snippets.join("\n")
             )
         })
         .collect();
     format!(
-        "Found {} matching \"{query}\":\n\n{}",
-        plural(matches.len(), "session", "sessions"),
-        sections.join("\n\n---\n\n")
+        "{} matching \"{}\":\n\n{}",
+        paint.bold(&format!(
+            "Found {}",
+            plural(matches.len(), "session", "sessions")
+        )),
+        paint.term(&query),
+        sections.join(&paint.separator())
     )
 }
 
@@ -108,7 +118,8 @@ fn join_terms(value: &Value, separator: &str) -> String {
 /// `renderFind(result)` over a `FindResult` in JSON form (`terms`,
 /// `requiredTerms`, `hits[]` with `date`, `source`, `project`, `termCounts`,
 /// `openingPrompt`, `matches[]`, `path`, `resume`).
-pub fn render_find(result: &Value) -> String {
+pub fn render_find(result: &Value, color: bool) -> String {
+    let paint = Paint { color };
     let terms = items(field(result, "terms"));
     let hits = items(field(result, "hits"));
     if hits.is_empty() {
@@ -117,12 +128,13 @@ pub fn render_find(result: &Value) -> String {
             join_terms(field(result, "terms"), ", ")
         );
     }
+    let words: Vec<String> = terms.iter().map(display).collect();
     let required = items(field(result, "requiredTerms")).len();
     let relaxed = if required < terms.len() {
-        format!(
-            "No session matched all {} terms; showing sessions matching {required}.\n\n",
+        paint.warn(&format!(
+            "No session matched all {} terms; showing sessions matching {required}.",
             terms.len()
-        )
+        )) + "\n\n"
     } else {
         String::new()
     };
@@ -138,46 +150,67 @@ pub fn render_find(result: &Value) -> String {
                             let user = field(count, "user").as_f64().unwrap_or(0.0);
                             let assistant = field(count, "assistant").as_f64().unwrap_or(0.0);
                             format!(
-                                "{term}×{}(u{})",
-                                js::number_to_string(user + assistant),
-                                js::number_to_string(user)
+                                "{}{}{}",
+                                paint.term(term),
+                                paint.dim("×"),
+                                paint.dim(&format!(
+                                    "{}(u{})",
+                                    js::number_to_string(user + assistant),
+                                    js::number_to_string(user)
+                                ))
                             )
                         })
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut lines = vec![format!(
-                "{} · {} · {} · {}",
-                display(field(hit, "date")),
-                display(field(hit, "source")),
-                display(field(hit, "project")),
-                counts.join(" ")
+            let mut lines = vec![paint.heading(
+                &display(field(hit, "date")),
+                &display(field(hit, "source")),
+                &display(field(hit, "project")),
+                &counts.join(" "),
             )];
             if let Some(prompt) = truthy_text(field(hit, "openingPrompt")) {
-                lines.push(format!("Opened with: {prompt}"));
+                let prompt = if color {
+                    crate::markdown::render(&highlight(&prompt, &words, paint))
+                } else {
+                    prompt
+                };
+                lines.push(paint.labeled("Opened with", &paint.hanging(&prompt, 13)));
             }
             for item in items(field(hit, "matches")).iter().take(3) {
                 let date = truthy_text(field(item, "date"))
                     .map(|date| format!(" {date}"))
                     .unwrap_or_default();
-                lines.push(format!(
-                    "  [{}{date}] {}",
-                    display(field(item, "role")),
-                    display(field(item, "text"))
+                lines.push(paint.snippet(
+                    &display(field(item, "role")),
+                    &date,
+                    &display(field(item, "text")),
+                    &words,
                 ));
             }
-            lines.push(format!("Transcript: {}", display(field(hit, "path"))));
+            lines.push(paint.labeled("Transcript", &paint.dim(&display(field(hit, "path")))));
             if let Some(resume) = truthy_text(field(hit, "resume")) {
-                lines.push(format!("Resume: {resume}"));
+                lines.push(paint.labeled("Resume", &paint.command(&resume)));
             }
             lines.join("\n")
         })
         .collect();
+    let joined = if color {
+        words
+            .iter()
+            .map(|word| paint.term(word))
+            .collect::<Vec<_>>()
+            .join(&paint.dim(" + "))
+    } else {
+        join_terms(field(result, "terms"), " + ")
+    };
     format!(
-        "{relaxed}Found {} for {}:\n\n{}",
-        plural(hits.len(), "session", "sessions"),
-        join_terms(field(result, "terms"), " + "),
-        sections.join("\n\n---\n\n")
+        "{relaxed}{} for {joined}:\n\n{}",
+        paint.bold(&format!(
+            "Found {}",
+            plural(hits.len(), "session", "sessions")
+        )),
+        sections.join(&paint.separator())
     )
 }
 
@@ -209,8 +242,8 @@ const TOOL_OUTPUT_LINES: usize = 8;
 const TOOL_OUTPUT_LIMIT: usize = 600;
 
 #[derive(Clone, Copy)]
-struct Paint {
-    color: bool,
+pub(crate) struct Paint {
+    pub(crate) color: bool,
 }
 
 impl Paint {
@@ -236,6 +269,137 @@ impl Paint {
     fn dim(self, text: &str) -> String {
         self.wrap("90", text)
     }
+    /// Markdown styling in color; the text unchanged otherwise.
+    pub(crate) fn markdown(self, text: &str) -> String {
+        if self.color {
+            crate::markdown::render(text)
+        } else {
+            text.to_string()
+        }
+    }
+    fn bold(self, text: &str) -> String {
+        self.wrap("1", text)
+    }
+    fn warn(self, text: &str) -> String {
+        self.wrap("33", text)
+    }
+    /// A search term: bold yellow.
+    fn term(self, text: &str) -> String {
+        self.wrap("1;33", text)
+    }
+    /// A command worth copying: green.
+    fn command(self, text: &str) -> String {
+        self.wrap("32", text)
+    }
+    /// Each agent gets its own color.
+    fn source(self, name: &str) -> String {
+        let code = match name {
+            "claude" => "1;38;5;209",
+            "codex" => "1;38;5;114",
+            "pi" => "1;38;5;141",
+            "opencode" => "1;38;5;221",
+            "droid" => "1;38;5;75",
+            _ => "1",
+        };
+        self.wrap(code, name)
+    }
+    fn role(self, role: &str) -> String {
+        match role {
+            "user" => self.wrap("36", role),
+            "assistant" => self.wrap("32", role),
+            _ => self.dim(role),
+        }
+    }
+    /// `date · source · project · tail`, the first line of a result.
+    fn heading(self, date: &str, source: &str, project: &str, tail: &str) -> String {
+        let dot = self.dim(" · ");
+        format!(
+            "{}{dot}{}{dot}{}{dot}{tail}",
+            self.wrap("34", date),
+            self.source(source),
+            self.bold(project)
+        )
+    }
+    fn labeled(self, label: &str, value: &str) -> String {
+        format!("{} {value}", self.dim(&format!("{label}:")))
+    }
+    /// The plain `---` between results, or a dim rule in color.
+    fn separator(self) -> String {
+        if self.color {
+            format!("\n\n{}\n\n", self.dim(&"─".repeat(48)))
+        } else {
+            "\n\n---\n\n".into()
+        }
+    }
+    /// In color, indents continuation lines so a multi-line excerpt stays
+    /// visually inside its result.
+    fn hanging(self, text: &str, width: usize) -> String {
+        if self.color {
+            let pad = " ".repeat(width);
+            text.split('\n')
+                .enumerate()
+                .map(|(index, line)| {
+                    if index == 0 || line.is_empty() {
+                        line.to_string()
+                    } else {
+                        format!("{pad}{line}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            text.to_string()
+        }
+    }
+    /// `  [role date] text`, with terms highlighted in color.
+    fn snippet(self, role: &str, date: &str, text: &str, terms: &[String]) -> String {
+        if !self.color {
+            return format!("  [{role}{date}] {text}");
+        }
+        let body = self.hanging(&crate::markdown::render(&highlight(text, terms, self)), 4);
+        format!(
+            "  {}{}{}{} {body}",
+            self.dim("["),
+            self.role(role),
+            self.dim(date),
+            self.dim("]")
+        )
+    }
+}
+
+/// Wraps every ASCII-case-insensitive occurrence of a term in the term color.
+/// It ends with "off" codes instead of a reset so it nests inside Markdown styles.
+pub(crate) fn highlight(text: &str, terms: &[String], paint: Paint) -> String {
+    if !paint.color {
+        return text.to_string();
+    }
+    let lower = text.to_ascii_lowercase();
+    let needles: Vec<String> = terms
+        .iter()
+        .map(|term| term.to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while at < text.len() {
+        let found = needles
+            .iter()
+            .filter_map(|needle| {
+                lower[at..]
+                    .find(needle.as_str())
+                    .map(|i| (at + i, needle.len()))
+            })
+            .min_by_key(|&(start, len)| (start, std::cmp::Reverse(len)));
+        let Some((start, len)) = found else { break };
+        out.push_str(&text[at..start]);
+        out.push_str(&format!(
+            "\x1b[1;33m{}\x1b[22;39m",
+            &text[start..start + len]
+        ));
+        at = start + len;
+    }
+    out.push_str(&text[at..]);
+    out
 }
 
 /// `renderTranscript(view, options)`: a header line, then one labeled block per event.
@@ -262,12 +426,12 @@ pub fn render_transcript(view: &TranscriptView, options: RenderTranscriptOptions
             EventBody::User { text } => format!(
                 "{}\n{}",
                 rule(&paint.user("USER"), event, paint),
-                clip(text, text_limit)
+                paint.markdown(&clip(text, text_limit))
             ),
             EventBody::Assistant { text } => format!(
                 "{}\n{}",
                 rule(&paint.assistant("ASSISTANT"), event, paint),
-                clip(text, text_limit)
+                paint.markdown(&clip(text, text_limit))
             ),
             EventBody::Thinking { text } => format!(
                 "{}\n{}",
@@ -448,6 +612,32 @@ mod tests {
         event
     }
 
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn highlight_is_case_insensitive_and_prefers_longer_terms() {
+        let paint = Paint { color: true };
+        assert_eq!(
+            highlight("Gay gayathri", &["gay".into(), "gayathri".into()], paint),
+            "\x1b[1;33mGay\x1b[22;39m \x1b[1;33mgayathri\x1b[22;39m"
+        );
+    }
+
     #[test]
     fn transcript_layout_and_colors() {
         let view = TranscriptView {
@@ -534,22 +724,33 @@ mod tests {
     #[test]
     fn search_find_show_and_query() {
         assert_eq!(
-            render_search(&json!({ "query": "x", "matches": [] })),
+            render_search(&json!({ "query": "x", "matches": [] }), false),
             "No sessions found matching \"x\".\n\nSearch is literal, not semantic. Retry with one exact distinctive token or phrase."
         );
         let search = json!({ "query": "x", "matches": [{ "source": "pi", "path": "/p", "count": 1, "date": "2026-08-01", "project": "proj", "snippets": [{ "role": "user", "text": "a x" }] }] });
         assert_eq!(
-            render_search(&search),
+            render_search(&search, false),
             "Found 1 session matching \"x\":\n\n2026-08-01 · pi · proj · 1 match\nTranscript: /p\n  [user] a x"
         );
         let find = json!({ "terms": ["a", "b"], "requiredTerms": ["a"], "hits": [{ "source": "claude", "path": "/c", "project": "proj", "date": "2026-08-02", "score": 5, "termCounts": { "a": { "user": 1, "assistant": 2 } }, "openingPrompt": "", "matches": [{ "role": "user", "date": "2026-08-02", "text": "a" }], "resume": "claude --resume x" }] });
         assert_eq!(
-            render_find(&find),
+            render_find(&find, false),
             "No session matched all 2 terms; showing sessions matching 1.\n\nFound 1 session for a + b:\n\n2026-08-02 · claude · proj · a×3(u1)\n  [user 2026-08-02] a\nTranscript: /c\nResume: claude --resume x"
         );
         assert_eq!(
-            render_find(&json!({ "terms": ["a", "b"], "requiredTerms": [], "hits": [] })),
+            render_find(
+                &json!({ "terms": ["a", "b"], "requiredTerms": [], "hits": [] }),
+                false
+            ),
             "No sessions found for: a, b.\n\nTerms are literal (AND). Try fewer or different exact terms, or drop filters."
+        );
+        let colored = render_find(&find, true);
+        assert!(colored.contains("\x1b[1;38;5;209mclaude\x1b[0m"));
+        assert!(colored.contains("\x1b[1;33ma\x1b[0m"));
+        assert_eq!(strip_ansi(&colored), render_find(&find, false));
+        assert_eq!(
+            strip_ansi(&render_search(&search, true)).replace("─".repeat(48).as_str(), "---"),
+            render_search(&search, false)
         );
         assert_eq!(render_query(&json!({ "answer": "yes" })), "yes");
         let show = ShowResult {

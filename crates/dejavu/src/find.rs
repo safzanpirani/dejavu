@@ -257,7 +257,14 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
             "droid --resume {}",
             name.strip_suffix(".jsonl").unwrap_or(name)
         )),
-        TranscriptSource::Opencode => None,
+        TranscriptSource::Opencode => {
+            // opencode://<db>#<session id>; the ID is ses_ plus letters and digits.
+            let (_, id) = path.rsplit_once('#')?;
+            let valid = id.starts_with("ses_")
+                && id.len() > 4
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+            valid.then(|| format!("opencode2 -s {id}"))
+        }
     }
 }
 
@@ -824,10 +831,18 @@ mod tests {
         assert_eq!(
             resume_command(
                 TranscriptSource::Opencode,
-                "opencode:///x/opencode.db#ses_1"
-            ),
-            None
+                "opencode:///x/opencode.db#ses_0863bbc96ffebFvBM1w03zML4V"
+            )
+            .as_deref(),
+            Some("opencode2 -s ses_0863bbc96ffebFvBM1w03zML4V")
         );
+        for bad in [
+            "opencode:///x/opencode.db",
+            "opencode:///x/opencode.db#ses_",
+            "opencode:///x/opencode.db#ses_1; rm -rf /",
+        ] {
+            assert_eq!(resume_command(TranscriptSource::Opencode, bad), None);
+        }
         assert_eq!(
             resume_command(
                 TranscriptSource::Droid,

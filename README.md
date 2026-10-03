@@ -4,7 +4,7 @@ Agents lose useful context when work moves between Claude Code, Codex, Pi, OpenC
 
 `dejavu` is agent-first. An agent can search past sessions, inspect the relevant conversation, and recover decisions, commands, errors, and file changes. The agent can then verify that historical context against the current workspace. Humans can run the same commands from a terminal.
 
-Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context through Codex exec to `gpt-5.6-luna` with medium reasoning by default. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
+Search and transcript parsing stay on your machine. The optional `dejavu query` command sends selected conversation context through Codex exec to `gpt-6-luna` with medium reasoning by default. Search results can contain credentials or personal data that appeared in a transcript. Agents should treat the output as private.
 
 Dejavu maintains an incremental SQLite full-text index under `~/.cache/dejavu/`. Before each search it parses only the appended tail of changed JSONL transcripts and pulls new or updated OpenCode messages by cursor. A typical refresh takes well under a second.
 
@@ -62,7 +62,7 @@ Ask a model to summarize one selected session:
 dejavu query '<locator from search results>' 'What did we decide?'
 ```
 
-`dejavu query` requires an installed, authenticated `codex` binary with access to `gpt-5.6-luna`. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
+`dejavu query` requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
 
 ## What it reads
 
@@ -101,7 +101,7 @@ dejavu find workshop codex colleagues
 dejavu find deployment timeout --project payments-api --since 2w
 ```
 
-`find` searches for multiple literal terms in one session. It ranks user-message matches above assistant-message matches. The result includes the opening prompt, matching messages, transcript path, and a resume command when the source supports one.
+`find` searches for multiple literal terms in one session. It ranks user-message matches above assistant-message matches. The result includes the opening prompt, matching messages, transcript path, and a resume command when the source supports one. In a terminal, `search` and `find` color each agent, highlight the search terms, render Markdown in excerpts, and indent multi-line excerpts. Piped output stays plain. Use `--color` or `--no-color` to override.
 
 ### Read a transcript
 
@@ -149,7 +149,7 @@ dejavu transcript '<locator>' --full --thinking
 dejavu transcript '<locator>' --no-tools --json
 ```
 
-`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, and Droid sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal. Use `--color` or `--no-color` to override.
+`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, and Droid sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
 
 ```bash
 dejavu transcript '<locator>' --no-tools --max-chars 1500 --budget-chars 8000 --json
@@ -172,7 +172,7 @@ The default is deterministic and invokes no model. It measures outer calls, resu
 
 Repeated calls are candidates for review, not proven waste. Nested call sites are lexical hints, not executed counts; aliases, loops, templates, and computed access limit coverage. First-result latency includes waiting and is not model reasoning time. Project mode selects sessions by their last indexed visible-message date and measures each entire selected session. Check `omittedSessions` and `diagnostics` for coverage limits. Exit 1 signals skipped sources or an explanation failure even when measurements are available.
 
-`--explain` sends only bounded metrics and event references through Codex exec to `gpt-5.6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
+`--explain` sends only bounded metrics and event references through Codex exec to `gpt-6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
 
 ### Redact a transcript
 
@@ -199,7 +199,7 @@ Memory search stays separate from transcript search. Memory files contain curate
 
 `dejavu query` follows the source's conversation structure. It removes reasoning, developer instructions, and tool output before it calls the model. Large sessions use windows around the question terms.
 
-The default is `codex exec --model gpt-5.6-luna` with medium reasoning and the OpenAI provider. It uses Codex's existing authentication, ignores user config overrides, disables project/skill instructions, and runs ephemerally in an isolated temporary directory with a read-only sandbox. Transcript text goes through stdin. The final answer comes from Codex's output file, which is deleted with the temporary directory after completion. Queries time out after 120 seconds and do not retry automatically.
+The default is `codex exec --model gpt-6-luna` with medium reasoning and the OpenAI provider. It uses Codex's existing authentication, ignores user config overrides, disables project/skill instructions, and runs ephemerally in an isolated temporary directory with a read-only sandbox. Transcript text goes through stdin. The final answer comes from Codex's output file, which is deleted with the temporary directory after completion. Queries time out after 120 seconds and do not retry automatically.
 
 Use `--model <codex-model-id>` or `--model codex/<id>` to select another Codex model, still with medium reasoning. No Pi configuration is read on this path, and old Pi defaults do not override Luna.
 
@@ -243,6 +243,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 scripts/install-local.sh
 ```
+
+With `mbx` installed, prefix the Cargo commands with `mbx` (`mbx clippy`, `mbx test`) to share compiled work across checkouts. `scripts/install-local.sh` uses mbx when it is on `PATH`.
 
 `.github/workflows/ci.yml` runs the same checks on Linux, macOS, and Windows for every push and pull request. Pushing a `v*` tag that matches the version in `Cargo.toml` and `package.json` runs `.github/workflows/release.yml`. It tests, builds every platform binary with Cargo on native runners (static musl binaries on Linux), publishes them with checksums as a GitHub release, and publishes the npm package with the `NPM_TOKEN` repository secret.
 

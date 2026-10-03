@@ -11,6 +11,7 @@ pub mod find;
 pub mod index;
 pub mod js;
 pub mod last;
+mod markdown;
 mod memory;
 mod model_client;
 pub mod opencode;
@@ -79,6 +80,8 @@ search flags
       --snippets N       snippets per transcript (integer >= 1; default {default_snippet_limit})
       --max-parallel N   local store/file workers (default {default_max_parallel})
       --no-index         bypass the transcript index and scan files directly
+      --color / --no-color
+                         force ANSI colors on or off (default: on for a terminal)
 
 find flags (multi-term session finder, ranked, user messages weighted)
   -s, --source NAME      restrict to one source
@@ -89,6 +92,8 @@ find flags (multi-term session finder, ranked, user messages weighted)
       --paths            print matching transcript locators only, one per line
       --max-parallel N   local store/candidate workers (default {default_max_parallel})
       --no-index         bypass the transcript index and scan files directly
+      --color / --no-color
+                         force ANSI colors on or off (default: on for a terminal)
 
 show flags
       --full             do not truncate long messages
@@ -150,7 +155,7 @@ profile flags
       --explain         interpret bounded metrics with Luna medium; no raw context sent
 
 query flags
-      --model ID         Codex model (default gpt-5.6-luna, medium reasoning)
+      --model ID         Codex model (default gpt-6-luna, medium reasoning)
                          Explicit provider/id selects a legacy HTTP/Pi provider;
                          codex/id selects Codex exec
       --agent-dir P      Pi config directory for legacy overrides (default ~/.pi/agent)

@@ -4,6 +4,10 @@
 
 - `dejavu last` shows where a session left off: its card and the newest user/assistant turns within a character budget. With no argument it picks the newest session in the current Git repo, skipping the active one. It also accepts `find` terms, a transcript locator, or a session ID. `--list` prints recent session cards.
 - Claude and Pi sessions report their recorded working directory as the project. The encoded directory name turns both `/` and `-` into `-`, so a project such as `hul-tech` used to show as `hul/tech` in `find`, the index, and Pi transcript views. The index rebuilds once to pick this up.
+- `search` and `find` print in color on a terminal: each agent gets its own color, matched terms are highlighted, roles and labels are tinted, and multi-line excerpts are indented. Piped and `--json` output is unchanged. `--color` and `--no-color` override the default.
+- `find` and `last` print a resume command for OpenCode sessions: `opencode2 -s <session id>`, taken from the locator.
+- `query` and `profile --explain` default to `gpt-6-luna` through `codex exec`, still at medium reasoning. Pass `--model gpt-5.6-luna` for the previous model.
+- Colored output renders Markdown: headings, bold, italic, strikethrough, inline code, fenced code blocks, bullet, numbered, and task lists, quotes, rules, links, and tables. It applies to `find` and `search` excerpts, `transcript` message bodies, and the `last` card and tail. Plain output keeps the raw Markdown.
 - `pack` also skips the active Claude Code session through `CLAUDE_CODE_SESSION_ID`, the variable Claude Code exports.
 
 ## 0.5.0
