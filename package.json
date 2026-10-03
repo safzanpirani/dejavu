@@ -1,6 +1,6 @@
 {
   "name": "@safzanpirani/dejavu",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Agent-first local search for coding-agent transcripts and project memory",
   "license": "MIT",
   "type": "module",
