@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2
 
 - `last` and `pack` skip the active Droid session. Droid exports no session ID, so dejavu finds the nearest `droid` parent process, reads its working directory, and treats the newest transcript in that directory's session folder as the active one. Before this, `dejavu last` run inside Droid returned the session asking.
 
