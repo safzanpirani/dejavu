@@ -202,26 +202,40 @@ pub fn source_from_locator(
         let root = roots.jsonl_root(source).unwrap_or_default();
         if locator.len() > root.len()
             && locator.starts_with(root)
-            && locator.as_bytes()[root.len()] == b'/'
+            && matches!(locator.as_bytes()[root.len()], b'/' | b'\\')
         {
             return Ok(source);
         }
     }
-    if locator.contains("/.claude/projects/") {
+    if has_segments(locator, ".claude", "projects") {
         return Ok(TranscriptSource::Claude);
     }
-    if locator.contains("/.codex/sessions/") {
+    if has_segments(locator, ".codex", "sessions") {
         return Ok(TranscriptSource::Codex);
     }
     if has_pi_profile_segment(locator) {
         return Ok(TranscriptSource::Pi);
     }
-    if locator.contains("/.factory/sessions/") {
+    if has_segments(locator, ".factory", "sessions") {
         return Ok(TranscriptSource::Droid);
     }
     Err(format!(
         "cannot determine transcript source from locator: {locator} (use a transcript path or opencode:// locator from search results)"
     ))
+}
+
+/// `/[/\\]<dir>[/\\]<sub>[/\\]/`, so native Windows paths match too.
+fn has_segments(locator: &str, dir: &str, sub: &str) -> bool {
+    let b = locator.as_bytes();
+    let sep = |i: usize| b.get(i).is_some_and(|&c| c == b'/' || c == b'\\');
+    locator.match_indices(dir).any(|(i, _)| {
+        let after = i + dir.len();
+        i > 0
+            && sep(i - 1)
+            && sep(after)
+            && locator[after + 1..].starts_with(sub)
+            && sep(after + 1 + sub.len())
+    })
 }
 
 /// `/[/\\]\.pi[/\\][^/\\]+[/\\]sessions[/\\]/`
@@ -326,10 +340,11 @@ mod tests {
             transcript_store_roots(&env(&[("PI_CODING_AGENT_DIR", "/p/./x/")]), HOME).pi,
             "/p/x/sessions"
         );
+        // It resolves against the current directory, joined with `\` on Windows.
+        let pi = transcript_store_roots(&env(&[("PI_CODING_AGENT_DIR", "~x")]), HOME).pi;
         assert!(
-            transcript_store_roots(&env(&[("PI_CODING_AGENT_DIR", "~x")]), HOME)
-                .pi
-                .ends_with("/~x/sessions")
+            pi.ends_with("/~x/sessions") || (cfg!(windows) && pi.ends_with("\\~x/sessions")),
+            "{pi}"
         );
     }
 
@@ -498,6 +513,27 @@ mod tests {
             Ok(TranscriptSource::Droid)
         );
         assert!(source_from_locator("/home/owner/.factory/auth.json", &roots).is_err());
+        for (path, source) in [
+            (
+                r"C:\Users\dev\.claude\projects\-x\a.jsonl",
+                TranscriptSource::Claude,
+            ),
+            (
+                r"C:\Users\dev\.codex\sessions\2026\a.jsonl",
+                TranscriptSource::Codex,
+            ),
+            (
+                r"C:\Users\dev\.factory\sessions\-x\s.jsonl",
+                TranscriptSource::Droid,
+            ),
+            (
+                r"C:\tmp\r\.claude/projects/demo\f.jsonl",
+                TranscriptSource::Claude,
+            ),
+        ] {
+            assert_eq!(source_from_locator(path, &roots), Ok(source), "{path}");
+        }
+        assert!(source_from_locator(r"C:\x.claude\projects\a.jsonl", &roots).is_err());
         assert_eq!(
             source_from_locator("/tmp/x.jsonl", &roots).unwrap_err(),
             "cannot determine transcript source from locator: /tmp/x.jsonl (use a transcript path or opencode:// locator from search results)"

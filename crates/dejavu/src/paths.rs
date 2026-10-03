@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 /// `process.env.HOME ?? ""`, read once.
 pub fn env_home() -> &'static str {
     static HOME: OnceLock<String> = OnceLock::new();
-    HOME.get_or_init(|| std::env::var("HOME").unwrap_or_default())
+    HOME.get_or_init(crate::sources::home_dir)
 }
 
 /// `compactHome(path)`: strips a leading `$HOME/`.
@@ -25,7 +25,8 @@ pub fn compact_home_with<'a>(path: &'a str, home: &str) -> &'a str {
     if !home.is_empty()
         && path.len() > home.len()
         && path.starts_with(home)
-        && path.as_bytes()[home.len()] == b'/'
+        && (path.as_bytes()[home.len()] == b'/'
+            || (cfg!(windows) && path.as_bytes()[home.len()] == b'\\'))
     {
         &path[home.len() + 1..]
     } else {
@@ -433,19 +434,37 @@ pub fn join(parts: &[&str]) -> String {
     }
 }
 
-/// `path.posix.isAbsolute(path)`.
-pub fn is_absolute(path: &str) -> bool {
-    path.starts_with('/')
+/// A Windows drive (`C:\`, `C:/`) or UNC (`\\server`) path.
+pub fn is_windows_absolute(path: &str) -> bool {
+    let b = path.as_bytes();
+    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\'))
+        || path.starts_with("\\\\")
 }
 
-/// `path.posix.resolve(path)` against the current directory.
+/// `path.posix.isAbsolute(path)`; on Windows, drive and UNC paths too.
+pub fn is_absolute(path: &str) -> bool {
+    path.starts_with('/') || (cfg!(windows) && is_windows_absolute(path))
+}
+
+/// `path.posix.resolve(path)` against the current directory. On Windows the
+/// POSIX rules would turn `C:\x` into `<cwd>/C:\x`, so native paths go through
+/// the platform's own joining instead.
 pub fn resolve(path: &str) -> String {
+    if cfg!(windows) && is_windows_absolute(path) {
+        return path.to_string();
+    }
     if is_absolute(path) {
         return resolve_from("/", path);
     }
     let cwd = std::env::current_dir()
         .map(|dir| dir.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/".into());
+    if cfg!(windows) {
+        return std::path::Path::new(&cwd)
+            .join(path)
+            .to_string_lossy()
+            .into_owned();
+    }
     resolve_from(&cwd, path)
 }
 
@@ -463,10 +482,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recognizes_windows_drive_and_unc_paths() {
+        for path in [r"C:\Users\dev", "c:/x", r"\\nas\share"] {
+            assert!(is_windows_absolute(path), "{path}");
+        }
+        for path in ["/home/dev", "C:", "C:x", "rel/x", r"\single", "1:/x"] {
+            assert!(!is_windows_absolute(path), "{path}");
+        }
+        assert_eq!(is_absolute(r"C:\Users\dev"), cfg!(windows));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_keeps_native_windows_paths() {
+        assert_eq!(resolve(r"C:\Users\dev\.claude"), r"C:\Users\dev\.claude");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(resolve("x"), cwd.join("x").to_string_lossy());
+        assert_eq!(
+            compact_home_with(r"C:\Users\dev\app", r"C:\Users\dev"),
+            "app"
+        );
+    }
+
+    #[test]
     fn prefers_the_recorded_cwd_over_the_lossy_encoded_directory() {
         let home = env_home();
+        // A Windows home holds backslashes, which must be escaped inside JSON.
+        let cwd = |rest: &str| serde_json::to_string(&format!("{home}/{rest}")).unwrap();
         let claude = format!(
-            "{{\"type\":\"mode\",\"sessionId\":\"s\"}}\n{{\"type\":\"user\",\"cwd\":\"{home}/Development/hul-tech\"}}\n"
+            "{{\"type\":\"mode\",\"sessionId\":\"s\"}}\n{{\"type\":\"user\",\"cwd\":{}}}\n",
+            cwd("Development/hul-tech")
         );
         assert_eq!(
             project_from_transcript_text(
@@ -477,7 +522,8 @@ mod tests {
             "Development/hul-tech"
         );
         let pi = format!(
-            "{{\"type\":\"session\",\"cwd\":\"{home}/Development/reason-leak\"}}\n{{\"type\":\"message\",\"cwd\":\"/elsewhere\"}}\n"
+            "{{\"type\":\"session\",\"cwd\":{}}}\n{{\"type\":\"message\",\"cwd\":\"/elsewhere\"}}\n",
+            cwd("Development/reason-leak")
         );
         assert_eq!(
             project_from_transcript_text(

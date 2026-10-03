@@ -45,6 +45,12 @@ pub fn fs_error(error: &std::io::Error, syscall: &str, path: &str) -> String {
         ErrorKind::PermissionDenied if error.raw_os_error() == Some(1) => {
             ("EPERM", "operation not permitted")
         }
+        // Windows refuses to open a directory with ERROR_ACCESS_DENIED, not EISDIR.
+        ErrorKind::PermissionDenied
+            if cfg!(windows) && syscall == "open" && std::path::Path::new(path).is_dir() =>
+        {
+            return "Directories cannot be read like files".to_string();
+        }
         ErrorKind::PermissionDenied => ("EACCES", "permission denied"),
         ErrorKind::NotADirectory => ("ENOTDIR", "not a directory"),
         ErrorKind::IsADirectory if syscall == "open" => {

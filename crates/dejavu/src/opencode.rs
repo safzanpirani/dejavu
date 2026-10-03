@@ -2,7 +2,7 @@
 //! schemas, `opencode://<db>#<session>` locators, search, and message loading.
 
 use crate::js;
-use crate::paths::{compact_home, count_occurrences, snippet_around};
+use crate::paths::{compact_home, count_occurrences, is_windows_absolute, snippet_around};
 use crate::reader::{JsStr, LenientFields, deserialize_lenient, parse_json_line};
 use crate::types::{
     RecallBlock, RecallMessage, StoreSearchMatch, TranscriptSnippet, TranscriptSource,
@@ -153,10 +153,18 @@ pub fn opencode_session_uses_v2(
         .map_err(|e| e.to_string())
 }
 
-/// `opencode://<encodeURI(db)>#<encodeURIComponent(session)>`.
+/// `opencode://<encodeURI(db)>#<encodeURIComponent(session)>`. A Windows path
+/// gets a leading `/` (`opencode:///C:%5C...`), as a `file:` URL would, so the
+/// drive is not read as a host; its backslashes stay percent-encoded so the
+/// path round-trips exactly.
 pub fn opencode_locator(database_path: &str, session_id: &str) -> String {
+    let slash = if is_windows_absolute(database_path) {
+        "/"
+    } else {
+        ""
+    };
     format!(
-        "opencode://{}#{}",
+        "opencode://{slash}{}#{}",
         encode_uri(database_path),
         encode_uri_component(session_id)
     )
@@ -181,9 +189,15 @@ pub fn parse_opencode_locator(locator: &str) -> Result<OpenCodeLocator, String> 
     if slash > 0 {
         return Err(invalid());
     }
-    let database_path = decode_uri(&normalize_url_path(before))?;
+    let decoded = decode_uri(&normalize_url_path(before))?;
+    let database_path = match decoded.strip_prefix('/') {
+        Some(windows) if is_windows_absolute(windows) => windows.to_string(),
+        _ => decoded,
+    };
     let session_id = decode_uri_component(fragment)?;
-    if !database_path.starts_with('/') || session_id.is_empty() {
+    if !(database_path.starts_with('/') || is_windows_absolute(&database_path))
+        || session_id.is_empty()
+    {
         return Err(invalid());
     }
     Ok(OpenCodeLocator {
@@ -947,6 +961,30 @@ mod tests {
         );
         assert_eq!(decode_uri_component("%F0%9F%98%80").unwrap(), "😀");
         assert!(decode_uri_component("%ED%A0%80").is_err());
+    }
+
+    #[test]
+    fn windows_database_paths_round_trip_through_locators() {
+        for path in [
+            r"C:\Users\dev\AppData\Local\Temp\x/opencode.db",
+            "D:/data/opencode/opencode.db",
+            r"\\nas\share\opencode.db",
+        ] {
+            let locator = opencode_locator(path, "ses_1");
+            assert!(locator.starts_with("opencode:///"), "{locator}");
+            assert_eq!(
+                parse_opencode_locator(&locator).unwrap(),
+                OpenCodeLocator {
+                    database_path: path.into(),
+                    session_id: "ses_1".into()
+                }
+            );
+        }
+        assert_eq!(
+            opencode_locator(r"C:\a b\o.db", "s"),
+            "opencode:///C:%5Ca%20b%5Co.db#s"
+        );
+        assert!(parse_opencode_locator(r"opencode://C:%5Ca.db#s").is_err());
     }
 
     #[test]
