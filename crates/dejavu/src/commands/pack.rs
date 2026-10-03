@@ -43,11 +43,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         context,
         exclude_sessions,
     };
-    // Active session IDs from the environment are excluded.
-    let env_exclusions: Vec<String> = ["CODEX_THREAD_ID", "CLAUDE_SESSION_ID"]
-        .iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .collect();
+    let env_exclusions = pack::active_session_ids();
     let result = pack::pack_sessions(
         &args.items,
         &options,

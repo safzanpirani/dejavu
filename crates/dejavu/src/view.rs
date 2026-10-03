@@ -328,7 +328,7 @@ pub fn load_transcript_events(
                 .collect(),
         ),
         TranscriptSource::Pi => (
-            project_from_transcript_path(locator, TranscriptSource::Pi),
+            crate::search::read_transcript_project(locator, TranscriptSource::Pi),
             entries.iter().flat_map(pi_events).collect(),
         ),
         _ => (

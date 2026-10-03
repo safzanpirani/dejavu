@@ -261,7 +261,7 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
     }
 }
 
-fn is_real_user_prompt(text: &str) -> bool {
+pub(crate) fn is_real_user_prompt(text: &str) -> bool {
     let trimmed = js_trim(text);
     !(trimmed.is_empty()
         || trimmed.starts_with('<')

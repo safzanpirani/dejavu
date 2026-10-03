@@ -1,6 +1,6 @@
 ---
 name: dejavu
-description: Search and query past Claude Code, Codex, Pi, OpenCode, and Factory Droid transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory. Do not use for shell history, Git history, or repository code search.
+description: Search and query past Claude Code, Codex, Pi, OpenCode, and Factory Droid transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory, and when the user says to continue or pick up where the last session, or a named session, left off. Do not use for shell history, Git history, or repository code search.
 ---
 
 # Dejavu
@@ -18,6 +18,27 @@ dejavu memory show '<unique project substring or file path>'
 
 Memory commands read Markdown under `~/.claude/projects/*/memory/`. They search curated memory separately from raw transcripts and never modify it. A project selector with several topic files resolves to its `MEMORY.md` index. Use the exact `project/name` from `memory list --files` when a selector is ambiguous. Set `CLAUDE_CONFIG_DIR` or pass `--root` for another Claude store.
 
+## Continue where a session left off
+
+When the user says "continue where the last session left off", "pick up from yesterday's session", or "continue where the <x> session left off", run `dejavu last` and resume the work from its output.
+
+```sh
+dejavu last                              # the previous session in this repo
+dejavu last --list -n 5                  # pick one when "last" is ambiguous
+dejavu last <x terms>                    # "the <x> session": find's best match
+dejavu last '<locator or session id>'    # a session the user named exactly
+dejavu last --anywhere --since 2d        # newest session in any project
+```
+
+With no argument it picks the newest session in the current Git repo (or a subdirectory) and skips the session you are running in, so "last session" is the one before this one. Terms rank sessions like `dejavu find` within the current repo, and widen to every project when nothing there matches. `-p SUBSTR` pins one project and `--anywhere` searches all of them. `--source codex` limits to one agent. The output is a session card (date, source, project, opening prompt, last real user request, transcript, resume command) followed by the newest user/assistant turns within 8,000 characters. `--tools` adds tool calls and results. `--turns N` and `--budget-chars N` widen the tail. The last line gives a `dejavu transcript ... --from-event N` command for earlier turns.
+
+Then:
+
+1. Say which session you picked (date, source, opening prompt) in one line. If several recent sessions could be "the <x> session", run `dejavu last --list` and ask the user which one before continuing.
+2. Read the tail for the open thread: the last user request, what the agent finished, what it said was next, and anything left pending or failing. Read earlier turns with the printed `transcript --from-event` command when the tail starts mid-task.
+3. Check current state before acting. Run `git status` and `git log`, and read the files the session touched. The transcript is history, and another session may have changed things since.
+4. Continue the work. Do not tell the user to run `claude --resume` unless they ask to reopen the old session itself.
+
 ## Find a session from a vague memory
 
 When the request is "find that chat where we ...", use `dejavu find` with two or three literal terms. It requires all terms per session (falling back to the best subset), weights user-message matches above assistant ones, and prints a session card: opening user prompt, matching user messages with dates, per-term counts, transcript path, and a resume command for Claude and Codex sessions.
@@ -32,7 +53,7 @@ Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-D
 
 ## Read a transcript without model cost
 
-For bounded context in one call, use `dejavu pack <term>... --project SUBSTR --budget-chars 8000 --json`. It runs the session finder and returns user/assistant excerpts around matches, with overlapping neighborhoods merged. Defaults: 3 sessions, 2 neighboring dialogue events, 1200 characters per event, 12000 total event-body characters. It shares the budget across sessions/events and focuses long excerpts around a term. `--context 0` returns only matching events. `--exclude-session ID_OR_LOCATOR` is repeatable; active `CODEX_THREAD_ID`/`CLAUDE_SESSION_ID` values are automatically excluded when present. It accepts find's source, project, since, user, no-index, and max-parallel flags. Search considers at most 40 ranked candidates, not a complete catalog. Inspect `requiredTerms` for relaxed matching and `skippedStores`/`skippedSessions` for unavailable data.
+For bounded context in one call, use `dejavu pack <term>... --project SUBSTR --budget-chars 8000 --json`. It runs the session finder and returns user/assistant excerpts around matches, with overlapping neighborhoods merged. Defaults: 3 sessions, 2 neighboring dialogue events, 1200 characters per event, 12000 total event-body characters. It shares the budget across sessions/events and focuses long excerpts around a term. `--context 0` returns only matching events. `--exclude-session ID_OR_LOCATOR` is repeatable; active `CODEX_THREAD_ID`/`CLAUDE_CODE_SESSION_ID`/`CLAUDE_SESSION_ID` values are automatically excluded when present. It accepts find's source, project, since, user, no-index, and max-parallel flags. Search considers at most 40 ranked candidates, not a complete catalog. Inspect `requiredTerms` for relaxed matching and `skippedStores`/`skippedSessions` for unavailable data.
 
 Use `show --no-tools` for only user/assistant content without tool summaries or tool-only turns. `show --max-chars N` changes the per-message limit in text and JSON. `--no-toolcalls` aliases `--no-tools` for both show and transcript.
 

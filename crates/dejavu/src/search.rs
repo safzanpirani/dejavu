@@ -124,11 +124,11 @@ pub fn read_prefix(path: &str, bytes: u64) -> Result<String, String> {
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_string())
 }
 
-/// `readTranscriptProject(path, source)`: a Codex transcript's `session_meta`
-/// cwd or a Droid transcript's `session_start` cwd from its first 128 KiB;
-/// other sources decode the path.
+/// `readTranscriptProject(path, source)`: the cwd a JSONL transcript records in
+/// its first 128 KiB (see [`project_from_transcript_text`]); OpenCode, and
+/// transcripts without one, decode the path.
 pub fn read_transcript_project(path: &str, source: TranscriptSource) -> String {
-    if !matches!(source, TranscriptSource::Codex | TranscriptSource::Droid) {
+    if source == TranscriptSource::Opencode {
         return project_from_transcript_path(path, source);
     }
     match read_prefix(path, 128 * 1024) {

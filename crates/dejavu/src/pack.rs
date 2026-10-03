@@ -80,7 +80,7 @@ fn basename_without(path: &str, ext: &str) -> String {
 }
 
 /// `/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i`
-fn is_uuid(value: &str) -> bool {
+pub(crate) fn is_uuid(value: &str) -> bool {
     let b = value.as_bytes();
     b.len() == 36
         && b.iter().enumerate().all(|(i, &c)| {
@@ -92,7 +92,23 @@ fn is_uuid(value: &str) -> bool {
         })
 }
 
-fn excluded(path: &str, source: TranscriptSource, value: &str) -> bool {
+/// The running agent's session ids, so a lookup skips the session asking.
+/// Claude Code exports `CLAUDE_CODE_SESSION_ID`; `CLAUDE_SESSION_ID` is kept
+/// for wrappers that set the older name.
+pub(crate) fn active_session_ids() -> Vec<String> {
+    [
+        "CODEX_THREAD_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_SESSION_ID",
+    ]
+    .iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+/// Whether `value` (a locator, file stem, or session id) names this transcript.
+pub(crate) fn excluded(path: &str, source: TranscriptSource, value: &str) -> bool {
     path == value
         || basename_without(path, ".jsonl") == value
         || (source == TranscriptSource::Opencode

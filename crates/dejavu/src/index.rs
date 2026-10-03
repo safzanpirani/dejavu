@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 /// Bytes hashed at the start of each JSONL file to detect in-place rewrites versus appends.
 const HEAD_BYTES: u64 = 4096;
 /// Changed files are parsed in parallel in batches of at most this many files
@@ -260,6 +260,110 @@ pub fn list_indexed_sessions(
         .map_err(sql_error)?;
     let total = rows.len();
     Ok((rows.into_iter().take(limit).collect(), total))
+}
+
+/// Which projects [`recent_sessions`] admits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectFilter {
+    Any,
+    /// The project contains this text.
+    Contains(String),
+    /// The project is this directory or one below it.
+    Under(String),
+}
+
+/// One indexed session with its newest visible-message date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentSession {
+    pub path: String,
+    pub source: TranscriptSource,
+    pub date: String,
+}
+
+/// Indexed sessions with a visible message in a matching project since `since`,
+/// newest first. Projects compare case-insensitively and home-compacted.
+pub fn recent_sessions(
+    filter: &ProjectFilter,
+    since: Option<&str>,
+    stores: &[TranscriptStore],
+    path: &str,
+) -> Result<Vec<RecentSession>, String> {
+    if stores.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle = |project: &str| {
+        let compacted = compact_home(project);
+        js_lower(compacted.strip_prefix("~/").unwrap_or(compacted))
+            .trim_end_matches('/')
+            .to_string()
+    };
+    let (clause, mut values) = match filter {
+        ProjectFilter::Any => ("1".to_string(), Vec::new()),
+        ProjectFilter::Contains(project) => (
+            "instr(lower(project), ?) > 0".to_string(),
+            vec![SqlValue::Text(needle(project))],
+        ),
+        ProjectFilter::Under(project) => {
+            let under = needle(project);
+            (
+                "(lower(project) = ? OR substr(lower(project), 1, ?) = ?)".to_string(),
+                vec![
+                    SqlValue::Text(under.clone()),
+                    SqlValue::Integer(under.chars().count() as i64 + 1),
+                    SqlValue::Text(format!("{under}/")),
+                ],
+            )
+        }
+    };
+    let database = open_index_readonly(path)?;
+    let sql = format!(
+        "SELECT path, source, MAX(date) AS latest FROM message_rows
+      WHERE {clause} AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
+      ORDER BY latest DESC, path ASC",
+        placeholders(stores.len())
+    );
+    values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+    values.push(SqlValue::Text(since.unwrap_or("").to_string()));
+    let mut statement = database.prepare(&sql).map_err(sql_error)?;
+    let rows: Vec<(String, String, String)> = statement
+        .query_map(params_from_iter(values), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .and_then(|rows| rows.collect())
+        .map_err(sql_error)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(path, source, date)| {
+            Some(RecentSession {
+                source: TranscriptSource::from_name(&source)?,
+                path,
+                date,
+            })
+        })
+        .collect())
+}
+
+/// The indexed transcript whose path contains a session id, newest first.
+pub fn path_for_session_id(
+    id: &str,
+    stores: &[TranscriptStore],
+    path: &str,
+) -> Result<Option<String>, String> {
+    if stores.is_empty() || id.is_empty() {
+        return Ok(None);
+    }
+    let database = open_index_readonly(path)?;
+    let sql = format!(
+        "SELECT path FROM message_rows WHERE instr(lower(path), ?) > 0 AND store IN ({})
+      GROUP BY path ORDER BY MAX(date) DESC LIMIT 1",
+        placeholders(stores.len())
+    );
+    let mut values = vec![SqlValue::Text(js_lower(id).into_owned())];
+    values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+    database
+        .query_row(&sql, params_from_iter(values), |row| row.get(0))
+        .optional()
+        .map_err(sql_error)
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,7 +1723,7 @@ mod tests {
         assert!(status.exists);
         assert_eq!(
             (status.schema_version, status.files, status.messages),
-            (2, 0, 0)
+            (SCHEMA_VERSION, 0, 0)
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

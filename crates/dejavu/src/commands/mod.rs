@@ -3,6 +3,7 @@
 
 pub mod find;
 pub mod index;
+pub mod last;
 pub mod memory;
 pub mod pack;
 pub mod profile;

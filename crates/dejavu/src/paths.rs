@@ -251,7 +251,11 @@ pub fn project_from_transcript_text(path: &str, source: TranscriptSource, text: 
     let cwd = match source {
         TranscriptSource::Codex => codex_session_cwd(text),
         TranscriptSource::Droid => droid_session_cwd(text),
-        _ => None,
+        // The encoded directory name turns both '/' and '-' into '-', so the
+        // recorded cwd is the only lossless project.
+        TranscriptSource::Claude => row_cwd(text, None),
+        TranscriptSource::Pi => row_cwd(text, Some("session")),
+        TranscriptSource::Opencode => None,
     };
     match cwd {
         Some(cwd) => compact_home(&cwd).to_string(),
@@ -282,6 +286,34 @@ pub fn droid_session_cwd(text: &str) -> Option<String> {
             Some(serde_json::Value::String(cwd)) if !cwd.is_empty() => Some(cwd),
             _ => None,
         };
+    }
+    None
+}
+
+/// The first non-empty string `cwd` of a row whose `type` is `kind` (any row
+/// when `kind` is `None`): a Claude entry or a Pi `session` header.
+fn row_cwd(text: &str, kind: Option<&str>) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        #[serde(rename = "type")]
+        kind: Option<serde_json::Value>,
+        cwd: Option<serde_json::Value>,
+    }
+    for line in text.split('\n') {
+        if !line.contains("\"cwd\"") {
+            continue;
+        }
+        let Some(row) = crate::reader::parse_json_line::<Row>(line) else {
+            continue;
+        };
+        if kind.is_some() && row.kind.as_ref().and_then(|v| v.as_str()) != kind {
+            continue;
+        }
+        if let Some(serde_json::Value::String(cwd)) = row.cwd
+            && !cwd.is_empty()
+        {
+            return Some(cwd);
+        }
     }
     None
 }
@@ -429,6 +461,42 @@ fn resolve_from(base: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefers_the_recorded_cwd_over_the_lossy_encoded_directory() {
+        let home = env_home();
+        let claude = format!(
+            "{{\"type\":\"mode\",\"sessionId\":\"s\"}}\n{{\"type\":\"user\",\"cwd\":\"{home}/Development/hul-tech\"}}\n"
+        );
+        assert_eq!(
+            project_from_transcript_text(
+                "/x/.claude/projects/-Users-dev-Development-hul-tech/a.jsonl",
+                TranscriptSource::Claude,
+                &claude
+            ),
+            "Development/hul-tech"
+        );
+        let pi = format!(
+            "{{\"type\":\"session\",\"cwd\":\"{home}/Development/reason-leak\"}}\n{{\"type\":\"message\",\"cwd\":\"/elsewhere\"}}\n"
+        );
+        assert_eq!(
+            project_from_transcript_text(
+                "/x/sessions/--Users-dev-Development-reason-leak--/a.jsonl",
+                TranscriptSource::Pi,
+                &pi
+            ),
+            "Development/reason-leak"
+        );
+        // Without a recorded cwd, the directory still decodes.
+        assert_eq!(
+            project_from_transcript_text(
+                "/x/sessions/--a-b--/a.jsonl",
+                TranscriptSource::Pi,
+                "{\"type\":\"message\",\"cwd\":\"/elsewhere\"}"
+            ),
+            "a/b"
+        );
+    }
 
     #[test]
     fn decodes_pi_and_claude_project_directories() {

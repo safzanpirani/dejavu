@@ -10,6 +10,7 @@ mod commands;
 pub mod find;
 pub mod index;
 pub mod js;
+pub mod last;
 mod memory;
 mod model_client;
 pub mod opencode;
@@ -58,6 +59,7 @@ fn help() -> String {
   {B}dejavu{R} <token-or-exact-phrase> [flags]
   {B}dejavu find{R} <term> [term...] [flags]
   {B}dejavu pack{R} <term> [term...] [flags]
+  {B}dejavu last{R} [term... | transcript-locator | session-id] [flags]
   {B}dejavu show{R} <transcript-locator> [flags]
   {B}dejavu transcript{R} <transcript-locator> [flags]
   {B}dejavu scrub{R} <transcript-locator> [--drop N|A-B]... [--pattern TEXT]... [flags]
@@ -102,6 +104,21 @@ pack flags (model-free search plus user/assistant excerpts)
       --exclude-session ID_OR_LOCATOR
                          repeatable; active session IDs from the environment are excluded
                          also accepts find's source, project, since, user, no-index, max-parallel
+
+last flags (where a session left off: its card plus the newest dialogue turns)
+                         no argument: newest session in the current Git repo (or directory);
+                         terms: find's best match in this repo, else anywhere;
+                         a locator or session id: that session.
+                         Active CODEX_THREAD_ID/CLAUDE_CODE_SESSION_ID sessions are skipped.
+  -p, --project SUBSTR   sessions whose project contains SUBSTR, not the current repo
+      --anywhere         newest session in any project
+      --list             session cards only; -n/--limit N of them (default 5)
+      --turns N          newest events in the tail (default 12)
+      --budget-chars N   total tail body characters (default 8000)
+      --max-chars N      characters per dialogue event (default 1500)
+      --tools            include tool calls and results (--tool-chars N, default 400)
+      --exclude-session ID_OR_LOCATOR
+                         repeatable; also accepts --source, --since, and --color/--no-color
 
 transcript flags (turn-by-turn view with tool calls and results)
       --full             do not truncate messages, tool inputs, or tool outputs
@@ -186,6 +203,7 @@ fn main() {
         Some("index") => commands::index::run(args, common),
         Some("memory") => commands::memory::run(args, common),
         Some("find") => commands::find::run(args, common),
+        Some("last") => commands::last::run(args, common),
         Some("pack") => commands::pack::run(args, common),
         Some("show") => commands::show::run(args, common),
         Some("transcript" | "view") => commands::transcript::run(args, common),

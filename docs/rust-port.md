@@ -19,7 +19,7 @@ where practical:
 - locators: JSONL paths and `opencode://<db>#<session>`;
 - environment variables: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`,
   `XDG_DATA_HOME`, `OPENCODE_DB`, `DEJAVU_INDEX_PATH`, `DEJAVU_NO_UPDATE_CHECK`,
-  `DEJAVU_QUERY_VIA_PI`, `CODEX_THREAD_ID`, `CLAUDE_SESSION_ID`, `NO_COLOR`;
+  `DEJAVU_QUERY_VIA_PI`, `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `NO_COLOR`;
 - release asset names `dejavu-<platform>-<arch>[.exe]`, `checksums.txt`, the npm
   package `@safzanpirani/dejavu`, and `dejavu self-update`.
 

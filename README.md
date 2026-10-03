@@ -123,9 +123,23 @@ dejavu pack database --context 1 --limit 3 --exclude-session '<session ID or loc
 
 `pack` combines the session finder with user/assistant excerpts around literal matches. It uses no model. Defaults are three sessions, two neighboring dialogue events per match, 1,200 characters per event, and 12,000 event-body characters across the pack. It merges overlapping neighborhoods and shares the budget across sessions and events; actual per-event limits can be smaller. Long matching events show a region around a search term. Very small budgets can abbreviate or omit matches.
 
-The command accepts `find` filters (`--source`, `--project`, `--since`, `--user`), `--no-index`, and `--max-parallel`. `--context 0` returns matching events only. `--exclude-session` is repeatable and accepts an exact locator or session ID. Available `CODEX_THREAD_ID` and `CLAUDE_SESSION_ID` values exclude the active session automatically. Search examines at most 40 ranked candidates; counts describe those candidates, not every stored session. Results retain relaxed search terms and report unreadable stores and sessions.
+The command accepts `find` filters (`--source`, `--project`, `--since`, `--user`), `--no-index`, and `--max-parallel`. `--context 0` returns matching events only. `--exclude-session` is repeatable and accepts an exact locator or session ID. Available `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, and `CLAUDE_SESSION_ID` values exclude the active session automatically. Search examines at most 40 ranked candidates; counts describe those candidates, not every stored session. Results retain relaxed search terms and report unreadable stores and sessions.
 
 Each excerpt carries its source locator and original event IDs. `window.clipped` lists shortened fields and character offsets; `window.nextEvent` identifies the first omitted excerpt event. Read more with `transcript '<locator>' --from-event N`, or recover a shortened event with `transcript '<locator>' --full --from-event N --limit 1`. Transcript continuation reads the conversation from that ID; it does not repeat the pack's match filter.
+
+### Continue where a session left off
+
+```bash
+dejavu last                         # newest session in this Git repo
+dejavu last --list -n 5             # cards for the five newest
+dejavu last auth refactor           # find's best match for the terms
+dejavu last '<locator or session ID>'
+dejavu last --anywhere --since 1d --json
+```
+
+`last` prints a session card (date, source, project, opening prompt, last user request, transcript, resume command) and the newest user/assistant turns that fit a budget. Injected harness messages such as task notifications are left out of the tail. It uses no model. With no argument it picks the newest session whose project is the current Git work tree or a directory below it, falling back to the current directory. `--project SUBSTR` matches project paths that contain SUBSTR instead, and `--anywhere` drops the project filter. Terms rank sessions the way `find` does within the current repo, then across every project when the repo has no match. A transcript locator or session ID selects that session directly, even the active one.
+
+The active `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, or `CLAUDE_SESSION_ID` session is skipped, so "last session" means the one before this one. `--exclude-session` skips more. The tail defaults to the newest 12 events within 8,000 body characters at 1,500 per event. `--turns`, `--budget-chars`, and `--max-chars` change those bounds. `--tools` adds tool calls and results at `--tool-chars` (default 400) each. `--list` prints only cards. The output ends with a `transcript --from-event` command for earlier turns.
 
 ### View a transcript turn by turn
 
