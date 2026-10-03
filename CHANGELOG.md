@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.3
 
 - Windows paths work throughout. `C:\...` and `\\server\...` values of `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, and `FACTORY_HOME_OVERRIDE` are used as given; they used to be joined onto the current directory, so those stores went missing. Transcript paths with backslashes (`C:\Users\me\.claude\projects\...`) are recognized by `show`, `transcript`, `last`, and the other locator commands. OpenCode locators for a Windows database read `opencode:///C:%5C...` and open again; before, every OpenCode session on Windows failed with `invalid OpenCode locator`. With `HOME` unset, the home directory comes from the account, so projects under it still print relative to `~`. Opening a directory as a transcript reports `Directories cannot be read like files` instead of `EACCES`.
 - CI passes on Windows again.

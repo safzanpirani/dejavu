@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "dejavu"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "rusqlite",
  "serde",
