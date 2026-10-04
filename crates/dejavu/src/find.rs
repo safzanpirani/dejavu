@@ -348,6 +348,14 @@ pub fn find_opening_prompt(path: &str, source: TranscriptSource, backend: &dyn B
     opening
 }
 
+pub(crate) fn opening_preview(text: &str) -> String {
+    if js::len(text) <= 300 {
+        text.to_string()
+    } else {
+        format!("{}…", js::prefix(text, 299))
+    }
+}
+
 /// A bounded window around the earliest matching term, measured in UTF-16 units.
 fn match_excerpt(text: &str, terms: &[String]) -> String {
     const LIMIT: usize = 240;
@@ -824,7 +832,7 @@ pub fn find_sessions(
                 date,
                 score,
                 term_counts,
-                opening_prompt: js::prefix(&opening, 300).to_string(),
+                opening_prompt: opening_preview(&opening),
                 matches,
                 resume: resume_command(candidate.source, &candidate.path),
             })
@@ -1054,6 +1062,19 @@ mod tests {
             find_sessions(&terms(&["workshop"]), &FindOptions::default(), &backend).unwrap();
         assert!(result.hits[0].matches[0].text.contains("WORKSHOP"));
         assert!(js::len(&result.hits[0].matches[0].text) <= 240);
+    }
+
+    #[test]
+    fn find_cards_bound_opening_previews_and_mark_clipping() {
+        let mut backend = deps();
+        backend.prefix = Some(claude_line("user", &"😀 request ".repeat(100)));
+        let result =
+            find_sessions(&terms(&["workshop"]), &FindOptions::default(), &backend).unwrap();
+        let json = serde_json::to_value(result).unwrap();
+        let preview = json["hits"][0]["openingPrompt"].as_str().unwrap();
+        assert!(js::len(preview) <= 300);
+        assert!(preview.ends_with('…'));
+        assert_eq!(opening_preview("short request"), "short request");
     }
 
     #[test]

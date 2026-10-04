@@ -139,6 +139,8 @@ dejavu last '<locator or session ID>'
 dejavu last --anywhere --since 1d --json
 ```
 
+`find` and `last` cap opening-prompt previews at 300 characters, including a trailing ellipsis when shortened. Use `transcript --full` to read the complete prompt.
+
 `last` prints a session card (date, source, project, opening prompt, last user request, transcript, resume command) and the newest user/assistant turns that fit a budget. Injected harness messages such as task notifications are left out of the tail. It uses no model. With no argument it picks the newest session whose project is the current Git work tree or a directory below it, falling back to the current directory. `--project SUBSTR` matches project paths that contain SUBSTR instead, and `--anywhere` drops the project filter. Terms rank sessions the way `find` does within the current repo, then across every project when the repo has no match. A transcript locator or session ID selects that session directly, even the active one.
 
 The active `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, or `CLAUDE_SESSION_ID` session is skipped, as is the active Droid session (found the way `pack` finds it), so "last session" means the one before this one. `--exclude-session` skips more. The tail defaults to the newest 12 events within 8,000 body characters at 1,500 per event. `--turns`, `--budget-chars`, and `--max-chars` change those bounds. `--tools` adds tool calls and results at `--tool-chars` (default 400) each. `--list` prints only cards. The output ends with a `transcript --from-event` command for earlier turns.

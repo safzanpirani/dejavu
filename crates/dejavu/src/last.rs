@@ -3,7 +3,8 @@
 //! and returns its card plus the dialogue tail that fits a character budget.
 
 use crate::find::{
-    FindOptions, find_opening_prompt, find_sessions, is_real_user_prompt, resume_command,
+    FindOptions, find_opening_prompt, find_sessions, is_real_user_prompt, opening_preview,
+    resume_command,
 };
 use crate::index::{ProjectFilter, RecentSession};
 use crate::pack::{active_session_ids, excluded, is_uuid};
@@ -233,7 +234,9 @@ pub fn last_session_excluding(
         .take(wanted)
         .map(|candidate| SessionCard {
             project: deps.project(&candidate.path, candidate.source),
-            opening_prompt: deps.opening_prompt(&candidate.path, candidate.source),
+            opening_prompt: opening_preview(
+                &deps.opening_prompt(&candidate.path, candidate.source),
+            ),
             last_request: None,
             resume: resume_command(candidate.source, &candidate.path),
             path: candidate.path,
@@ -531,7 +534,10 @@ mod tests {
         fn project(&self, _: &str, _: TranscriptSource) -> String {
             "work/app".into()
         }
-        fn opening_prompt(&self, _: &str, _: TranscriptSource) -> String {
+        fn opening_prompt(&self, path: &str, _: TranscriptSource) -> String {
+            if path == "/c/long.jsonl" {
+                return "😀 request ".repeat(100);
+            }
             "fix the build".into()
         }
     }
@@ -642,6 +648,24 @@ mod tests {
         assert_eq!(tail.view.events.len(), 1);
         assert_eq!(tail.view.events[0].index, Some(2));
         assert!(tail.window.used_chars <= 1000);
+    }
+
+    #[test]
+    fn serialized_cards_bound_long_opening_prompts() {
+        let fake = Fake {
+            recent: vec![recent("/c/long.jsonl", "2026-10-01")],
+            events: Vec::new(),
+        };
+        let options = LastOptions {
+            selector: Selector::Recent(ProjectFilter::Under("/work/app".into())),
+            list: true,
+            ..LastOptions::default()
+        };
+        let result = last_session_excluding(&options, &[], &fake).unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        let preview = value["sessions"][0]["openingPrompt"].as_str().unwrap();
+        assert!(crate::js::len(preview) <= 300);
+        assert!(preview.ends_with('…'));
     }
 
     #[test]
