@@ -320,6 +320,7 @@ pub fn find_opening_prompt(path: &str, source: TranscriptSource, backend: &dyn B
 struct Candidate {
     source: TranscriptSource,
     path: String,
+    project: Option<String>,
     /// Raw counts per term, in term order.
     raw_counts: Vec<(String, usize)>,
 }
@@ -532,6 +533,11 @@ pub fn find_sessions(
                 candidates.push(Candidate {
                     source: batch.store.source,
                     path: path.clone(),
+                    project: batch
+                        .matches
+                        .iter()
+                        .find(|m| m.path == *path)
+                        .map(|m| m.project.clone()),
                     raw_counts: Vec::new(),
                 });
                 candidates.len() - 1
@@ -711,7 +717,7 @@ pub fn find_sessions(
                 return None;
             }
             let project = if candidate.source == TranscriptSource::Opencode {
-                "opencode".to_string()
+                candidate.project.clone().unwrap_or_default()
             } else {
                 backend.read_project(&candidate.path, candidate.source)
             };
@@ -790,6 +796,40 @@ mod tests {
     use crate::scan::FileMatchCount;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn opencode_keeps_its_project_for_filtering() {
+        let mut backend = deps();
+        backend.stores = vec![TranscriptStore {
+            source: TranscriptSource::Opencode,
+            kind: StoreKind::Sqlite,
+            path: "/fake/opencode.db".into(),
+        }];
+        backend.opencode_matches = vec![StoreSearchMatch {
+            source: TranscriptSource::Opencode,
+            path: "opencode:///fake/opencode.db#ses_project".into(),
+            project: "Development/projects/hack".into(),
+            date: "2026-09-22".into(),
+            count: 1,
+            snippets: vec![crate::types::TranscriptSnippet {
+                role: "user".into(),
+                text: "deploy the project".into(),
+            }],
+        }];
+        for project in [None, Some("projects/hack".into())] {
+            let result = find_sessions(
+                &terms(&["deploy"]),
+                &FindOptions {
+                    project,
+                    ..FindOptions::default()
+                },
+                &backend,
+            )
+            .unwrap();
+            assert_eq!(result.hits.len(), 1);
+            assert_eq!(result.hits[0].project, "Development/projects/hack");
+        }
+    }
 
     #[test]
     fn parse_since_passes_absolute_dates_and_resolves_relative_windows() {
@@ -878,6 +918,7 @@ mod tests {
         lines: LinesFn,
         project: Box<dyn Fn(&str) -> String + Sync>,
         opencode_error: bool,
+        opencode_matches: Vec<StoreSearchMatch>,
     }
 
     impl Backend for Fake {
@@ -908,7 +949,7 @@ mod tests {
             if self.opencode_error {
                 Err("unable to open database file".into())
             } else {
-                Ok(Vec::new())
+                Ok(self.opencode_matches.clone())
             }
         }
         fn read_project(&self, path: &str, _: TranscriptSource) -> String {
@@ -956,6 +997,7 @@ mod tests {
             }),
             project: Box::new(|_| "Development/alpha".into()),
             opencode_error: false,
+            opencode_matches: Vec::new(),
         }
     }
 
