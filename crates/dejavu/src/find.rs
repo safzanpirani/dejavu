@@ -271,7 +271,27 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
 pub(crate) fn is_real_user_prompt(text: &str) -> bool {
     let trimmed = js_trim(text);
     !(trimmed.is_empty()
-        || trimmed.starts_with('<')
+        || trimmed.starts_with("# AGENTS.md instructions")
+        || [
+            "<INSTRUCTIONS>",
+            "<environment_context>",
+            "<user_instructions>",
+            "<system-reminder>",
+            "<command-name>",
+            "<command-message>",
+            "<local-command-stdout>",
+            "<local-command-caveat>",
+            "<task-notification>",
+            "<system-notification>",
+            "<fork-boilerplate>",
+            "<project_instructions>",
+            "<recommended_plugins>",
+            "<skill",
+            "<bash-stdout>",
+            "<bash-input>",
+        ]
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
         || trimmed.starts_with("Caveat:")
         || trimmed.starts_with("[Request interrupted")
         || trimmed.starts_with("Base directory for this skill")
@@ -314,7 +334,18 @@ pub fn find_opening_prompt(path: &str, source: TranscriptSource, backend: &dyn B
             return js_trim(&message.text).to_string();
         }
     }
-    String::new()
+    let mut opening = String::new();
+    backend.visit_lines("", path, usize::MAX, &mut |line| {
+        if let Some(message) = extract_visible_message(line, source)
+            && message.role == "user"
+            && is_real_user_prompt(&message.text)
+        {
+            opening = js_trim(&message.text).to_string();
+            return false;
+        }
+        true
+    });
+    opening
 }
 
 struct Candidate {
@@ -589,37 +620,6 @@ pub fn find_sessions(
     });
     candidates.truncate(CANDIDATE_CAP);
 
-    // OpenCode candidates score from snippets; fetch the index's now, one lookup per term.
-    if let Some(reader) = &reader {
-        for (term_index, term) in cleaned.iter().enumerate() {
-            let paths: Vec<&str> = candidates
-                .iter()
-                .filter(|c| c.source == TranscriptSource::Opencode)
-                .filter(|c| c.raw_counts.iter().any(|(t, _)| t == term))
-                .filter(|c| {
-                    open_code_matches
-                        .get(&c.path)
-                        .and_then(|m| m.get(&term_index))
-                        .is_some_and(|(_, needs)| *needs)
-                })
-                .map(|c| c.path.as_str())
-                .collect();
-            if paths.is_empty() {
-                continue;
-            }
-            let mut snippets = reader.snippets(term, &paths, 4)?;
-            let paths: Vec<String> = paths.into_iter().map(str::to_string).collect();
-            for path in paths {
-                if let Some((found, needs)) = open_code_matches
-                    .get_mut(&path)
-                    .and_then(|m| m.get_mut(&term_index))
-                {
-                    found.snippets = snippets.remove(&path).unwrap_or_default();
-                    *needs = false;
-                }
-            }
-        }
-    }
     let term_index_of = |term: &str| cleaned.iter().position(|t| t == term).unwrap_or(0);
 
     let activity = match &reader {
@@ -641,21 +641,47 @@ pub fn find_sessions(
             let mut score = 0;
             let mut latest_date = String::new();
             if candidate.source == TranscriptSource::Opencode {
+                let messages = prepare_recall_messages(
+                    backend
+                        .load_messages(&candidate.path, candidate.source)
+                        .ok()?,
+                );
+                let visible: Vec<_> = messages
+                    .iter()
+                    .filter_map(|message| {
+                        let text = message
+                            .content
+                            .iter()
+                            .filter_map(RecallBlock::text)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        (message.role != "user" || is_real_user_prompt(&text))
+                            .then_some((message.role.as_str(), text))
+                    })
+                    .collect();
                 for (term, _) in &candidate.raw_counts {
                     let stored = open_code_matches
                         .get(&candidate.path)
                         .and_then(|m| m.get(&term_index_of(term)))
                         .map(|(found, _)| found);
-                    let snippets = stored.map(|s| s.snippets.as_slice()).unwrap_or_default();
-                    let user = snippets.iter().filter(|s| s.role == "user").count();
+                    let lowered = js_lower(term);
+                    let snippets: Vec<_> = visible
+                        .iter()
+                        .filter(|(_, text)| js_lower(text).contains(lowered.as_ref()))
+                        .collect();
+                    let user = snippets.iter().filter(|(role, _)| *role == "user").count();
                     let assistant = snippets.len() - user;
                     term_counts.set(term, TermCount { user, assistant });
                     score += user * USER_WEIGHT + assistant;
-                    matches.extend(snippets.iter().map(|s| FindMatch {
-                        role: s.role.clone(),
-                        date: None,
-                        text: s.text.clone(),
-                    }));
+                    for (role, text) in snippets {
+                        if matches.len() < 6 {
+                            matches.push(FindMatch {
+                                role: (*role).to_string(),
+                                date: None,
+                                text: js::prefix(text, 240).to_string(),
+                            });
+                        }
+                    }
                     if let Some(stored) = stored
                         && !stored.date.is_empty()
                         && stored.date > latest_date
@@ -671,7 +697,9 @@ pub fn find_sessions(
                         let Some(message) = extract_visible_message(line, candidate.source) else {
                             return true;
                         };
-                        if !js_lower(&message.text).contains(lowered.as_str()) {
+                        if (message.role == "user" && !is_real_user_prompt(&message.text))
+                            || !js_lower(&message.text).contains(lowered.as_str())
+                        {
                             return true;
                         }
                         if message.role == "user" {
@@ -830,10 +858,16 @@ mod tests {
             project: "Development/projects/hack".into(),
             date: "2026-09-22".into(),
             count: 1,
-            snippets: vec![crate::types::TranscriptSnippet {
-                role: "user".into(),
-                text: "deploy the project".into(),
-            }],
+            snippets: vec![
+                crate::types::TranscriptSnippet {
+                    role: "user".into(),
+                    text: "# AGENTS.md instructions for /work\n deploy policy".into(),
+                },
+                crate::types::TranscriptSnippet {
+                    role: "user".into(),
+                    text: "deploy the project".into(),
+                },
+            ],
         }];
         for project in [None, Some("projects/hack".into())] {
             let result = find_sessions(
@@ -847,6 +881,8 @@ mod tests {
             .unwrap();
             assert_eq!(result.hits.len(), 1);
             assert_eq!(result.hits[0].project, "Development/projects/hack");
+            assert_eq!(result.hits[0].term_counts.get("deploy").unwrap().user, 1);
+            assert_eq!(result.hits[0].opening_prompt, "deploy the project");
         }
     }
 
@@ -884,6 +920,55 @@ mod tests {
             assert_eq!(run("2026-08-20").hits[0].date, "2026-08-25");
             assert!(run("2026-08-26").hits.is_empty());
         }
+    }
+
+    #[test]
+    fn injected_envelopes_do_not_open_sessions_or_score_as_users() {
+        for injected in [
+            "# AGENTS.md instructions for /work/demo\n<INSTRUCTIONS>workshop</INSTRUCTIONS>",
+            "<INSTRUCTIONS>workshop</INSTRUCTIONS>",
+            "<environment_context>workshop</environment_context>",
+            "<user_instructions>workshop</user_instructions>",
+            "<system-reminder>workshop</system-reminder>",
+            "<command-name>workshop</command-name>",
+            "<local-command-stdout>workshop</local-command-stdout>",
+            "<task-notification>workshop</task-notification>",
+            "<project_instructions>workshop</project_instructions>",
+            "<skill name=example>workshop</skill>",
+            "<system-notification>workshop</system-notification>",
+        ] {
+            let mut backend = deps();
+            let rows = vec![
+                claude_line("user", injected),
+                claude_line("user", "plan the workshop"),
+            ];
+            backend.prefix = Some(rows.join("\n"));
+            backend.lines = Box::new(move |_, _| rows.clone());
+            let result =
+                find_sessions(&terms(&["workshop"]), &FindOptions::default(), &backend).unwrap();
+            let hit = &result.hits[0];
+            assert_eq!(hit.opening_prompt, "plan the workshop");
+            assert_eq!(hit.term_counts.get("workshop").unwrap().user, 1);
+            assert_eq!(hit.matches[0].text, "plan the workshop");
+        }
+        assert!(is_real_user_prompt("<div>Fix this workshop page</div>"));
+        assert!(is_real_user_prompt(
+            "<pasted_content>workshop notes</pasted_content>"
+        ));
+    }
+
+    #[test]
+    fn opening_prompt_can_follow_a_large_injected_prefix() {
+        let mut backend = deps();
+        backend.prefix = Some(claude_line(
+            "user",
+            "# AGENTS.md instructions for /work/demo",
+        ));
+        backend.lines = Box::new(|_, _| vec![claude_line("user", "the actual request")]);
+        assert_eq!(
+            find_opening_prompt(&path_a(), TranscriptSource::Claude, &backend),
+            "the actual request"
+        );
     }
 
     #[test]
@@ -974,6 +1059,7 @@ mod tests {
         project: Box<dyn Fn(&str) -> String + Sync>,
         opencode_error: bool,
         opencode_matches: Vec<StoreSearchMatch>,
+        prefix: Option<String>,
     }
 
     impl Backend for Fake {
@@ -1007,11 +1093,31 @@ mod tests {
                 Ok(self.opencode_matches.clone())
             }
         }
+        fn load_messages(
+            &self,
+            _: &str,
+            _: TranscriptSource,
+        ) -> Result<Vec<crate::types::RecallMessage>, String> {
+            Ok(self
+                .opencode_matches
+                .iter()
+                .flat_map(|m| m.snippets.iter())
+                .map(|s| crate::types::RecallMessage {
+                    role: s.role.clone(),
+                    content: vec![RecallBlock::Text {
+                        text: s.text.clone(),
+                    }],
+                })
+                .collect())
+        }
         fn read_project(&self, path: &str, _: TranscriptSource) -> String {
             (self.project)(path)
         }
         fn read_prefix(&self, _: &str, _: u64) -> Result<String, String> {
-            Ok(claude_line("user", "let us plan the workshop"))
+            Ok(self
+                .prefix
+                .clone()
+                .unwrap_or_else(|| claude_line("user", "let us plan the workshop")))
         }
     }
 
@@ -1053,6 +1159,7 @@ mod tests {
             project: Box::new(|_| "Development/alpha".into()),
             opencode_error: false,
             opencode_matches: Vec::new(),
+            prefix: None,
         }
     }
 
