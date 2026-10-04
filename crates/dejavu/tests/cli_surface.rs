@@ -305,7 +305,10 @@ fn pack_help_documents_omission_entries_from_a_bounded_fixture() {
     let text = help(&f, &["pack"]);
     help_contract::assert_shape(&text, &value, 0);
     help_contract::assert_shape(&text, &value["omitted"], 1);
-    assert_eq!(value["omitted"][0]["path"], f.locator());
+    assert_eq!(
+        PathBuf::from(value["omitted"][0]["path"].as_str().unwrap()),
+        PathBuf::from(f.locator())
+    );
     assert!(value["omitted"][0]["events"].as_u64().unwrap() > 0);
     assert!(value["omitted"][0]["nextEvent"].is_u64());
 }
