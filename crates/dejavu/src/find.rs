@@ -389,6 +389,13 @@ fn match_excerpt(text: &str, terms: &[String]) -> String {
     let start = at
         .saturating_sub((LIMIT.saturating_sub(term_length + 2)) / 2)
         .min(length.saturating_sub(LIMIT - 1));
+    let byte = js::byte_offset(text, start);
+    let boundary = js::len(&text[..byte]);
+    let start = if boundary < start {
+        boundary + text[byte..].chars().next().map_or(0, char::len_utf16)
+    } else {
+        start
+    };
     let mut end = (start + LIMIT - usize::from(start > 0)).min(length);
     if end < length {
         end -= 1;
@@ -1176,6 +1183,18 @@ mod tests {
         assert!(js::len(preview) <= 300);
         assert!(preview.ends_with('…'));
         assert_eq!(opening_preview("short request"), "short request");
+    }
+
+    #[test]
+    fn excerpt_budget_holds_at_every_surrogate_boundary() {
+        for prefix in 0..260 {
+            for suffix in [0, 1, 120, 260] {
+                let text = format!("{}NEEDLE{}", "😀".repeat(prefix), "😀".repeat(suffix));
+                let excerpt = match_excerpt(&text, &terms(&["needle"]));
+                assert!(js::len(&excerpt) <= 240, "prefix={prefix} suffix={suffix}");
+                assert!(excerpt.contains("NEEDLE"));
+            }
+        }
     }
 
     #[test]
