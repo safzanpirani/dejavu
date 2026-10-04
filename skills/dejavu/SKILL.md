@@ -5,7 +5,20 @@ description: Search and query past Claude Code, Codex, Pi, OpenCode, and Factory
 
 # Dejavu
 
-Use `dejavu` to recover context from local coding-agent transcripts. Run `dejavu --help` before guessing flags. Prefer `--json` when another command or agent will consume the result.
+Use `dejavu` to recover context from local coding-agent transcripts. Run `dejavu --help` for the overview. Run `dejavu <command> --help` or `dejavu help <command>` before guessing flags or JSON fields. Nested help also works: `dejavu memory search --help`. Command help lists flags, top-level JSON keys, a jq command, and exit codes. Piped help contains no ANSI styling. Any `NO_COLOR` value or `--no-color` disables help color. Prefer `--json` when another command or agent will consume the result.
+
+## Read the JSON shape
+
+Use these jq paths:
+
+```sh
+dejavu search 'exact phrase' --json | jq '.matches[].path'
+dejavu find deployment timeout --json | jq '.hits[].path'
+dejavu memory search 'exact phrase' --json | jq '.[].path'
+dejavu transcript '<locator>' --json | jq '.events[]'
+```
+
+Memory list and search return bare arrays. Transcript returns an object with an `events` array. Search and find return exit 0 for zero matches. `last` returns exit 1 for no session. Read each command's help for its error and partial-result rules.
 
 ## Search Claude memory across projects
 
@@ -61,7 +74,7 @@ For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 
 
 `dejavu show <locator>` prints the parsed conversation as `[user]`/`[assistant]` turns (tool calls summarized, long messages truncated; `--full` disables truncation). `--around TERM` prints only messages containing TERM plus three turns of context — use it to jump to the relevant region of a long session. Use `show` to confirm a session is the right one before resuming it or paying for `dejavu query`.
 
-`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, OpenCode, and Droid. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits the event list (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
+`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, OpenCode, and Droid. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits an object with an `events` array (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
 
 ## Redact a transcript
 
@@ -73,7 +86,7 @@ Search all detected stores by default. Each agent's own variable selects its sto
 
 ```sh
 dejavu --json 'session-recall.ts'
-dejavu --json 'Cannot find module'
+dejavu search 'Cannot find module' --json
 ```
 
 The search covers Claude Code, Codex, Pi, OpenCode, and Factory Droid. Narrow it only when the user names a source or broad results are noisy:
@@ -86,7 +99,9 @@ dejavu --source opencode --json 'exact error text'
 dejavu --source droid --json 'exact error text'
 ```
 
-Search is case-insensitive fixed-string matching, not semantic search. Spaces mean exact spaces. Use one distinctive token or phrase. Run separate searches for unrelated terms, then compare their locators. `--max-parallel N` also bounds local store and file work for plain search. It defaults to 4 and requires an integer greater than or equal to 1. Results remain deterministic when work completes out of order. Dejavu reports unreadable OpenCode SQLite stores on stderr and continues with readable stores. JSON results include the same paths in `skippedStores`.
+Use `dejavu search PHRASE` or the bare `dejavu PHRASE` form. Both perform the same search. Use `dejavu -- search` or `dejavu search search` for the literal word `search`. A quoted phrase such as `dejavu "search failed"` stays literal.
+
+Search uses case-insensitive fixed-string matching. Spaces mean exact spaces. Use one distinctive token or phrase. Run separate searches for unrelated terms, then compare their locators. `--max-parallel N` also bounds local store and file work for plain search. It defaults to 4 and requires an integer greater than or equal to 1. Results remain deterministic when work completes out of order. Dejavu reports unreadable OpenCode SQLite stores on stderr and continues with readable stores. JSON results include the same paths in `skippedStores`.
 
 Good anchors include filenames, symbols, package names, issue IDs, exact error fragments, host names, and unusual terms. If a search returns nothing, shorten the phrase or try another exact anchor.
 
@@ -104,7 +119,7 @@ The default is deterministic and invokes no model. It measures outer calls, resu
 
 Repeated calls are candidates for review, not proven waste. Nested call sites are lexical hints, not executed counts; aliases, loops, templates, and computed access limit coverage. First-result latency includes waiting and is not model reasoning time. Project mode selects sessions by their last indexed visible-message date and measures each entire selected session. Check `omittedSessions` and `diagnostics` for coverage limits. Exit 1 signals skipped sources or an explanation failure even when measurements are available.
 
-`--explain` sends only bounded metrics and event references through Codex exec to `gpt-6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
+`--explain` sends only bounded metrics and event references to the selected query harness and model. It defaults to Codex exec with `gpt-6-luna` at medium reasoning. It uses the same flags and persistent defaults as `query` and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
 
 ## Ask about one transcript
 
@@ -116,7 +131,19 @@ dejavu query '<locator from search results>' 'What did we decide, and which file
 
 `dejavu query` sends the selected conversation context through `codex exec` to `gpt-6-luna` with medium reasoning by default and may incur model usage. It requires an authenticated Codex CLI. Query only the transcript needed for the request. The loader removes thinking, developer instructions, and tool output. It follows branches where the source supports them and windows large transcripts around question terms. The model-backed query stays serial and does not accept `--max-parallel`.
 
-Use `--model <codex-model-id>` or `--model codex/<id>` for a Codex override, still at medium reasoning. The default ignores Pi model settings. Codex runs ephemerally with transcript input on stdin, a read-only sandbox, project/skill instructions disabled, and a 120-second timeout. It uses the OpenAI provider and existing Codex authentication without changing user configuration. An explicit non-Codex `--model provider/id` retains the legacy HTTP/Pi path and reads provider settings from `~/.pi/agent` or `--agent-dir`. Do not rewrite model configuration unless the user asks.
+Both `query` and `profile --explain` accept these settings:
+
+| Flag | Environment variable | Config field | Default |
+| --- | --- | --- | --- |
+| `--harness codex\|ruddr` | `DEJAVU_QUERY_HARNESS` | `query.harness` | `codex` |
+| `--model ID` | `DEJAVU_QUERY_MODEL` | `query.model` | `gpt-6-luna` |
+| `--effort LEVEL` | `DEJAVU_QUERY_EFFORT` | `query.effort` | `medium` for Codex; provider default for other Ruddr providers |
+
+Each setting uses flag, environment variable, config file, then built-in default. The optional config file is `$XDG_CONFIG_HOME/dejavu/config.json` or `~/.config/dejavu/config.json`. Its format is `{"query":{"harness":"codex","model":"gpt-6-luna","effort":"medium"}}`. Dejavu never writes it.
+
+Use `--model <codex-model-id>` or `--model codex/<id>` for a Codex override. Use `--effort high` to change reasoning effort. `--harness ruddr` requires an installed, authenticated Ruddr. Its model prefixes select `codex/`, `claude/`, `pi/`, `opencode/`, or `droid/`. A bare ID selects Codex. Ruddr runs ephemerally with a read-only sandbox and a 120-second timeout. Provider failures are reported without fallback. Legacy HTTP/Pi routes reject `--effort`.
+
+The default ignores Pi model settings. Codex runs ephemerally with transcript input on stdin, a read-only sandbox, project/skill instructions disabled, and a 120-second timeout. It uses the OpenAI provider and existing Codex authentication without changing user configuration. An explicit non-Codex `--model provider/id` retains the legacy HTTP/Pi path and reads provider settings from `~/.pi/agent` or `--agent-dir`. Do not rewrite model configuration unless the user asks.
 
 ## Report the result
 
