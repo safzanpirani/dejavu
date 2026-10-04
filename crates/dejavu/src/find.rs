@@ -485,7 +485,7 @@ struct Batch {
     store: TranscriptStore,
     elapsed_ms: u64,
     rows: Vec<(String, usize)>,
-    /// Matches kept for OpenCode scoring; `true` when they still need snippets from the index.
+    /// Indexed or direct OpenCode project and activity metadata.
     matches: Vec<StoreSearchMatch>,
     from_index: bool,
     diagnostic: Option<StoreDiagnostic>,
@@ -538,12 +538,15 @@ pub fn find_sessions(
         .map(|s| parse_since(s, None))
         .transpose()?;
 
+    let has_long_term = cleaned.iter().any(|term| term.chars().count() >= 3);
+    let mixed_terms = has_long_term && cleaned.iter().any(|term| term.chars().count() < 3);
+
     // term index -> store path -> ranked matches from the transcript index (without snippets).
     let mut indexed: Vec<ByStore> = Vec::new();
     let mut reader: Option<IndexReader> = None;
     if let Some(index_path) = backend.index_path()
         && !options.no_index
-        && cleaned.iter().all(|term| js::len(term) >= 3)
+        && has_long_term
     {
         let attempt = || -> Result<(IndexReader, Vec<ByStore>), String> {
             let refreshed = refresh_transcript_index(&stores, &index_path, false, max_parallel)?;
@@ -561,18 +564,77 @@ pub fn find_sessions(
                     .iter()
                     .map(|store| (store.path.clone(), Vec::new()))
                     .collect();
-                for row in reader.find_matches(
-                    term,
-                    &indexed_stores,
-                    options.project.as_deref(),
-                    since_date.as_deref(),
-                )? {
+                let rows = if term.chars().count() >= 3 {
+                    reader.find_matches(
+                        term,
+                        &indexed_stores,
+                        options.project.as_deref(),
+                        since_date.as_deref(),
+                    )?
+                } else {
+                    Vec::new()
+                };
+                for row in rows {
                     let found = row.into_match();
                     if let Some(list) = by_store.get_mut(&found.store) {
                         list.push(found.matched);
                     }
                 }
                 per_term.push(by_store);
+            }
+            if mixed_terms {
+                let mut metadata: HashMap<String, (String, StoreSearchMatch)> = HashMap::new();
+                for by_store in &per_term {
+                    for (store, matches) in by_store {
+                        for found in matches {
+                            metadata
+                                .entry(found.path.clone())
+                                .or_insert_with(|| (store.clone(), found.clone()));
+                        }
+                    }
+                }
+                let paths: Vec<&str> = metadata.keys().map(String::as_str).collect();
+                for (term_index, term) in cleaned
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.chars().count() < 3)
+                {
+                    let mut matched: HashMap<String, StoreSearchMatch> = HashMap::new();
+                    reader.visit_matching_messages(
+                        term,
+                        &paths,
+                        &mut |path, role, text, date| {
+                            if (role == "user" && !is_real_user_prompt(text))
+                                || !matches!(role, "user" | "assistant")
+                                || !js_lower(text).contains(js_lower(term).as_ref())
+                            {
+                                return;
+                            }
+                            let found = matched.entry(path.to_string()).or_insert_with(|| {
+                                let mut found = metadata[path].1.clone();
+                                found.count = 0;
+                                found.date.clear();
+                                found
+                            });
+                            found.count += 1;
+                            if let Some(date) = date
+                                && date > found.date.as_str()
+                            {
+                                found.date = date.to_string();
+                            }
+                        },
+                    )?;
+                    // Keep candidate insertion deterministic across HashMap seeds.
+                    let mut matches: Vec<_> = matched.into_values().collect();
+                    matches.sort_by(|a, b| a.path.cmp(&b.path));
+                    for found in matches {
+                        let store = &metadata[&found.path].0;
+                        per_term[term_index]
+                            .get_mut(store)
+                            .expect("indexed store")
+                            .push(found);
+                    }
+                }
             }
             Ok((reader, per_term))
         };
@@ -583,7 +645,7 @@ pub fn find_sessions(
         }
     }
 
-    // Each store is scanned once for every term; JSONL stores read each file once.
+    // Use indexed batches where possible; direct short terms only inspect long-term candidates.
     let per_store = map_pool(&stores, max_parallel, |store, _| {
         let begun = Instant::now();
         let mut batches: Vec<Batch> = Vec::new();
@@ -597,6 +659,7 @@ pub fn find_sessions(
             diagnostic,
         };
         let mut direct_terms: Vec<usize> = Vec::new();
+        let mut short_terms = Vec::new();
         for (term_index, term) in cleaned.iter().enumerate() {
             if let Some(found) = indexed.get(term_index).and_then(|m| m.get(&store.path)) {
                 let rows = found
@@ -608,6 +671,8 @@ pub fn find_sessions(
                     .map(|m| (m.path.clone(), m.count))
                     .collect();
                 batches.push(batch(term_index, rows, found.clone(), true, None));
+            } else if mixed_terms && term.chars().count() < 3 {
+                short_terms.push(term_index);
             } else if store.kind == StoreKind::Sqlite {
                 match backend.search_opencode(term, &store.path, usize::MAX, 0) {
                     Ok(matches) => {
@@ -644,6 +709,62 @@ pub fn find_sessions(
                 batches.push(batch(term_index, rows, Vec::new(), false, None));
             }
         }
+        if !short_terms.is_empty() {
+            let mut paths: Vec<String> = batches
+                .iter()
+                .flat_map(|b| b.rows.iter().map(|(p, _)| p.clone()))
+                .collect();
+            paths.sort();
+            paths.dedup();
+            for term_index in short_terms {
+                let term = &cleaned[term_index];
+                let mut rows = Vec::new();
+                let mut matches = Vec::new();
+                for path in &paths {
+                    let mut count = 0;
+                    let mut consider = |role: &str, text: &str| {
+                        if (role != "user" || is_real_user_prompt(text))
+                            && js_lower(text).contains(js_lower(term).as_ref())
+                        {
+                            count += 1;
+                        }
+                    };
+                    if store.kind == StoreKind::Sqlite {
+                        if let Ok(messages) = backend.load_messages(path, store.source) {
+                            for message in prepare_recall_messages(messages) {
+                                let text = message
+                                    .content
+                                    .iter()
+                                    .filter_map(RecallBlock::text)
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                consider(&message.role, &text);
+                            }
+                        }
+                    } else {
+                        backend.visit_lines(term, path, usize::MAX, &mut |line| {
+                            if let Some(message) = extract_visible_message(line, store.source) {
+                                consider(message.role, &message.text);
+                            }
+                            true
+                        });
+                    }
+                    if count > 0 {
+                        rows.push((path.clone(), count));
+                        if let Some(found) = batches
+                            .iter()
+                            .flat_map(|b| &b.matches)
+                            .find(|m| m.path == *path)
+                        {
+                            let mut found = found.clone();
+                            found.count = count;
+                            matches.push(found);
+                        }
+                    }
+                }
+                batches.push(batch(term_index, rows, matches, false, None));
+            }
+        }
         let elapsed = begun.elapsed().as_millis() as u64;
         for batch in &mut batches {
             batch.elapsed_ms = elapsed;
@@ -661,9 +782,8 @@ pub fn find_sessions(
 
     let mut store_timings: JsObject<u64> = JsObject::default();
     let mut skipped_by_path: HashMap<String, StoreDiagnostic> = HashMap::new();
-    // path -> term index -> (match, needs index snippets)
-    let mut open_code_matches: HashMap<String, HashMap<usize, (StoreSearchMatch, bool)>> =
-        HashMap::new();
+    // path -> term index -> direct OpenCode metadata
+    let mut open_code_matches: HashMap<String, HashMap<usize, StoreSearchMatch>> = HashMap::new();
     for batch in &scan_batches {
         let source = batch.store.source.as_str();
         let previous = store_timings.get(source).copied().unwrap_or(0);
@@ -676,7 +796,7 @@ pub fn find_sessions(
                 open_code_matches
                     .entry(found.path.clone())
                     .or_default()
-                    .insert(batch.term_index, (found.clone(), batch.from_index));
+                    .insert(batch.term_index, found.clone());
             }
         }
     }
@@ -871,7 +991,7 @@ pub fn find_sessions(
                             let date = open_code_matches
                                 .get(&candidate.path)
                                 .and_then(|m| m.get(&term_index_of(term)))
-                                .map(|(found, _)| found.date.as_str());
+                                .map(|found| found.date.as_str());
                             scored.record(term, &message.role, &text, date, &cleaned);
                         }
                     }
@@ -890,6 +1010,17 @@ pub fn find_sessions(
                             true
                         });
                     }
+                }
+            }
+            for (term, _) in &candidate.raw_counts {
+                if scored.term_counts.get(term).is_none() {
+                    scored.term_counts.set(
+                        term,
+                        TermCount {
+                            user: 0,
+                            assistant: 0,
+                        },
+                    );
                 }
             }
             let MessageScore {
@@ -1194,6 +1325,99 @@ mod tests {
                 assert!(js::len(&excerpt) <= 240, "prefix={prefix} suffix={suffix}");
                 assert!(excerpt.contains("NEEDLE"));
             }
+        }
+    }
+
+    #[test]
+    fn mixed_terms_never_scan_entire_stores_for_short_terms() {
+        let mut backend = deps();
+        backend.counts = Box::new(|term| {
+            assert_eq!(
+                term, "workshop",
+                "short terms must only inspect long-term candidates"
+            );
+            vec![FileMatchCount {
+                path: path_a(),
+                count: 1,
+            }]
+        });
+        backend.lines = Box::new(|_, _| vec![claude_line("user", "workshop rg")]);
+        let result = find_sessions(
+            &terms(&["workshop", "rg"]),
+            &FindOptions::default(),
+            &backend,
+        )
+        .unwrap();
+        assert_eq!(result.required_terms, ["workshop", "rg"]);
+        assert_eq!(result.hits[0].term_counts.get("rg").unwrap().user, 1);
+    }
+
+    #[test]
+    fn mixed_queries_keep_the_index_and_do_not_call_file_scanners() {
+        struct Indexed {
+            root: String,
+            index: String,
+        }
+        impl Backend for Indexed {
+            fn discover_stores(&self, _: SourceSelector) -> Vec<TranscriptStore> {
+                vec![TranscriptStore {
+                    source: TranscriptSource::Claude,
+                    kind: StoreKind::Jsonl,
+                    path: self.root.clone(),
+                }]
+            }
+            fn index_path(&self) -> Option<String> {
+                Some(self.index.clone())
+            }
+            fn count_files(
+                &self,
+                _: &[&str],
+                _: &str,
+                _: usize,
+            ) -> Result<Vec<Vec<FileMatchCount>>, String> {
+                panic!("mixed indexed queries must not scan the store")
+            }
+            fn find_lines(&self, _: &str, _: &str, _: usize) -> Vec<String> {
+                panic!("indexed scoring must not scan transcript lines")
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "dejavu-find-indexed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let root = directory.join("projects/demo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("session.jsonl"),
+            format!("{}\n", claude_line("user", "workshop rg ÉX İ")),
+        )
+        .unwrap();
+        let backend = Indexed {
+            root: root.to_string_lossy().into_owned(),
+            index: directory
+                .join("index.sqlite")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        for short in ["rg", "éx", "i"] {
+            let result = find_sessions(
+                &terms(&["workshop", short]),
+                &FindOptions::default(),
+                &backend,
+            )
+            .unwrap();
+            assert_eq!(result.required_terms, ["workshop", short]);
         }
     }
 

@@ -1077,6 +1077,8 @@ impl GroupedRow {
     }
 }
 
+type MessageVisitor<'a> = dyn FnMut(&str, &str, &str, Option<&str>) + 'a;
+
 /// An open index for searches. Ranking and snippets are separate calls, so a
 /// caller fetches snippets only for the transcripts it returns.
 pub struct IndexReader {
@@ -1096,34 +1098,48 @@ impl IndexReader {
         &self,
         query: &str,
         paths: &[&str],
-        visit: &mut dyn FnMut(&str, &str, &str, Option<&str>),
+        visit: &mut MessageVisitor<'_>,
     ) -> Result<(), String> {
-        if paths.is_empty() {
-            return Ok(());
-        }
-        let sql = format!(
-            "SELECT r.path, r.role, r.text, r.date FROM messages
-            JOIN message_rows r ON r.id = messages.rowid
-            WHERE messages MATCH ? AND r.path IN ({}) ORDER BY r.id",
-            placeholders(paths.len())
-        );
-        let mut values = vec![SqlValue::Text(fts_literal(query))];
-        values.extend(paths.iter().map(|p| SqlValue::Text((*p).to_string())));
-        let mut statement = self.database.prepare(&sql).map_err(sql_error)?;
-        let mut rows = statement
-            .query(params_from_iter(values))
-            .map_err(sql_error)?;
-        while let Some(row) = rows.next().map_err(sql_error)? {
-            let path = js_text(row.get_ref(0).map_err(sql_error)?);
-            let role = js_text(row.get_ref(1).map_err(sql_error)?);
-            let text = js_text(row.get_ref(2).map_err(sql_error)?);
-            let date = js_text(row.get_ref(3).map_err(sql_error)?);
-            visit(
-                &path,
-                &role,
-                &text,
-                (!date.is_empty() && date != "unknown").then_some(date.as_str()),
+        let (table, predicate, parameters) = if query.chars().count() >= 3 {
+            (
+                "messages JOIN message_rows r ON r.id = messages.rowid",
+                "messages MATCH ?",
+                vec![SqlValue::Text(fts_literal(query))],
+            )
+        } else if query.is_ascii() {
+            (
+                "message_rows r",
+                "(instr(lower(r.text), ?) > 0 OR length(CAST(r.text AS BLOB)) > length(r.text))",
+                vec![SqlValue::Text(js_lower(query).into_owned())],
+            )
+        } else {
+            // SQLite lower() only handles ASCII. The caller verifies Unicode matches.
+            ("message_rows r", "1 = 1", Vec::new())
+        };
+        for paths in paths.chunks(400) {
+            let sql = format!(
+                "SELECT r.path, r.role, r.text, r.date FROM {table}
+                WHERE {predicate} AND r.path IN ({}) ORDER BY r.id",
+                placeholders(paths.len())
             );
+            let mut values = parameters.clone();
+            values.extend(paths.iter().map(|p| SqlValue::Text((*p).to_string())));
+            let mut statement = self.database.prepare(&sql).map_err(sql_error)?;
+            let mut rows = statement
+                .query(params_from_iter(values))
+                .map_err(sql_error)?;
+            while let Some(row) = rows.next().map_err(sql_error)? {
+                let path = js_text(row.get_ref(0).map_err(sql_error)?);
+                let role = js_text(row.get_ref(1).map_err(sql_error)?);
+                let text = js_text(row.get_ref(2).map_err(sql_error)?);
+                let date = js_text(row.get_ref(3).map_err(sql_error)?);
+                visit(
+                    &path,
+                    &role,
+                    &text,
+                    (!date.is_empty() && date != "unknown").then_some(date.as_str()),
+                );
+            }
         }
         Ok(())
     }

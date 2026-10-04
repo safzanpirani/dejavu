@@ -183,3 +183,53 @@ fn undated_matches_use_session_activity_in_indexed_and_direct_find() {
         assert_eq!(result["hits"][0]["date"], "2026-09-22");
     }
 }
+
+#[test]
+fn mixed_terms_check_short_terms_before_capping_long_term_candidates() {
+    let fixture = Fixture::new();
+    for i in 0..60 {
+        write_codex(
+            &fixture,
+            &format!("long-{i}.jsonl"),
+            "/work/demo",
+            &[codex(
+                "deployment deployment deployment",
+                Some("2026-09-22"),
+            )],
+        );
+    }
+    write_codex(
+        &fixture,
+        "both.jsonl",
+        "/work/demo",
+        &[codex(
+            "deployment with rg and ÉX and 😀a",
+            Some("2026-09-22"),
+        )],
+    );
+    write_codex(
+        &fixture,
+        "short-only.jsonl",
+        "/work/demo",
+        &[codex("rg rg rg", Some("2026-09-22"))],
+    );
+    for direct in [false, true] {
+        for short in ["rg", "éx", "😀a"] {
+            let mut args = vec!["find", "deployment", short, "--source", "codex", "--json"];
+            if direct {
+                args.push("--no-index");
+            }
+            let result = fixture.run(&args);
+            assert_eq!(result["requiredTerms"], json!(["deployment", short]));
+            assert_eq!(result["hits"].as_array().unwrap().len(), 1);
+            assert!(
+                result["hits"][0]["path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("both.jsonl")
+            );
+        }
+    }
+    let short = fixture.run(&["find", "rg", "--source", "codex", "--json"]);
+    assert_eq!(short["hits"].as_array().unwrap().len(), 2);
+}
