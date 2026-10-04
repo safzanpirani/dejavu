@@ -226,8 +226,8 @@ pub fn command(topic: &str) -> Result<String, String> {
         ),
         "pack" => (
             "pack <term> [term...] [flags]", PACK.to_string(),
-            "JSON object keys: terms, requiredTerms, budgetChars, usedChars, candidateCount, excludedCount, sessions, skippedStores, skippedSessions\njq: jq '.sessions[].events[]'",
-            "Model-free excerpts. sessions contain transcript objects with events and window metadata.\nwindow.nextEvent continues with transcript --from-event; recover clipped events with --full.".into(),
+            "JSON object keys: terms, requiredTerms, budgetChars, usedChars, candidateCount, excludedCount, sessions, skippedStores, skippedSessions, omitted\njq: jq '.sessions[].events[]'",
+            "Model-free excerpts. Neighborhoods rank by match density before sharing the budget.\nJSON uses compact formatting. sessions contain events and window metadata.\nomitted: JSON array item keys: path, neighborhoods, events, nextEvent\nomitted counts excluded match anchors and context events per loaded session.\nUse omitted[].path and nextEvent with transcript <locator> --from-event N.\nwindow.nextEvent also continues with transcript --from-event; recover clipped events with --full.".into(),
             "0: completed, including empty or partial results; 1: usage or search error.",
         ),
         "last" => (

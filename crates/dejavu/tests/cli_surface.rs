@@ -297,3 +297,15 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens
         help_contract::assert_shape(&help(&f, &[topic]), &value, 0);
     }
 }
+
+#[test]
+fn pack_help_documents_omission_entries_from_a_bounded_fixture() {
+    let f = Fixture::new();
+    let value = f.json(&["pack", "found", "--budget-chars", "1", "--json"]);
+    let text = help(&f, &["pack"]);
+    help_contract::assert_shape(&text, &value, 0);
+    help_contract::assert_shape(&text, &value["omitted"], 1);
+    assert_eq!(value["omitted"][0]["path"], f.locator());
+    assert!(value["omitted"][0]["events"].as_u64().unwrap() > 0);
+    assert!(value["omitted"][0]["nextEvent"].is_u64());
+}
