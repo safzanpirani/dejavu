@@ -21,7 +21,8 @@ pub fn bold(text: &str) -> String {
 static STDERR_NO_COLOR: AtomicBool = AtomicBool::new(false);
 
 /// Call before parsing in commands that accept `--no-color`. Inspect only
-/// flags before `--`, preserving the existing flag consumption order.
+/// flags before `--`: `Args::new` has already separated literal operands.
+/// Preserve the existing flag consumption order.
 pub fn configure_stderr(args: &Args) {
     STDERR_NO_COLOR.store(
         args.items.iter().any(|arg| arg == "--no-color"),
@@ -231,6 +232,16 @@ mod tests {
                 "is_tty={is_tty}, NO_COLOR={no_color:?}, --no-color={disabled}"
             );
         }
+    }
+
+    #[test]
+    fn stderr_no_color_ignores_literal_operands_after_separator() {
+        configure_stderr(&args(&["find", "--", "--no-color"]));
+        assert!(!STDERR_NO_COLOR.load(Ordering::Relaxed));
+        configure_stderr(&args(&["find", "--no-color", "--", "needle"]));
+        assert!(STDERR_NO_COLOR.load(Ordering::Relaxed));
+        configure_stderr(&args(&["find", "needle"]));
+        assert!(!STDERR_NO_COLOR.load(Ordering::Relaxed));
     }
 
     #[test]
