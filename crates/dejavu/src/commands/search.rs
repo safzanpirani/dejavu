@@ -14,7 +14,7 @@ pub fn report_skipped_stores(diagnostics: &[StoreDiagnostic], quiet: bool) {
     for diagnostic in diagnostics {
         eprintln!(
             "{}",
-            args::dim(&format!(
+            args::dim_stderr(&format!(
                 "skipped unreadable {} store {}: {}",
                 diagnostic.source, diagnostic.path, diagnostic.error
             ))
@@ -23,6 +23,7 @@ pub fn report_skipped_stores(diagnostics: &[StoreDiagnostic], quiet: bool) {
 }
 
 pub fn run(mut args: Args, common: Common) -> Outcome {
+    crate::args::configure_stderr(&args);
     let source = parse_source(
         &args
             .value(&["-s", "--source"])
@@ -63,7 +64,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         let sources: Vec<&str> = result.sources.iter().map(|s| s.as_str()).collect();
         eprintln!(
             "{}",
-            args::dim(&format!("{} · {}ms", sources.join(","), result.elapsed_ms))
+            args::dim_stderr(&format!("{} · {}ms", sources.join(","), result.elapsed_ms))
         );
     }
     Ok(0)

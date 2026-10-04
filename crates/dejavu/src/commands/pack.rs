@@ -61,7 +61,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         for skipped in &result.skipped_sessions {
             eprintln!(
                 "{}",
-                args::dim(&format!("skipped {}: {}", skipped.path, skipped.error))
+                args::dim_stderr(&format!("skipped {}: {}", skipped.path, skipped.error))
             );
         }
     }

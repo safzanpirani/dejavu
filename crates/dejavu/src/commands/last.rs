@@ -7,6 +7,7 @@ use crate::sources::parse_source;
 use crate::{Common, Outcome, js};
 
 pub fn run(mut args: Args, common: Common) -> Outcome {
+    crate::args::configure_stderr(&args);
     args.shift();
     let defaults = LastOptions::default();
     let source = parse_source(

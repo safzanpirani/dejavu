@@ -46,7 +46,7 @@ pub fn print_update_notice(raw: &[String]) {
     if let Some(latest) = update::available_update(&UpdateDeps::default()) {
         eprintln!(
             "{}",
-            args::dim(&format!(
+            args::dim_stderr(&format!(
                 "dejavu {latest} is available (installed {VERSION}); run `dejavu self-update`, or set {DISABLE_CHECK_ENV}=1 to silence this"
             ))
         );

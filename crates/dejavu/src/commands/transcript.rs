@@ -1,4 +1,4 @@
-use crate::args::{Args, die, dim, stdout_is_tty};
+use crate::args::{Args, die, dim_stderr, stdout_is_tty};
 use crate::js;
 use crate::render::{RenderTranscriptOptions, render_transcript};
 use crate::view::{TranscriptViewOptions, view_transcript};
@@ -22,6 +22,7 @@ pub(crate) fn print_stdout(text: &str) {
 }
 
 pub fn run(mut args: Args, common: Common) -> Outcome {
+    crate::args::configure_stderr(&args);
     args.shift();
     let full = args.flag(&["--full"]);
     let thinking = args.flag(&["--thinking"]);
@@ -90,7 +91,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     if !common.quiet && !common.json {
         eprintln!(
             "{}",
-            dim(&format!(
+            dim_stderr(&format!(
                 "{source} · {} user · {} assistant · {} tool calls · {} results · {} thinking",
                 counts.user,
                 counts.assistant,

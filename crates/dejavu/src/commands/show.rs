@@ -1,4 +1,4 @@
-use crate::args::{Args, die, dim};
+use crate::args::{Args, die, dim_stderr};
 use crate::commands::transcript::print_stdout;
 use crate::js;
 use crate::render::render_show;
@@ -36,7 +36,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         let count = result.message_count;
         eprintln!(
             "{}",
-            dim(&format!(
+            dim_stderr(&format!(
                 "{} · {count} message{}",
                 result.source,
                 if count == 1 { "" } else { "s" }

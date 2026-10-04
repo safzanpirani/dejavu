@@ -1,4 +1,4 @@
-use crate::args::{Args, die, dim};
+use crate::args::{Args, die, dim_stderr};
 use crate::commands::transcript::print_stdout;
 use crate::js;
 use crate::scrub::{ScrubOptions, parse_drop_list, scrub_transcript};
@@ -63,7 +63,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     if !common.quiet && !result.dry_run && changed > 0 {
         eprintln!(
             "{}",
-            dim(
+            dim_stderr(
                 "a running agent that already loaded this session keeps the old content in memory until it restarts"
             )
         );

@@ -6,6 +6,7 @@ use crate::sources::parse_source;
 use crate::{Common, DEFAULT_FIND_LIMIT, DEFAULT_MAX_PARALLEL, Outcome, js};
 
 pub fn run(mut args: Args, common: Common) -> Outcome {
+    crate::args::configure_stderr(&args);
     args.shift();
     let source = parse_source(
         &args
@@ -58,7 +59,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             .collect();
         eprintln!(
             "{}",
-            args::dim(&format!(
+            args::dim_stderr(&format!(
                 "{} · total {}ms",
                 timings.join(" · "),
                 result.elapsed_ms

@@ -1,7 +1,9 @@
 //! The flag helpers `cli.ts` used. Flags may appear anywhere; each helper
 //! removes what it consumes, and the remainder are positional arguments.
 
+use std::ffi::OsStr;
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RED: &str = "\x1b[31m";
 pub const DIM: &str = "\x1b[90m";
@@ -16,9 +18,44 @@ pub fn bold(text: &str) -> String {
     format!("{BOLD}{text}{RESET}")
 }
 
-/// Prints `✗ message` in red to stderr and exits 1.
+static STDERR_NO_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Call before parsing in commands that accept `--no-color`. Inspect only
+/// flags before `--`, preserving the existing flag consumption order.
+pub fn configure_stderr(args: &Args) {
+    STDERR_NO_COLOR.store(
+        args.items.iter().any(|arg| arg == "--no-color"),
+        Ordering::Relaxed,
+    );
+}
+
+fn stderr_color_enabled(is_tty: bool, no_color: Option<&OsStr>, disabled: bool) -> bool {
+    is_tty && no_color.is_none() && !disabled
+}
+
+fn stderr_color() -> bool {
+    stderr_color_enabled(
+        stderr_is_tty(),
+        std::env::var_os("NO_COLOR").as_deref(),
+        STDERR_NO_COLOR.load(Ordering::Relaxed),
+    )
+}
+
+pub fn dim_stderr(text: &str) -> String {
+    if stderr_color() {
+        dim(text)
+    } else {
+        text.to_string()
+    }
+}
+
+/// Prints `✗ message` to stderr, colors it when permitted, and exits 1.
 pub fn die(message: &str) -> ! {
-    eprintln!("{RED}✗ {message}{RESET}");
+    if stderr_color() {
+        eprintln!("{RED}✗ {message}{RESET}");
+    } else {
+        eprintln!("✗ {message}");
+    }
     std::process::exit(1)
 }
 
@@ -173,6 +210,27 @@ mod tests {
 
     fn args(list: &[&str]) -> Args {
         Args::new(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn stderr_color_requires_a_terminal_and_no_opt_out() {
+        let cases = [
+            (true, None, false, true),
+            (false, None, false, false),
+            (true, Some(""), false, false),
+            (true, Some("1"), false, false),
+            (true, Some("0"), false, false),
+            (true, None, true, false),
+            (false, Some(""), false, false),
+            (false, Some("1"), true, false),
+        ];
+        for (is_tty, no_color, disabled, expected) in cases {
+            assert_eq!(
+                stderr_color_enabled(is_tty, no_color.map(OsStr::new), disabled),
+                expected,
+                "is_tty={is_tty}, NO_COLOR={no_color:?}, --no-color={disabled}"
+            );
+        }
     }
 
     #[test]
