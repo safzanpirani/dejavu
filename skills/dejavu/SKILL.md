@@ -62,6 +62,8 @@ dejavu find deploy timeout --project payments-api --since 2w
 dejavu find controlmaster --user --source claude
 ```
 
+OpenCode cards keep their project directory. `--since` uses matching message dates and falls back to session activity when dates are missing. A resumed session can match after its filename date. Harness instruction blocks do not count as user matches or opening prompts. Find excerpts show a 240-character window around a matching term. Find and last cards cap opening prompts at 300 characters and mark cuts with an ellipsis. Use `transcript --full` for the complete prompt. Counts cover all matching visible messages in each scored session, including messages after large tool logs.
+
 Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-DD` or `7d`/`2w`/`3m`, `--user` requires every term in user messages, `-n` limits results, `--paths` prints only locators (one per line, for piping into `dejavu show` or `dejavu query`), and `--max-parallel N` bounds local store and candidate work with a default of 4. Resume commands cover Claude (`claude --resume`), Codex (`codex resume`), Pi (`pi --session <path>`), and Droid (`droid --resume <id>`). Prefer `dejavu find` over plain search whenever the goal is identifying a whole session rather than a phrase.
 
 ## Read a transcript without model cost

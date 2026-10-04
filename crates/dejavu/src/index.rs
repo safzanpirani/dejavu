@@ -1091,6 +1091,43 @@ impl IndexReader {
         })
     }
 
+    /// Stream every matching visible row for the selected sessions without a raw-line cap.
+    pub fn visit_matching_messages(
+        &self,
+        query: &str,
+        paths: &[&str],
+        visit: &mut dyn FnMut(&str, &str, &str, Option<&str>),
+    ) -> Result<(), String> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let sql = format!(
+            "SELECT r.path, r.role, r.text, r.date FROM messages
+            JOIN message_rows r ON r.id = messages.rowid
+            WHERE messages MATCH ? AND r.path IN ({}) ORDER BY r.id",
+            placeholders(paths.len())
+        );
+        let mut values = vec![SqlValue::Text(fts_literal(query))];
+        values.extend(paths.iter().map(|p| SqlValue::Text((*p).to_string())));
+        let mut statement = self.database.prepare(&sql).map_err(sql_error)?;
+        let mut rows = statement
+            .query(params_from_iter(values))
+            .map_err(sql_error)?;
+        while let Some(row) = rows.next().map_err(sql_error)? {
+            let path = js_text(row.get_ref(0).map_err(sql_error)?);
+            let role = js_text(row.get_ref(1).map_err(sql_error)?);
+            let text = js_text(row.get_ref(2).map_err(sql_error)?);
+            let date = js_text(row.get_ref(3).map_err(sql_error)?);
+            visit(
+                &path,
+                &role,
+                &text,
+                (!date.is_empty() && date != "unknown").then_some(date.as_str()),
+            );
+        }
+        Ok(())
+    }
+
     /// Latest indexed activity for a bounded set of candidate sessions.
     pub fn last_activity(&self, paths: &[&str]) -> Result<HashMap<String, String>, String> {
         let mut dates = HashMap::new();

@@ -403,6 +403,7 @@ struct Candidate {
     source: TranscriptSource,
     path: String,
     project: Option<String>,
+    indexed: bool,
     /// Raw counts per term, in term order.
     raw_counts: Vec<(String, usize)>,
 }
@@ -413,6 +414,58 @@ impl Candidate {
     }
     fn raw_total(&self) -> usize {
         self.raw_counts.iter().map(|(_, c)| *c).sum()
+    }
+}
+
+#[derive(Clone, Default)]
+struct MessageScore {
+    term_counts: JsObject<TermCount>,
+    matches: Vec<FindMatch>,
+    score: usize,
+    latest_date: String,
+}
+
+impl MessageScore {
+    fn record(&mut self, term: &str, role: &str, text: &str, date: Option<&str>, terms: &[String]) {
+        if !matches!(role, "user" | "assistant")
+            || (role == "user" && !is_real_user_prompt(text))
+            || !js_lower(text).contains(js_lower(term).as_ref())
+        {
+            return;
+        }
+        let mut count = self.term_counts.get(term).copied().unwrap_or(TermCount {
+            user: 0,
+            assistant: 0,
+        });
+        if role == "user" {
+            count.user += 1;
+            self.score += USER_WEIGHT;
+        } else {
+            count.assistant += 1;
+            self.score += 1;
+        }
+        self.term_counts.set(term, count);
+        if let Some(date) = date.filter(|d| !d.is_empty() && *d != "unknown")
+            && date > self.latest_date.as_str()
+        {
+            self.latest_date = date.to_string();
+        }
+        // Prefer user excerpts, with assistant excerpts when only assistants match.
+        if role == "user" && self.matches.first().is_some_and(|m| m.role != "user") {
+            self.matches.clear();
+        }
+        if self.matches.len() < 6
+            && (role == "user" || self.matches.iter().all(|m| m.role != "user"))
+        {
+            let excerpt = match_excerpt(text, terms);
+            if !self.matches.iter().any(|m| m.text == excerpt) {
+                self.matches.push(FindMatch {
+                    role: role.to_string(),
+                    date: date.map(str::to_string),
+                    text: excerpt,
+                });
+            }
+        }
     }
 }
 
@@ -620,6 +673,7 @@ pub fn find_sessions(
                         .iter()
                         .find(|m| m.path == *path)
                         .map(|m| m.project.clone()),
+                    indexed: batch.from_index,
                     raw_counts: Vec::new(),
                 });
                 candidates.len() - 1
@@ -683,107 +737,77 @@ pub fn find_sessions(
         None => HashMap::new(),
     };
 
+    let mut indexed_scores: HashMap<String, MessageScore> = HashMap::new();
+    if let Some(reader) = &reader {
+        for term in &cleaned {
+            let paths: Vec<&str> = candidates
+                .iter()
+                .filter(|c| c.indexed)
+                .filter(|c| c.raw_counts.iter().any(|(t, _)| t == term))
+                .map(|c| c.path.as_str())
+                .collect();
+            reader.visit_matching_messages(term, &paths, &mut |path, role, text, date| {
+                indexed_scores
+                    .entry(path.to_string())
+                    .or_default()
+                    .record(term, role, text, date, &cleaned);
+            })?;
+        }
+    }
+
     let hit_candidates = map_pool(
         &candidates,
         max_parallel,
         |candidate, _| -> Option<FindHit> {
-            let mut term_counts: JsObject<TermCount> = JsObject::default();
-            let mut matches: Vec<FindMatch> = Vec::new();
-            let mut score = 0;
-            let mut latest_date = String::new();
-            if candidate.source == TranscriptSource::Opencode {
-                let messages = prepare_recall_messages(
-                    backend
-                        .load_messages(&candidate.path, candidate.source)
-                        .ok()?,
-                );
-                let visible: Vec<_> = messages
-                    .iter()
-                    .filter_map(|message| {
+            let mut scored = indexed_scores
+                .get(&candidate.path)
+                .cloned()
+                .unwrap_or_default();
+            if !candidate.indexed {
+                if candidate.source == TranscriptSource::Opencode {
+                    let messages = prepare_recall_messages(
+                        backend
+                            .load_messages(&candidate.path, candidate.source)
+                            .ok()?,
+                    );
+                    for message in messages {
                         let text = message
                             .content
                             .iter()
                             .filter_map(RecallBlock::text)
                             .collect::<Vec<_>>()
                             .join(" ");
-                        (message.role != "user" || is_real_user_prompt(&text))
-                            .then_some((message.role.as_str(), text))
-                    })
-                    .collect();
-                for (term, _) in &candidate.raw_counts {
-                    let stored = open_code_matches
-                        .get(&candidate.path)
-                        .and_then(|m| m.get(&term_index_of(term)))
-                        .map(|(found, _)| found);
-                    let lowered = js_lower(term);
-                    let snippets: Vec<_> = visible
-                        .iter()
-                        .filter(|(_, text)| js_lower(text).contains(lowered.as_ref()))
-                        .collect();
-                    let user = snippets.iter().filter(|(role, _)| *role == "user").count();
-                    let assistant = snippets.len() - user;
-                    term_counts.set(term, TermCount { user, assistant });
-                    score += user * USER_WEIGHT + assistant;
-                    for (role, text) in snippets {
-                        if matches.len() < 6 {
-                            matches.push(FindMatch {
-                                role: (*role).to_string(),
-                                date: None,
-                                text: match_excerpt(text, &cleaned),
-                            });
+                        for (term, _) in &candidate.raw_counts {
+                            let date = open_code_matches
+                                .get(&candidate.path)
+                                .and_then(|m| m.get(&term_index_of(term)))
+                                .map(|(found, _)| found.date.as_str());
+                            scored.record(term, &message.role, &text, date, &cleaned);
                         }
                     }
-                    if let Some(stored) = stored
-                        && !stored.date.is_empty()
-                        && stored.date > latest_date
-                    {
-                        latest_date = stored.date.clone();
-                    }
-                }
-            } else {
-                for (term, _) in &candidate.raw_counts {
-                    let (mut user, mut assistant) = (0, 0);
-                    let lowered = js_lower(term).into_owned();
-                    backend.visit_lines(term, &candidate.path, 400, &mut |line| {
-                        let Some(message) = extract_visible_message(line, candidate.source) else {
-                            return true;
-                        };
-                        if (message.role == "user" && !is_real_user_prompt(&message.text))
-                            || !js_lower(&message.text).contains(lowered.as_str())
-                        {
-                            return true;
-                        }
-                        if message.role == "user" {
-                            user += 1;
-                        } else {
-                            assistant += 1;
-                        }
-                        if let Some(date) = &message.date
-                            && !date.is_empty()
-                            && *date > latest_date
-                        {
-                            latest_date = date.clone();
-                        }
-                        if message.role == "user"
-                            && matches.len() < 6
-                            && is_real_user_prompt(&message.text)
-                        {
-                            let text = match_excerpt(&message.text, &cleaned);
-                            let head = js::prefix(&text, 80);
-                            if !matches.iter().any(|m| js::prefix(&m.text, 80) == head) {
-                                matches.push(FindMatch {
-                                    role: message.role.to_string(),
-                                    date: message.date.clone(),
-                                    text,
-                                });
+                } else {
+                    for (term, _) in &candidate.raw_counts {
+                        backend.visit_lines(term, &candidate.path, usize::MAX, &mut |line| {
+                            if let Some(message) = extract_visible_message(line, candidate.source) {
+                                scored.record(
+                                    term,
+                                    message.role,
+                                    &message.text,
+                                    message.date.as_deref(),
+                                    &cleaned,
+                                );
                             }
-                        }
-                        true
-                    });
-                    term_counts.set(term, TermCount { user, assistant });
-                    score += user * USER_WEIGHT + assistant;
+                            true
+                        });
+                    }
                 }
             }
+            let MessageScore {
+                term_counts,
+                matches,
+                score,
+                latest_date,
+            } = scored;
             if score == 0 {
                 return None;
             }
