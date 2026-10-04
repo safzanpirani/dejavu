@@ -348,6 +348,49 @@ pub fn find_opening_prompt(path: &str, source: TranscriptSource, backend: &dyn B
     opening
 }
 
+/// A bounded window around the earliest matching term, measured in UTF-16 units.
+fn match_excerpt(text: &str, terms: &[String]) -> String {
+    const LIMIT: usize = 240;
+    let length = js::len(text);
+    if length <= LIMIT {
+        return text.to_string();
+    }
+    let lowered = js_lower(text);
+    let first = terms
+        .iter()
+        .filter_map(|term| {
+            lowered
+                .find(js_lower(term).as_ref())
+                .map(|at| (at, js::len(term)))
+        })
+        .min_by_key(|(at, _)| *at);
+    let (byte, term_length) = first.unwrap_or((0, 0));
+    // Lowercasing can expand characters such as İ. Map the folded byte offset
+    // back to the original string before cutting the window.
+    let (mut folded_bytes, mut at) = (0, 0);
+    for ch in text.chars() {
+        let next = folded_bytes + ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        if next > byte {
+            break;
+        }
+        folded_bytes = next;
+        at += ch.len_utf16();
+    }
+    let start = at
+        .saturating_sub((LIMIT.saturating_sub(term_length + 2)) / 2)
+        .min(length.saturating_sub(LIMIT - 1));
+    let mut end = (start + LIMIT - usize::from(start > 0)).min(length);
+    if end < length {
+        end -= 1;
+    }
+    format!(
+        "{}{}{}",
+        if start > 0 { "…" } else { "" },
+        js::slice(text, start, end),
+        if end < length { "…" } else { "" }
+    )
+}
+
 struct Candidate {
     source: TranscriptSource,
     path: String,
@@ -678,7 +721,7 @@ pub fn find_sessions(
                             matches.push(FindMatch {
                                 role: (*role).to_string(),
                                 date: None,
-                                text: js::prefix(text, 240).to_string(),
+                                text: match_excerpt(text, &cleaned),
                             });
                         }
                     }
@@ -717,7 +760,7 @@ pub fn find_sessions(
                             && matches.len() < 6
                             && is_real_user_prompt(&message.text)
                         {
-                            let text = js::prefix(&message.text, 240).to_string();
+                            let text = match_excerpt(&message.text, &cleaned);
                             let head = js::prefix(&text, 80);
                             if !matches.iter().any(|m| js::prefix(&m.text, 80) == head) {
                                 matches.push(FindMatch {
@@ -969,6 +1012,48 @@ mod tests {
             find_opening_prompt(&path_a(), TranscriptSource::Claude, &backend),
             "the actual request"
         );
+    }
+
+    #[test]
+    fn excerpts_center_the_earliest_case_insensitive_match_without_splitting_unicode() {
+        let text = format!(
+            "{} NeEdLe {} later",
+            "İ😀 ".repeat(800),
+            "tail ".repeat(100)
+        );
+        let excerpt = match_excerpt(&text, &terms(&["later", "needle"]));
+        assert!(excerpt.contains("NeEdLe"));
+        assert!(excerpt.starts_with('…'));
+        assert!(excerpt.ends_with('…'));
+        assert!(js::len(&excerpt) <= 240);
+        assert_eq!(
+            match_excerpt("short NEEDLE", &terms(&["needle"])),
+            "short NEEDLE"
+        );
+        let end = match_excerpt(
+            &format!("{} NEEDLE", "😀 ".repeat(200)),
+            &terms(&["needle"]),
+        );
+        assert!(end.ends_with("NEEDLE"));
+        assert!(js::len(&end) <= 240);
+        let start = match_excerpt(&format!("NEEDLE {}", "x".repeat(1000)), &terms(&["needle"]));
+        assert!(start.starts_with("NEEDLE"));
+        assert!(start.ends_with('…'));
+    }
+
+    #[test]
+    fn find_matches_show_terms_far_beyond_message_prefixes() {
+        let mut backend = deps();
+        backend.lines = Box::new(|_, _| {
+            vec![claude_line(
+                "user",
+                &format!("{} WORKSHOP {}", "x".repeat(4000), "y".repeat(4000)),
+            )]
+        });
+        let result =
+            find_sessions(&terms(&["workshop"]), &FindOptions::default(), &backend).unwrap();
+        assert!(result.hits[0].matches[0].text.contains("WORKSHOP"));
+        assert!(js::len(&result.hits[0].matches[0].text) <= 240);
     }
 
     #[test]
