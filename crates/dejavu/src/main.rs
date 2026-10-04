@@ -216,6 +216,10 @@ fn main() {
         Some("profile") => commands::profile::run(args, common),
         Some("index") => commands::index::run(args, common),
         Some("memory") => commands::memory::run(args, common),
+        Some("search") => {
+            args.shift();
+            commands::search::run(args, common)
+        }
         Some("find") => commands::find::run(args, common),
         Some("last") => commands::last::run(args, common),
         Some("pack") => commands::pack::run(args, common),

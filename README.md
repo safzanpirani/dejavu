@@ -85,8 +85,10 @@ It also reads Claude Code Markdown memory under `~/.claude/projects/*/memory/`. 
 ### Search for an exact phrase
 
 ```bash
-dejavu --source codex session-recall.ts --max-parallel 4 --json
+dejavu search --source codex session-recall.ts --max-parallel 4 --json
 ```
+
+The explicit `dejavu search PHRASE` command and bare `dejavu PHRASE` search the same phrase. Use `dejavu -- search` or `dejavu search search` to search for the literal word `search`. A quoted phrase such as `dejavu "search failed"` also stays literal.
 
 Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode|droid` to narrow the search.
 
