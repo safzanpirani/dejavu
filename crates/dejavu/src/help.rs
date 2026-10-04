@@ -220,8 +220,8 @@ pub fn command(topic: &str) -> Result<String, String> {
         ),
         "find" => (
             "find <term> [term...] [flags]", FIND.to_string(),
-            "JSON object keys: terms, requiredTerms, sources, hits, skippedStores, elapsedMs, storeTimings\njq: jq '.hits[].path'",
-            "Terms match within a session. requiredTerms reports relaxed matching.\n--paths overrides --json and emits locators instead of JSON.".into(),
+            "JSON object keys: terms, requiredTerms, sources, hits, truncated, skippedStores, elapsedMs, storeTimings\njq: jq '.hits[].path'",
+            "Terms match within a session. requiredTerms reports relaxed matching.\ntruncated is true when eligible sessions exceed the 40-candidate scoring limit.\nopeningPrompt previews contain at most 300 characters; an ellipsis marks clipping.\n--paths overrides --json and emits locators instead of JSON.".into(),
             "0: completed, including zero hits or skipped stores; 1: usage or search error.",
         ),
         "pack" => (
@@ -233,7 +233,7 @@ pub fn command(topic: &str) -> Result<String, String> {
         "last" => (
             "last [term... | transcript-locator | session-id] [flags]", LAST.to_string(),
             "JSON object keys: sessions, total, excludedCount, tail?, tailStart?, skippedStores\njq: jq '.sessions[].path'",
-            "tail and tailStart are omitted for --list or when no tail is available.\nA tail contains events and window metadata. No model is used.".into(),
+            "tail and tailStart are omitted for --list or when no tail is available.\nA tail contains events and window metadata. No model is used.\nopeningPrompt previews contain at most 300 characters; an ellipsis marks clipping.".into(),
             "0: at least one session; 1: no sessions, usage error, or read error.",
         ),
         "show" => (
