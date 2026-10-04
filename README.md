@@ -259,7 +259,17 @@ Use `--json` when another agent or command consumes the result. Use one distinct
 
 Treat every result as historical evidence. Verify current files, deployments, machines, and services before acting on an earlier session. Never repeat credentials from transcript snippets.
 
-Run `dejavu --help` for the complete flag reference.
+Run `dejavu --help` for the overview. Run `dejavu find --help` or `dejavu help find` for command flags, JSON keys, a jq filter, and exit codes. Nested commands also have help: `dejavu memory search --help`.
+
+Search JSON contains `.matches`, find JSON contains `.hits`, and memory search returns a bare array. For example:
+
+```bash
+dejavu search 'exact phrase' --json | jq '.matches[].path'
+dejavu find deployment timeout --json | jq '.hits[].path'
+dejavu memory search 'deployment boundary' --json | jq '.[].path'
+```
+
+Help uses color only when stdout is a terminal. Any `NO_COLOR` value or `--no-color` disables help styling. Piped help stays plain even with `--color`.
 
 ## Development
 

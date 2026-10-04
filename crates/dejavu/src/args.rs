@@ -80,6 +80,15 @@ pub fn color_choice(args: &mut Args, json: bool) -> bool {
             && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()))
 }
 
+/// Help never forces ANSI into a pipe. Any NO_COLOR value disables styling.
+pub fn help_color(args: &Args) -> bool {
+    stderr_color_enabled(
+        stdout_is_tty(),
+        std::env::var_os("NO_COLOR").as_deref(),
+        args.items.iter().any(|arg| arg == "--no-color"),
+    )
+}
+
 /// Command-line arguments with the operands after a bare `--` held apart:
 /// those are positional even when they begin with a dash.
 #[derive(Debug, Default, Clone)]

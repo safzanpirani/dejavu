@@ -92,3 +92,208 @@ fn explicit_search_matches_bare_search_and_literal_search_remains_available() {
     }
     assert_eq!(f.run(&["search", "--json"]).status.code(), Some(1));
 }
+
+#[path = "support/help_contract.rs"]
+mod help_contract;
+
+fn help(f: &Fixture, topic: &[&str]) -> String {
+    let mut args = topic.to_vec();
+    args.push("--help");
+    let out = f.run(&args);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn help_routes_each_command_and_nested_topic_without_ansi_in_pipes() {
+    let f = Fixture::new();
+    for topic in [
+        vec!["search"],
+        vec!["find"],
+        vec!["pack"],
+        vec!["last"],
+        vec!["show"],
+        vec!["transcript"],
+        vec!["view"],
+        vec!["scrub"],
+        vec!["query"],
+        vec!["profile"],
+        vec!["memory"],
+        vec!["index"],
+        vec!["self-update"],
+        vec!["memory", "list"],
+        vec!["memory", "search"],
+        vec!["memory", "show"],
+        vec!["index", "status"],
+        vec!["index", "update"],
+        vec!["index", "rebuild"],
+    ] {
+        let text = help(&f, &topic);
+        assert!(
+            text.starts_with(&format!("dejavu {}\n", topic.join(" "))),
+            "{text}"
+        );
+        for required in ["Usage:", "Flags:", "JSON", "jq '", "Exit codes:"] {
+            assert!(text.contains(required), "{topic:?}: missing {required}");
+        }
+        assert!(!text.contains('\x1b'));
+        let mut args = vec!["help"];
+        args.extend_from_slice(&topic);
+        assert_eq!(f.run(&args).stdout, text.as_bytes());
+        args.extend(["--color", "--no-color"]);
+        let out = f.command().env("NO_COLOR", "").args(args).output().unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, text.as_bytes());
+    }
+    let overview = help(&f, &[]);
+    assert!(overview.len() < 2500);
+    assert!(!overview.contains('\x1b'));
+    assert_eq!(f.run(&["help"]).stdout, overview.as_bytes());
+    assert_eq!(f.run(&["--help", "--color"]).stdout, overview.as_bytes());
+    assert_eq!(
+        f.run(&["--json", "find", "--help"]).stdout,
+        help(&f, &["find"]).as_bytes()
+    );
+    assert_eq!(f.run(&["help", "bogus"]).status.code(), Some(1));
+    assert_eq!(f.run(&["memory", "bogus", "--help"]).status.code(), Some(1));
+}
+
+#[test]
+fn documented_json_keys_match_real_fixture_commands() {
+    let f = Fixture::new();
+    let locator = f.locator();
+    for (topic, args, variant) in [
+        (vec!["search"], vec!["search", "found", "--json"], 0),
+        (vec!["find"], vec!["find", "found", "--json"], 0),
+        (vec!["pack"], vec!["pack", "found", "--json"], 0),
+        (vec!["last"], vec!["last", &locator, "--json"], 0),
+        (
+            vec!["last"],
+            vec!["last", "--anywhere", "--list", "--json"],
+            0,
+        ),
+        (vec!["show"], vec!["show", &locator, "--json"], 0),
+        (
+            vec!["transcript"],
+            vec!["transcript", &locator, "--json"],
+            0,
+        ),
+        (
+            vec!["transcript"],
+            vec!["transcript", &locator, "--limit", "1", "--json"],
+            0,
+        ),
+        (vec!["view"], vec!["view", &locator, "--json"], 0),
+        (
+            vec!["scrub"],
+            vec![
+                "scrub",
+                &locator,
+                "--pattern",
+                "found",
+                "--dry-run",
+                "--json",
+            ],
+            0,
+        ),
+        (vec!["profile"], vec!["profile", &locator, "--json"], 0),
+        (vec!["memory", "list"], vec!["memory", "list", "--json"], 0),
+        (
+            vec!["memory", "list"],
+            vec!["memory", "list", "--files", "--json"],
+            1,
+        ),
+        (
+            vec!["memory", "search"],
+            vec!["memory", "search", "needle", "--json"],
+            0,
+        ),
+        (
+            vec!["memory", "show"],
+            vec!["memory", "show", "demo", "--json"],
+            0,
+        ),
+        (
+            vec!["index", "status"],
+            vec!["index", "status", "--json"],
+            0,
+        ),
+        (
+            vec!["index", "update"],
+            vec!["index", "update", "--json"],
+            0,
+        ),
+        (
+            vec!["index", "rebuild"],
+            vec!["index", "rebuild", "--json"],
+            0,
+        ),
+    ] {
+        let value = f.json(&args);
+        help_contract::assert_shape(&help(&f, &topic), &value, variant);
+        if topic[0] == "memory" || topic[0] == "index" {
+            let parent_variant = match topic.as_slice() {
+                ["memory", "list"] => variant,
+                ["memory", "search"] => 2,
+                ["memory", "show"] => 3,
+                ["index", "status"] => 0,
+                _ => 1,
+            };
+            help_contract::assert_shape(&help(&f, &topic[..1]), &value, parent_variant);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn query_json_help_matches_a_fake_model_without_paid_calls() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    std::fs::create_dir_all(f.0.join("bin")).unwrap();
+    let fake = f.0.join("bin/codex");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+for arg in "$@"; do
+  [ "$prev" = --output-last-message ] && out=$arg
+  prev=$arg
+done
+cat >/dev/null
+printf 'Synthetic answer' > "$out"
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":2}}'
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for topic in ["query", "profile"] {
+        let mut cmd = f.command();
+        cmd.env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", f.0.join("bin").display()),
+        )
+        .env("XDG_CONFIG_HOME", f.0.join("config"))
+        .env_remove("DEJAVU_QUERY_HARNESS")
+        .env_remove("DEJAVU_QUERY_MODEL")
+        .env_remove("DEJAVU_QUERY_EFFORT")
+        .env_remove("DEJAVU_QUERY_VIA_PI")
+        .args([topic, &f.locator(), "--json"]);
+        if topic == "query" {
+            cmd.arg("What happened?");
+        } else {
+            cmd.arg("--explain");
+        }
+        let out = cmd.output().unwrap();
+        // The profile fake intentionally returns non-JSON explanation text.
+        // It still emits the deterministic report plus an explanation error.
+        assert_eq!(
+            out.status.code(),
+            Some(if topic == "query" { 0 } else { 1 })
+        );
+        let value = serde_json::from_slice(&out.stdout).unwrap();
+        help_contract::assert_shape(&help(&f, &[topic]), &value, 0);
+    }
+}
