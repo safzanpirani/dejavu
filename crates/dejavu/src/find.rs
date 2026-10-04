@@ -574,18 +574,11 @@ pub fn find_sessions(
             _ => true,
         });
     }
-    // Path-dated candidates outside the --since window skip the deep scan entirely;
-    // the rest are re-checked against message timestamps after scoring.
+    // A filename dates creation, not resumed dialogue. Check message dates after scoring.
     let since_date = match &options.since {
         Some(since) => Some(parse_since(since, None)?),
         None => None,
     };
-    if let Some(cutoff) = &since_date {
-        candidates.retain(|candidate| {
-            let date = date_from_path(&candidate.path);
-            date == "unknown" || date.as_str() >= cutoff.as_str()
-        });
-    }
     // Rank balanced multi-term relevance above one-term spam.
     candidates.sort_by(|a, b| {
         b.raw_counts
@@ -628,6 +621,16 @@ pub fn find_sessions(
         }
     }
     let term_index_of = |term: &str| cleaned.iter().position(|t| t == term).unwrap_or(0);
+
+    let activity = match &reader {
+        Some(reader) => reader.last_activity(
+            &candidates
+                .iter()
+                .map(|c| c.path.as_str())
+                .collect::<Vec<_>>(),
+        )?,
+        None => HashMap::new(),
+    };
 
     let hit_candidates = map_pool(
         &candidates,
@@ -706,7 +709,23 @@ pub fn find_sessions(
                 return None;
             }
             let date = if latest_date.is_empty() {
-                date_from_path(&candidate.path)
+                activity.get(&candidate.path).cloned().unwrap_or_else(|| {
+                    let mut latest = String::new();
+                    backend.visit_lines("", &candidate.path, usize::MAX, &mut |line| {
+                        if let Some(message) = extract_visible_message(line, candidate.source)
+                            && let Some(date) = message.date
+                            && date > latest
+                        {
+                            latest = date;
+                        }
+                        true
+                    });
+                    if latest.is_empty() {
+                        date_from_path(&candidate.path)
+                    } else {
+                        latest
+                    }
+                })
             } else {
                 latest_date
             };
@@ -828,6 +847,42 @@ mod tests {
             .unwrap();
             assert_eq!(result.hits.len(), 1);
             assert_eq!(result.hits[0].project, "Development/projects/hack");
+        }
+    }
+
+    #[test]
+    fn since_uses_resumed_message_dates_and_falls_back_to_activity() {
+        for dated_match in [true, false] {
+            let mut backend = deps();
+            backend.counts = Box::new(|_| {
+                vec![FileMatchCount {
+                    path: format!("{STORE}/rollout-2026-08-01T00-00-00-session.jsonl"),
+                    count: 1,
+                }]
+            });
+            backend.lines = Box::new(move |query, _| {
+                if query.is_empty() || dated_match {
+                    vec![claude_line("user", "workshop resumes")]
+                } else {
+                    let mut row: serde_json::Value =
+                        serde_json::from_str(&claude_line("user", "workshop resumes")).unwrap();
+                    row.as_object_mut().unwrap().remove("timestamp");
+                    vec![row.to_string()]
+                }
+            });
+            let run = |since: &str| {
+                find_sessions(
+                    &terms(&["workshop"]),
+                    &FindOptions {
+                        since: Some(since.into()),
+                        ..FindOptions::default()
+                    },
+                    &backend,
+                )
+                .unwrap()
+            };
+            assert_eq!(run("2026-08-20").hits[0].date, "2026-08-25");
+            assert!(run("2026-08-26").hits.is_empty());
         }
     }
 

@@ -1091,6 +1091,24 @@ impl IndexReader {
         })
     }
 
+    /// Latest indexed activity for a bounded set of candidate sessions.
+    pub fn last_activity(&self, paths: &[&str]) -> Result<HashMap<String, String>, String> {
+        let mut dates = HashMap::new();
+        let mut statement = self
+            .database
+            .prepare_cached("SELECT MAX(date) FROM message_rows WHERE path = ?")
+            .map_err(sql_error)?;
+        for path in paths {
+            let date: Option<String> = statement
+                .query_row([path], |row| row.get(0))
+                .map_err(sql_error)?;
+            if let Some(date) = date.filter(|d| !d.is_empty() && d != "unknown") {
+                dates.insert((*path).to_string(), date);
+            }
+        }
+        Ok(dates)
+    }
+
     /// `groupedMatches`: transcripts ranked by literal occurrence count, aggregated
     /// in SQL so only one row per transcript is read. The trigram match already
     /// guarantees a case-folded substring hit, so a count that SQLite's ASCII-only
