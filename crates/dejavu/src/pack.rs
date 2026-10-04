@@ -11,6 +11,7 @@
 //! same; only candidates past that point go unexamined.
 
 use crate::find::{FindOptions, FindResult};
+use crate::js;
 use crate::opencode::encode_uri_component;
 use crate::paths::js_lower;
 use crate::pool::map_pool;
@@ -21,6 +22,7 @@ use crate::window::{
     WindowOptions, WindowedTranscript, event_body, render_window, validate_bound, window_transcript,
 };
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 /// `find`'s ranked-candidate cap, which pack always searches up to.
 const SEARCH_CAP: usize = 40;
@@ -67,6 +69,7 @@ pub struct PackResult {
     pub sessions: Vec<WindowedTranscript>,
     pub skipped_stores: Vec<StoreDiagnostic>,
     pub skipped_sessions: Vec<SkippedSession>,
+    pub omitted: Vec<OmittedSession>,
 }
 
 /// `path.basename(path, ext)`.
@@ -119,23 +122,113 @@ pub(crate) fn excluded(path: &str, source: TranscriptSource, value: &str) -> boo
             && (path.ends_with(&format!("{value}.jsonl")) || path.ends_with(&format!("/{value}"))))
 }
 
-/// The events within `context` of an event whose body contains a needle.
-fn keep_matching(mut view: TranscriptView, needles: &[String], context: usize) -> TranscriptView {
-    let count = view.events.len();
-    let mut keep = vec![false; count];
-    for (index, event) in view.events.iter().enumerate() {
-        let body = js_lower(&event_body(event)).into_owned();
-        if !needles.iter().any(|needle| body.contains(needle.as_str())) {
+/// Omitted match neighborhoods and events in a loaded session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmittedSession {
+    pub path: String,
+    pub neighborhoods: usize,
+    pub events: usize,
+    pub next_event: usize,
+}
+
+struct Neighborhood {
+    anchor: usize,
+    events: Vec<usize>,
+    matches: usize,
+    chars: usize,
+}
+
+struct MatchedView {
+    view: TranscriptView,
+    neighborhoods: Vec<Neighborhood>,
+}
+
+/// Rank dialogue neighborhoods by weighted match density. Tool and reasoning
+/// events do not compete with dialogue or consume its context radius.
+fn keep_matching(mut view: TranscriptView, needles: &[String], context: usize) -> MatchedView {
+    for (position, event) in view.events.iter_mut().enumerate() {
+        event.index.get_or_insert(position);
+    }
+    view.events.retain(|event| {
+        matches!(
+            event.body,
+            crate::view::EventBody::User { .. } | crate::view::EventBody::Assistant { .. }
+        )
+    });
+    let metrics: Vec<(usize, usize)> = view
+        .events
+        .iter()
+        .map(|event| {
+            let body = event_body(event);
+            let lower = js_lower(&body);
+            let weight = if event.kind() == "user" { 2 } else { 1 };
+            let matches = needles
+                .iter()
+                .filter(|term| !term.is_empty())
+                .map(|term| lower.matches(term.as_str()).count().min(8))
+                .sum::<usize>();
+            (matches * weight, js::len(&body).max(200))
+        })
+        .collect();
+    let mut neighborhoods = Vec::new();
+    let mut keep = BTreeSet::new();
+    for (position, &(matches, _)) in metrics.iter().enumerate() {
+        if matches == 0 {
             continue;
         }
-        let end = (index + context).min(count.saturating_sub(1));
-        for slot in &mut keep[index.saturating_sub(context)..=end] {
-            *slot = true;
+        let start = position.saturating_sub(context);
+        let end = position.saturating_add(context).min(view.events.len() - 1);
+        let events: Vec<usize> = view.events[start..=end]
+            .iter()
+            .map(|event| event.index.unwrap())
+            .collect();
+        keep.extend(events.iter().copied());
+        neighborhoods.push(Neighborhood {
+            anchor: view.events[position].index.unwrap(),
+            events,
+            matches: metrics[start..=end].iter().map(|m| m.0).sum(),
+            chars: metrics[start..=end].iter().map(|m| m.1).sum(),
+        });
+    }
+    neighborhoods.sort_by(|a, b| {
+        ((b.matches as u128) * (a.chars as u128))
+            .cmp(&((a.matches as u128) * (b.chars as u128)))
+            .then_with(|| a.anchor.cmp(&b.anchor))
+    });
+    view.events
+        .retain(|event| keep.contains(&event.index.unwrap()));
+    MatchedView {
+        view,
+        neighborhoods,
+    }
+}
+
+/// Select before dividing the body budget. The per-event metadata allowance
+/// prevents small bodies from creating an arbitrarily large JSON envelope.
+fn choose_events(session: &MatchedView, budget: usize, max_chars: usize) -> BTreeSet<usize> {
+    if budget == 0 {
+        return BTreeSet::new();
+    }
+    let minimum = max_chars.min(200);
+    let event_limit = (budget / (minimum + 200)).max(1);
+    let anchors: BTreeSet<usize> = session.neighborhoods.iter().map(|n| n.anchor).collect();
+    let mut keep = BTreeSet::new();
+    for neighborhood in &session.neighborhoods {
+        if keep.len() >= event_limit {
+            break;
+        }
+        keep.insert(neighborhood.anchor);
+        let mut neighbors = neighborhood.events.clone();
+        neighbors.sort_by_key(|&id| (!anchors.contains(&id), id.abs_diff(neighborhood.anchor), id));
+        for id in neighbors {
+            if keep.len() >= event_limit {
+                break;
+            }
+            keep.insert(id);
         }
     }
-    let mut flags = keep.into_iter();
-    view.events.retain(|_| flags.next().unwrap_or(false));
-    view
+    keep
 }
 
 /// `packSessions(terms, options)`. `find` ranks sessions (called with
@@ -184,7 +277,7 @@ pub fn pack_sessions(
 
     // Load in rank order, at most as many at once as sessions are still
     // needed (and --max-parallel), until `limit` sessions have excerpts.
-    let mut selected: Vec<TranscriptView> = Vec::new();
+    let mut selected: Vec<MatchedView> = Vec::new();
     let mut skipped_sessions = Vec::new();
     let mut next = 0;
     while selected.len() < limit && next < candidates.len() {
@@ -198,7 +291,7 @@ pub fn pack_sessions(
         })?;
         for (path, outcome) in chunk.iter().zip(loaded) {
             match outcome {
-                Ok(kept) if !kept.events.is_empty() => selected.push(kept),
+                Ok(kept) if !kept.view.events.is_empty() => selected.push(kept),
                 Ok(_) => {}
                 Err(error) => skipped_sessions.push(SkippedSession {
                     path: path.to_string(),
@@ -209,17 +302,46 @@ pub fn pack_sessions(
     }
 
     let mut sessions = Vec::new();
+    let mut omitted = Vec::new();
     let mut used_chars = 0;
     let total = selected.len();
-    for (index, session) in selected.into_iter().enumerate() {
-        if used_chars >= budget_chars {
-            break;
+    for (index, mut session) in selected.into_iter().enumerate() {
+        let remaining = budget_chars - used_chars;
+        let share = if remaining == 0 {
+            0
+        } else {
+            (remaining / (total - index)).max(1)
+        };
+        let keep = choose_events(&session, share, max_chars);
+        let available_events = session.view.events.len();
+        let next_event = session
+            .view
+            .events
+            .iter()
+            .filter_map(|event| event.index.filter(|id| !keep.contains(id)))
+            .min();
+        if let Some(next_event) = next_event {
+            omitted.push(OmittedSession {
+                path: session.view.path.clone(),
+                neighborhoods: session
+                    .neighborhoods
+                    .iter()
+                    .filter(|n| !keep.contains(&n.anchor))
+                    .count(),
+                events: available_events - keep.len(),
+                next_event,
+            });
         }
-        let share = ((budget_chars - used_chars) / (total - index)).max(1);
-        // Reserve space for each selected neighbor so a long preceding turn cannot consume the match's budget.
-        let per_event = max_chars.min((share / session.events.len()).max(1));
-        let windowed = window_transcript(
-            session,
+        if keep.is_empty() {
+            continue;
+        }
+        session
+            .view
+            .events
+            .retain(|event| keep.contains(&event.index.unwrap()));
+        let per_event = max_chars.min((share / keep.len()).max(1));
+        let mut windowed = window_transcript(
+            session.view,
             &WindowOptions {
                 budget_chars: Some(share),
                 max_chars: Some(per_event),
@@ -227,6 +349,8 @@ pub fn pack_sessions(
                 ..WindowOptions::default()
             },
         )?;
+        windowed.window.available_events = available_events;
+        windowed.window.next_event = next_event;
         used_chars += windowed.window.used_chars;
         sessions.push(windowed);
     }
@@ -240,6 +364,7 @@ pub fn pack_sessions(
         sessions,
         skipped_stores: found.skipped_stores,
         skipped_sessions,
+        omitted,
     })
 }
 
@@ -286,7 +411,39 @@ pub fn render_pack(result: &PackResult) -> String {
             )
         })
         .collect();
-    format!("{header}{relaxed}\n\n{}", sessions.join("\n\n---\n\n"))
+    let omitted = if result.omitted.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nOmitted: {} match neighborhoods, {} events. Continue with transcript <locator> --from-event N.",
+            result
+                .omitted
+                .iter()
+                .map(|s| s.neighborhoods)
+                .sum::<usize>(),
+            result.omitted.iter().map(|s| s.events).sum::<usize>()
+        )
+    };
+    let continuations = result
+        .omitted
+        .iter()
+        .filter(|omitted| {
+            !result
+                .sessions
+                .iter()
+                .any(|session| session.view.path == omitted.path)
+        })
+        .map(|omitted| {
+            format!(
+                "\nTranscript: {} · --from-event {}",
+                omitted.path, omitted.next_event
+            )
+        })
+        .collect::<String>();
+    format!(
+        "{header}{relaxed}{omitted}\n\n{}{continuations}",
+        sessions.join("\n\n---\n\n")
+    )
 }
 
 #[cfg(test)]
@@ -353,7 +510,7 @@ mod tests {
     #[test]
     fn deduplicates_neighbors_and_keeps_late_matches_visible_within_a_shared_budget() {
         let options = PackOptions {
-            budget_chars: Some(300),
+            budget_chars: Some(3000),
             max_chars: Some(100),
             context: Some(1),
             ..PackOptions::default()
@@ -377,7 +534,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.sessions.len(), 2);
-        assert!(result.used_chars <= 300);
+        assert!(result.used_chars <= 3000);
         let mut total = 0;
         for session in &result.sessions {
             let indexes: Vec<Option<usize>> = session.view.events.iter().map(|e| e.index).collect();
@@ -398,6 +555,139 @@ mod tests {
                 .sum::<usize>();
         }
         assert_eq!(result.used_chars, total);
+    }
+
+    #[test]
+    fn small_budget_returns_useful_excerpts_and_reports_omitted_neighborhoods() {
+        let result = pack_sessions(
+            &terms(&["needle"]),
+            &PackOptions {
+                limit: 1,
+                budget_chars: Some(1200),
+                ..PackOptions::default()
+            },
+            &[],
+            |_, _| Ok(found(&["/a"])),
+            &|path| {
+                Ok(view(
+                    path,
+                    (0..75)
+                        .map(|i| {
+                            let text = format!("{}NEEDLE{}", "x".repeat(3000), "y".repeat(500));
+                            if i % 2 == 0 {
+                                user(i * 3, &text)
+                            } else {
+                                assistant(i * 3, &text)
+                            }
+                        })
+                        .collect(),
+                ))
+            },
+        )
+        .unwrap();
+        let session = &result.sessions[0];
+        assert_eq!(session.view.events.len(), 3);
+        assert_eq!(session.window.available_events, 75);
+        assert_eq!(session.window.used_chars, 1200);
+        for event in &session.view.events {
+            let body = event_body(event);
+            assert!(body.contains("NEEDLE"));
+            assert_eq!(js::len(&body), 400);
+        }
+        let returned: BTreeSet<_> = session
+            .view
+            .events
+            .iter()
+            .map(|e| e.index.unwrap())
+            .collect();
+        let next = (0..75)
+            .map(|i| i * 3)
+            .find(|i| !returned.contains(i))
+            .unwrap();
+        assert_eq!(session.window.next_event, Some(next));
+        assert_eq!(
+            result.omitted,
+            [OmittedSession {
+                path: "/a".into(),
+                neighborhoods: 72,
+                events: 72,
+                next_event: next
+            }]
+        );
+        assert!(js::stringify(&result).len() < 3600);
+        assert!(render_pack(&result).contains("Omitted: 72 match neighborhoods, 72 events"));
+    }
+
+    #[test]
+    fn density_and_user_dialogue_win_over_long_matches_and_tool_noise() {
+        let result = pack_sessions(
+            &terms(&["needle"]),
+            &PackOptions {
+                context: Some(0),
+                budget_chars: Some(200),
+                ..PackOptions::default()
+            },
+            &[],
+            |_, _| Ok(found(&["/a"])),
+            &|path| {
+                Ok(view(
+                    path,
+                    vec![
+                        user(0, &format!("needle{}", "x".repeat(4000))),
+                        event(
+                            EventBody::ToolResult {
+                                name: None,
+                                call_id: None,
+                                output: "needle ".repeat(500),
+                                is_error: false,
+                            },
+                            5,
+                        ),
+                        assistant(10, "needle answer"),
+                        user(15, "needle question"),
+                    ],
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(result.sessions[0].view.events[0].index, Some(15));
+        assert_eq!(result.sessions[0].window.available_events, 3);
+        assert_eq!(result.sessions[0].window.next_event, Some(0));
+        assert_eq!(result.omitted[0].events, 2);
+    }
+
+    #[test]
+    fn tiny_budget_reports_entirely_omitted_sessions() {
+        let result = pack_sessions(
+            &terms(&["needle"]),
+            &PackOptions {
+                budget_chars: Some(1),
+                ..PackOptions::default()
+            },
+            &[],
+            |_, _| Ok(found(&["/a", "/b"])),
+            &|path| {
+                Ok(view(
+                    path,
+                    vec![user(7, "needle"), assistant(12, "needle answer")],
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(result.used_chars, 1);
+        assert_eq!(result.sessions.len(), 1);
+        assert_eq!(result.sessions[0].window.next_event, Some(12));
+        assert_eq!(result.omitted.len(), 2);
+        assert_eq!(
+            result.omitted[1],
+            OmittedSession {
+                path: "/b".into(),
+                neighborhoods: 2,
+                events: 2,
+                next_event: 7
+            }
+        );
+        assert!(render_pack(&result).contains("Transcript: /b · --from-event 7"));
     }
 
     #[test]

@@ -52,7 +52,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         &pack::view_without_tools,
     )?;
     if common.json {
-        println!("{}", js::pretty(&result));
+        println!("{}", js::stringify(&result));
     } else {
         println!("{}", pack::render_pack(&result));
     }
