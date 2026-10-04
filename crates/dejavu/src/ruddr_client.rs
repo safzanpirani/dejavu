@@ -150,6 +150,7 @@ mod tests {
 
     const FAKE: &str = r#"#!/bin/sh
 base=$(dirname "$0")
+if [ -f "$base/delay-start" ]; then sleep 1; fi
 command=$1
 shift
 printf '%s\n' "$command" >> "$base/calls"
@@ -166,9 +167,10 @@ case "$command" in
     [ -d "$cwd" ] && [ -d "$state" ] && [ -z "$(ls -A "$cwd")" ] || exit 8
     cat > "$state/prompt"
     cp "$state/prompt" "$base/prompt"
+    touch "$base/ready"
     case "$(cat "$state/prompt")" in
       fail) echo 'Droid refuses --ephemeral' >&2; exit 2 ;;
-      slow) sleep 10 ;;
+      slow) sleep 60 ;;
     esac
     ;;
   status)
@@ -212,7 +214,8 @@ esac
     }
 
     fn assert_clean(dir: &TempDir) {
-        let dirs = std::fs::read_to_string(dir.path().join("dirs")).unwrap();
+        let dirs = std::fs::read_to_string(dir.path().join("dirs"))
+            .expect("fake ruddr must record its run directories before cleanup is checked");
         assert_eq!(dirs.lines().count(), 2);
         for path in dirs.lines() {
             assert!(!Path::new(path).exists(), "leaked {path}");
@@ -229,7 +232,7 @@ esac
                 "synthetic prompt",
                 &Cancel::new(),
                 &program,
-                Duration::from_secs(5),
+                Duration::from_secs(30),
             )
             .unwrap();
             assert_eq!(result.answer, "canned answer");
@@ -308,9 +311,12 @@ esac
         ] {
             let (dir, program) = fixture();
             let timeout = if prompt == "slow" {
-                Duration::from_millis(150)
-            } else {
+                // Exercise startup slower than the old 150ms deadline. Allow the
+                // fake to record its directories before timing out its 60s sleep.
+                std::fs::write(dir.path().join("delay-start"), "").unwrap();
                 Duration::from_secs(5)
+            } else {
+                Duration::from_secs(30)
             };
             let error = complete_with(
                 &model("claude/test", None),
@@ -324,24 +330,31 @@ esac
             assert_clean(&dir);
         }
         let (dir, program) = fixture();
+        // A fixed 200ms cancellation could kill the shell before it logged dirs.
+        std::fs::write(dir.path().join("delay-start"), "").unwrap();
         let cancel = Cancel::new();
-        let trigger = cancel.clone();
-        let thread = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            trigger.cancel();
+        let ready = dir.path().join("ready");
+        let (started, result) = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                complete_with(
+                    &model("test", None),
+                    "slow",
+                    &cancel,
+                    &program,
+                    Duration::from_secs(30),
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !ready.exists() && !worker.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let started = ready.exists();
+            cancel.cancel();
+            // Join even on a failed readiness check so no worker outlives the fixture.
+            (started, worker.join().unwrap())
         });
-        assert_eq!(
-            complete_with(
-                &model("test", None),
-                "slow",
-                &cancel,
-                &program,
-                Duration::from_secs(5)
-            )
-            .unwrap_err(),
-            "query was cancelled"
-        );
-        thread.join().unwrap();
+        assert!(started, "fake ruddr never became ready: {result:?}");
+        assert_eq!(result.unwrap_err(), "query was cancelled");
         assert_clean(&dir);
     }
 
@@ -353,7 +366,7 @@ esac
             "prompt",
             &Cancel::new(),
             dir.path().join("missing").to_str().unwrap(),
-            Duration::from_secs(5),
+            Duration::from_secs(30),
         )
         .unwrap_err();
         assert!(error.contains("install Ruddr"));
@@ -369,7 +382,7 @@ esac
             "no-usage",
             &Cancel::new(),
             &program,
-            Duration::from_secs(5),
+            Duration::from_secs(30),
         )
         .unwrap();
         assert_eq!(result.usage, None);
