@@ -79,6 +79,67 @@ pub fn validate_bound(value: Option<usize>, name: &str, minimum: usize) -> Resul
     }
 }
 
+/// Clip around the first case-insensitive match. Offsets and caps use UTF-16
+/// units; cuts always fall on original character boundaries, even when lowercase
+/// expands a character (for example, İ becomes i plus a combining dot).
+pub(crate) fn centered_excerpt(
+    text: &str,
+    terms: &[String],
+    cap: usize,
+) -> Option<(String, usize)> {
+    let lower = js_lower(text);
+    let (first, match_bytes) = terms
+        .iter()
+        .filter(|term| !term.is_empty())
+        .filter_map(|term| {
+            let needle = js_lower(term);
+            lower.find(needle.as_ref()).map(|byte| (byte, needle.len()))
+        })
+        .min_by_key(|&(byte, _)| byte)?;
+    let total = js::len(text);
+    if total <= cap {
+        return Some((text.to_string(), 0));
+    }
+    if cap < 3 {
+        return Some(("…".repeat(cap.min(1)), 0));
+    }
+    let mut lower_byte = 0;
+    let mut offset = 0;
+    let mut match_start = 0;
+    let mut match_end = 0;
+    for ch in text.chars() {
+        let end = lower_byte + ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+        if lower_byte <= first && first < end {
+            match_start = offset;
+        }
+        offset += ch.len_utf16();
+        if lower_byte < first + match_bytes && first + match_bytes <= end {
+            match_end = offset;
+            break;
+        }
+        lower_byte = end;
+    }
+    let context = (cap - 2).saturating_sub(match_end - match_start) / 2;
+    let wanted = match_start.saturating_sub(context).min(total - (cap - 1));
+    let mut start_byte = js::byte_offset(text, wanted);
+    if js::len(&text[..start_byte]) < wanted {
+        start_byte += text[start_byte..].chars().next().unwrap().len_utf8();
+    }
+    let start = js::len(&text[..start_byte]);
+    let lead = usize::from(start > 0);
+    let tail = usize::from(total - start > cap - lead);
+    let body = js::prefix(&text[start_byte..], cap - lead - tail);
+    Some((
+        format!(
+            "{}{}{}",
+            if lead > 0 { "…" } else { "" },
+            body,
+            if tail > 0 { "…" } else { "" }
+        ),
+        start,
+    ))
+}
+
 /// `windowTranscript(view, options)`.
 pub fn window_transcript(
     view: TranscriptView,
@@ -139,27 +200,8 @@ pub fn window_transcript(
             events.push(event);
             continue;
         }
-        let mut start = 0usize;
-        if !focus.is_empty() {
-            let lower = js_lower(&body);
-            let first = focus
-                .iter()
-                .filter_map(|term| lower.find(term.as_str()))
-                .map(|byte| js::len(&lower[..byte]))
-                .min();
-            if let Some(first) = first {
-                let latest = body_chars as i64 - cap as i64 + 2;
-                let wanted = first as i64 - (cap / 4) as i64;
-                start = latest.min(wanted).max(0) as usize;
-            }
-        }
-        let lead = start > 0 && cap > 1;
-        let keep = cap.saturating_sub(if lead { 2 } else { 1 });
-        let text = format!(
-            "{}{}…",
-            if lead { "…" } else { "" },
-            js::slice(&body, start, start.saturating_add(keep))
-        );
+        let (text, start) = centered_excerpt(&body, &focus, cap)
+            .unwrap_or_else(|| (format!("{}…", js::prefix(&body, cap.saturating_sub(1))), 0));
         let text_chars = js::len(&text);
         used_chars += text_chars;
         let field = match &mut event.body {
@@ -260,6 +302,39 @@ mod tests {
 
     fn assistant(text: &str, index: usize) -> TranscriptEvent {
         event(EventBody::Assistant { text: text.into() }, index)
+    }
+
+    #[test]
+    fn centered_excerpts_preserve_unicode_matches_and_cut_markers() {
+        let body = format!("{}OVERWRITE{}", "İ😀é".repeat(200), "界".repeat(200));
+        let (excerpt, start) = centered_excerpt(&body, &["overwrite".into()], 40).unwrap();
+        assert!(excerpt.contains("OVERWRITE"));
+        assert!(excerpt.starts_with('…') && excerpt.ends_with('…'));
+        assert!(js::len(&excerpt) <= 40);
+        assert!(start < js::len(&"İ😀é".repeat(200)));
+        let body = format!("{}TARGET", "😀".repeat(30));
+        let (excerpt, _) = centered_excerpt(&body, &["target".into()], 16).unwrap();
+        assert!(excerpt.starts_with('…'));
+        assert!(excerpt.ends_with("TARGET"));
+        assert!(js::len(&excerpt) <= 16);
+        assert_eq!(
+            centered_excerpt("TARGETabcdef", &["target".into()], 9)
+                .unwrap()
+                .0,
+            "TARGETab…"
+        );
+        assert_eq!(
+            centered_excerpt("small", &["SMALL".into()], 20).unwrap(),
+            ("small".into(), 0)
+        );
+        assert!(centered_excerpt("absent", &["target".into()], 4).is_none());
+        let body = "first target then another TARGET";
+        assert!(
+            centered_excerpt(body, &["TARGET".into()], 16)
+                .unwrap()
+                .0
+                .contains("target")
+        );
     }
 
     #[test]
@@ -394,8 +469,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.window.clipped[0].start_char, 45);
-        assert_eq!(event_body(&page.view.events[0]), "…xxxxxneedleyyyyyyy…");
+        assert_eq!(page.window.clipped[0].start_char, 44);
+        assert_eq!(event_body(&page.view.events[0]), "…xxxxxxneedleyyyyyy…");
         assert_eq!(
             render_window(&page.window),
             "[1/1 events; 20 body chars; end; clipped events #0 (read each with --full --from-event N --limit 1)]"
@@ -406,6 +481,6 @@ mod tests {
                 r#"{"path":"/fixture","source":"claude","project":"/project","counts":"#
             )
         );
-        assert!(json.contains(r#""window":{"availableEvents":1,"returnedEvents":1,"usedChars":20,"nextEvent":null,"clipped":[{"index":0,"field":"text","originalChars":106,"returnedChars":20,"startChar":45}]}"#));
+        assert!(json.contains(r#""window":{"availableEvents":1,"returnedEvents":1,"usedChars":20,"nextEvent":null,"clipped":[{"index":0,"field":"text","originalChars":106,"returnedChars":20,"startChar":44}]}"#));
     }
 }

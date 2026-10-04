@@ -1181,6 +1181,10 @@ pub fn show_messages(
         }
         let text = if options.full || js::len(text) <= max_chars {
             text.to_string()
+        } else if let Some((excerpt, _)) = options.around.as_ref().and_then(|term| {
+            crate::window::centered_excerpt(text, std::slice::from_ref(term), max_chars)
+        }) {
+            excerpt
         } else {
             format!("{} [...]", js::prefix(text, max_chars))
         };
@@ -1916,6 +1920,32 @@ pub(crate) mod tests {
             around: Some(target.into()),
             ..ShowOptions::default()
         }
+    }
+
+    #[test]
+    fn show_around_preserves_late_matches_and_unmatched_neighbor_prefixes() {
+        let dir = TempDir::new("show-centered");
+        let neighbor = "unmatched context ".repeat(80);
+        let matching = format!("{}OVERWRITE{}", "İ😀é".repeat(2200), "tail ".repeat(200));
+        let path = claude_transcript(&dir, &[neighbor.clone(), matching.clone()]);
+        let shown = show_session(&path, &around("overwrite")).unwrap();
+        assert_eq!(
+            shown.messages[0].text,
+            format!("{} [...]", js::prefix(&neighbor, 700))
+        );
+        assert!(shown.messages[1].text.contains("OVERWRITE"));
+        assert!(shown.messages[1].text.starts_with('…'));
+        assert!(shown.messages[1].text.ends_with('…'));
+        assert!(js::len(&shown.messages[1].text) <= 700);
+        let full = show_session(
+            &path,
+            &ShowOptions {
+                full: true,
+                ..around("overwrite")
+            },
+        )
+        .unwrap();
+        assert_eq!(full.messages[1].text, matching.trim_end());
     }
 
     #[test]

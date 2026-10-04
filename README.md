@@ -112,7 +112,7 @@ dejavu show '<locator>' --around database
 
 `show` renders user and assistant turns without model usage. It summarizes tool calls and truncates long messages by default. Pass `--full` to disable truncation.
 
-Use `show --no-tools` to remove tool summaries and tool-only turns. `--around` then counts only the remaining dialogue turns. `--max-chars N` changes the 700-character message limit in text and JSON output; the ` [...]` marker is additional. `--no-toolcalls` is an alias for `--no-tools` in both `show` and `transcript`.
+Use `show --no-tools` to remove tool summaries and tool-only turns. `--around` then counts only the remaining dialogue turns. Matching excerpts center on the first case-insensitive occurrence and mark cut sides with `…`. `--max-chars N` changes the 700-character message limit in text and JSON output; the ` [...]` marker is additional. `--no-toolcalls` is an alias for `--no-tools` in both `show` and `transcript`.
 
 ### Pack search results into bounded excerpts
 
