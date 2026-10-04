@@ -48,8 +48,9 @@ pub struct ResolvedQueryModel {
     pub id: String,
     pub context_window: u64,
     pub agent_dir: PathBuf,
-    /// `Some("medium")` for Codex.
-    pub reasoning_effort: Option<&'static str>,
+    /// Selected effort; Codex defaults to medium.
+    pub reasoning_effort: Option<String>,
+    pub harness: crate::query_config::Harness,
     /// Present when the provider is OpenAI-compatible and has a usable key.
     pub direct: Option<DirectTransport>,
     /// Present when the Pi model entry records a price.
@@ -213,7 +214,8 @@ pub fn resolve_query_model_with(
             id: id.into(),
             context_window: DEFAULT_CONTEXT_WINDOW,
             agent_dir: agent_dir.to_path_buf(),
-            reasoning_effort: Some(CODEX_QUERY_REASONING),
+            reasoning_effort: Some(CODEX_QUERY_REASONING.into()),
+            harness: crate::query_config::Harness::Codex,
             direct: None,
             cost: None,
         });
@@ -268,6 +270,7 @@ pub fn resolve_query_model_with(
         context_window: find_context_window(&models, provider, id),
         agent_dir: agent_dir.to_path_buf(),
         reasoning_effort: None,
+        harness: crate::query_config::Harness::Codex,
         direct: if via_pi {
             None
         } else {
@@ -314,17 +317,36 @@ pub fn complete_query(
     cancel: &Cancel,
 ) -> Result<Completion, String> {
     let prompt = build_prompt(conversation, question);
+    complete_prompt(resolved, &prompt, cancel, true)
+}
+
+/// Dispatch an already prepared prompt. Profile prompts need no query wrapper.
+pub fn complete_prompt(
+    resolved: &ResolvedQueryModel,
+    prompt: &str,
+    cancel: &Cancel,
+    query: bool,
+) -> Result<Completion, String> {
+    let harness_prompt = if query {
+        format!("{SYSTEM_PROMPT}\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    };
+    if resolved.harness == crate::query_config::Harness::Ruddr {
+        return crate::ruddr_client::complete_via_ruddr(resolved, &harness_prompt, cancel);
+    }
     if resolved.provider == "codex" {
         return complete_via_codex(
             &resolved.id,
-            &format!("{SYSTEM_PROMPT}\n\n{prompt}"),
+            resolved.reasoning_effort.as_deref(),
+            &harness_prompt,
             cancel,
         );
     }
     if let Some(direct) = &resolved.direct {
-        return complete_via_http(resolved, direct, &prompt, cancel);
+        return complete_via_http(resolved, direct, prompt, cancel);
     }
-    complete_via_pi(resolved, &prompt, cancel)
+    complete_via_pi(resolved, prompt, cancel)
 }
 
 pub fn complete_via_http(
@@ -725,7 +747,7 @@ mod tests {
             (
                 resolved.provider.as_str(),
                 resolved.id.as_str(),
-                resolved.reasoning_effort
+                resolved.reasoning_effort.as_deref()
             ),
             ("codex", "gpt-6-luna", Some("medium"))
         );
@@ -866,6 +888,7 @@ mod tests {
             context_window: 1000,
             agent_dir: "/pi".into(),
             reasoning_effort: None,
+            harness: crate::query_config::Harness::Codex,
             direct: None,
             cost: None,
         }

@@ -22,7 +22,7 @@ pub struct QueryModel {
     pub provider: String,
     pub id: String,
     #[serde(rename = "reasoningEffort", skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<&'static str>,
+    pub reasoning_effort: Option<String>,
 }
 
 /// The `query` result, in the TypeScript key order. `usage` and `costUsd`
@@ -68,9 +68,9 @@ pub trait QueryDeps {
     fn resolve_model(
         &self,
         agent_dir: &Path,
-        model: Option<&str>,
+        settings: &crate::query_config::QuerySettings,
     ) -> Result<ResolvedQueryModel, String> {
-        model_client::resolve_query_model(agent_dir, model)
+        crate::query_config::resolve_model(agent_dir, settings)
     }
 
     fn serialize(&self, messages: &[RecallMessage]) -> String {
@@ -95,7 +95,7 @@ impl QueryDeps for RealQuery {}
 
 pub struct QueryOptions<'a> {
     pub agent_dir: &'a Path,
-    pub model: Option<&'a str>,
+    pub settings: crate::query_config::QuerySettings,
 }
 
 /// `prepareRecallMessages`: user and assistant messages only, without
@@ -326,7 +326,7 @@ pub fn query_session(
     if messages.is_empty() {
         return Err("transcript has no recallable messages".into());
     }
-    let resolved = deps.resolve_model(options.agent_dir, options.model)?;
+    let resolved = deps.resolve_model(options.agent_dir, &options.settings)?;
     let (conversation, was_windowed) =
         prepare_conversation(&messages, question, resolved.context_window, &|messages| {
             deps.serialize(messages)
@@ -364,6 +364,7 @@ pub fn summary_line(result: &QueryResult) -> String {
     let reasoning = result
         .model
         .reasoning_effort
+        .as_deref()
         .map(|effort| format!(" · {effort}"))
         .unwrap_or_default();
     format!(
@@ -415,6 +416,7 @@ mod tests {
             context_window,
             agent_dir: PathBuf::from("/pi"),
             reasoning_effort: None,
+            harness: crate::query_config::Harness::Codex,
             direct: None,
             cost: None,
         }
@@ -539,7 +541,11 @@ mod tests {
         ) -> Result<Vec<RecallMessage>, String> {
             Ok(vec![text_message("user", "We chose SQLite.")])
         }
-        fn resolve_model(&self, _: &Path, _: Option<&str>) -> Result<ResolvedQueryModel, String> {
+        fn resolve_model(
+            &self,
+            _: &Path,
+            _: &crate::query_config::QuerySettings,
+        ) -> Result<ResolvedQueryModel, String> {
             Ok(self.resolved.clone())
         }
         fn complete(
@@ -557,7 +563,7 @@ mod tests {
     fn options() -> QueryOptions<'static> {
         QueryOptions {
             agent_dir: Path::new("/pi"),
-            model: None,
+            settings: crate::query_config::QuerySettings::default(),
         }
     }
 
@@ -657,7 +663,7 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":1200,"output_tokens":30
             ),
         );
         let mut model = resolved("codex", 128_000);
-        model.reasoning_effort = Some("medium");
+        model.reasoning_effort = Some("medium".into());
         model.cost = Some(model_client::ModelCost {
             input: 1.0,
             output: 2.0,
@@ -675,6 +681,7 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":1200,"output_tokens":30
                     &CodexDeps {
                         command: Some(vec![codex.clone()]),
                         timeout: None,
+                        effort: None,
                     },
                 )
             }),
@@ -777,6 +784,7 @@ echo '{{"type":"turn.completed","usage":{{"input_tokens":1200,"output_tokens":30
             &CodexDeps {
                 command: Some(vec!["/nonexistent".into()]),
                 timeout: None,
+                effort: None,
             },
         )
         .unwrap_err();

@@ -21,8 +21,10 @@ pub mod paths;
 pub mod pool;
 mod profile;
 mod query;
+mod query_config;
 pub mod reader;
 pub mod render;
+mod ruddr_client;
 pub mod scan;
 pub mod scrub;
 pub mod search;
@@ -153,13 +155,19 @@ profile flags
       --limit N         maximum sessions in project mode (default 10)
       --output-threshold N
                          flag results over N characters (default 10000)
-      --explain         interpret bounded metrics with Luna medium; no raw context sent
+      --explain         interpret bounded metrics with the query model; no raw context sent
 
-query flags
-      --model ID         Codex model (default gpt-6-luna, medium reasoning)
-                         Explicit provider/id selects a legacy HTTP/Pi provider;
-                         codex/id selects Codex exec
+query / profile --explain flags
+      --harness NAME     codex (default) or ruddr (requires Ruddr on PATH)
+      --model ID         model (default gpt-6-luna); bare IDs select Codex
+                         With ruddr, prefix selects codex/claude/pi/opencode/droid;
+                         otherwise provider/id selects legacy HTTP/Pi (except codex/id)
+      --effort LEVEL     reasoning effort (Codex default medium; Ruddr forwards level)
       --agent-dir P      Pi config directory for legacy overrides (default ~/.pi/agent)
+                         Legacy HTTP/Pi does not support --effort
+      Defaults: flags > DEJAVU_QUERY_HARNESS / DEJAVU_QUERY_MODEL /
+                DEJAVU_QUERY_EFFORT > config.json query object > built-in defaults.
+      Config: $XDG_CONFIG_HOME/dejavu/config.json or ~/.config/dejavu/config.json.
 
 common flags
       --json             emit structured results, respecting explicit bounds

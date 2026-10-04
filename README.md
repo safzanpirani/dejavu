@@ -62,7 +62,7 @@ Ask a model to summarize one selected session:
 dejavu query '<locator from search results>' 'What did we decide?'
 ```
 
-`dejavu query` requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
+The default `dejavu query` harness requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Select `--harness ruddr` to use an installed Ruddr and its provider authentication. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
 
 ## What it reads
 
@@ -101,7 +101,7 @@ dejavu find workshop codex colleagues
 dejavu find deployment timeout --project payments-api --since 2w
 ```
 
-`find` searches for multiple literal terms in one session. It ranks user-message matches above assistant-message matches. The result includes the opening prompt, matching messages, transcript path, and a resume command when the source supports one. In a terminal, `search` and `find` color each agent, highlight the search terms, render Markdown in excerpts, and indent multi-line excerpts. Piped output stays plain. Use `--color` or `--no-color` to override.
+`find` searches for multiple literal terms in one session. It ranks user-message matches above assistant-message matches. The result includes the opening prompt, matching messages, transcript path, and a resume command when the source supports one. In a terminal, `search` and `find` color each agent, highlight the search terms, render Markdown in excerpts, and indent multi-line excerpts. Piped output stays plain. Use `--color` or `--no-color` to override. Stderr color requires a terminal, and any defined `NO_COLOR` value disables it. Commands that accept `--no-color` also disable stderr color; `--color` only forces stdout color.
 
 ### Read a transcript
 
@@ -172,7 +172,7 @@ The default is deterministic and invokes no model. It measures outer calls, resu
 
 Repeated calls are candidates for review, not proven waste. Nested call sites are lexical hints, not executed counts; aliases, loops, templates, and computed access limit coverage. First-result latency includes waiting and is not model reasoning time. Project mode selects sessions by their last indexed visible-message date and measures each entire selected session. Check `omittedSessions` and `diagnostics` for coverage limits. Exit 1 signals skipped sources or an explanation failure even when measurements are available.
 
-`--explain` sends only bounded metrics and event references through Codex exec to `gpt-6-luna` at medium reasoning. It requires authenticated Codex and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
+`--explain` sends only bounded metrics and event references to the selected query model. It defaults to Codex exec with `gpt-6-luna` at medium reasoning and accepts the same `--harness`, `--model`, `--effort`, and persistent defaults as `query`. It requires authentication for the selected provider and may incur model usage. Observations must cite supplied event IDs and remain separate from measurements. An explanation failure preserves the deterministic report.
 
 ### Redact a transcript
 
@@ -201,11 +201,35 @@ Memory search stays separate from transcript search. Memory files contain curate
 
 The default is `codex exec --model gpt-6-luna` with medium reasoning and the OpenAI provider. It uses Codex's existing authentication, ignores user config overrides, disables project/skill instructions, and runs ephemerally in an isolated temporary directory with a read-only sandbox. Transcript text goes through stdin. The final answer comes from Codex's output file, which is deleted with the temporary directory after completion. Queries time out after 120 seconds and do not retry automatically.
 
-Use `--model <codex-model-id>` or `--model codex/<id>` to select another Codex model, still with medium reasoning. No Pi configuration is read on this path, and old Pi defaults do not override Luna.
+Both `query` and `profile --explain` accept these options:
 
-For an explicit legacy `--model provider/id`, Dejavu reads the endpoint and key from the Pi config under `~/.pi/agent` (or `--agent-dir`). OpenAI-compatible providers with an API key use HTTP; other providers use the installed `pi` binary. `DEJAVU_QUERY_VIA_PI=1` forces Pi only for these explicit legacy overrides.
+| Option | Environment variable | Config field | Built-in default |
+| --- | --- | --- | --- |
+| `--harness codex\|ruddr` | `DEJAVU_QUERY_HARNESS` | `query.harness` | `codex` |
+| `--model ID` | `DEJAVU_QUERY_MODEL` | `query.model` | `gpt-6-luna` |
+| `--effort LEVEL` | `DEJAVU_QUERY_EFFORT` | `query.effort` | `medium` for Codex; provider default for other Ruddr providers |
 
-The status line and JSON report the model, reasoning effort for Codex, transport, and token counts when available. Estimated cost is reported only for legacy providers with configured pricing; Codex queries do not invent a dollar estimate.
+Each setting uses this precedence: flag, environment variable, config file, built-in default. Dejavu reads the optional `$XDG_CONFIG_HOME/dejavu/config.json`, or `~/.config/dejavu/config.json` when `XDG_CONFIG_HOME` is unset. Windows uses the same convention and Dejavu's existing home-directory lookup (`HOME`, then the account home). A missing file is fine. Invalid JSON or a malformed query object produces an error. Dejavu never writes this file.
+
+```json
+{"query": {"harness": "ruddr", "model": "claude/your-model-id", "effort": "high"}}
+```
+
+```bash
+dejavu query '<locator>' 'What did we decide?' --model gpt-6-luna --effort high
+dejavu query '<locator>' 'What did we decide?' --harness ruddr --model claude/your-model-id
+dejavu profile '<locator>' --explain --harness ruddr --model codex/gpt-6-luna --effort low
+```
+
+With `--harness codex`, a bare model ID or `codex/<id>` selects Codex exec. `--effort` changes its reasoning-effort setting. No Pi configuration is read on this path, and old Pi defaults do not override Luna.
+
+With `--harness ruddr`, the model prefix selects the Ruddr provider: `codex/`, `claude/`, `pi/`, `opencode/`, or `droid/`. A bare model ID selects Codex. Dejavu passes the remaining ID unchanged, including any additional slashes. Ruddr must be on PATH; a missing executable produces an installation hint and never triggers a fallback. Effort levels depend on the provider and model. Ruddr receives the selected level and reports unsupported settings.
+
+Dejavu runs Ruddr in the foreground with a read-only sandbox, `--ephemeral`, an empty temporary working directory, and a separate temporary state directory. The prompt goes through stdin. Dejavu checks completion through `ruddr status --json` and reads the answer through `ruddr result`. Both directories are removed after success or failure. The Codex provider receives the same explicit lockdown config settings as Codex exec. Other providers apply Ruddr's own sandbox behavior. Providers can reject `--ephemeral`; Droid currently rejects it, and Dejavu surfaces that error. Ruddr queries share the 120-second timeout and do not retry automatically.
+
+With the default `codex` harness, a non-Codex `provider/id` retains the legacy routing. Dejavu reads the endpoint and key from Pi config under `~/.pi/agent` (or `--agent-dir`). OpenAI-compatible providers with an API key use HTTP; other providers use the installed `pi` binary. `DEJAVU_QUERY_VIA_PI=1` forces Pi for these legacy models. This switch has no effect under `--harness ruddr`. Legacy HTTP/Pi transports do not support the new effort option; selecting an effort for them produces an error.
+
+The query status line and JSON report the model, configured reasoning effort, transport, and token counts when available. Ruddr token counts come from `status.tokenUsage`. Estimated cost remains unknown without model pricing; Codex and Ruddr omit `costUsd`. Legacy providers with configured pricing retain their cost estimates. Profile explanations report the selected model, effort, and available token counts.
 
 ### Manage the transcript index
 

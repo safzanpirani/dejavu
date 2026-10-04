@@ -24,7 +24,7 @@ pub struct QueryUsage {
     pub output_tokens: u64,
 }
 
-/// A model answer. `transport` is `"codex"`, `"http"`, or `"pi"`; a missing
+/// A model answer. `transport` is `"codex"`, `"ruddr"`, `"http"`, or `"pi"`; a missing
 /// `usage` serializes as an absent key, as in the TypeScript.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Completion {
@@ -286,15 +286,25 @@ pub struct CodexDeps {
     /// Replaces `codex` (the program and any leading arguments).
     pub command: Option<Vec<String>>,
     pub timeout: Option<Duration>,
+    pub effort: Option<String>,
 }
 
 /// A single ephemeral completion, shared by `query` and `profile --explain`.
 pub fn complete_via_codex(
     model: &str,
+    effort: Option<&str>,
     prompt: &str,
     cancel: &Cancel,
 ) -> Result<Completion, String> {
-    complete_via_codex_with(model, prompt, cancel, &CodexDeps::default())
+    complete_via_codex_with(
+        model,
+        prompt,
+        cancel,
+        &CodexDeps {
+            effort: effort.map(str::to_string),
+            ..CodexDeps::default()
+        },
+    )
 }
 
 pub fn complete_via_codex_with(
@@ -315,7 +325,7 @@ pub fn complete_via_codex_with(
     command
         .args(&base[1..])
         .current_dir(directory.path())
-        .args(codex_args(model, &output));
+        .args(codex_args(model, &output, deps.effort.as_deref()));
     let run = run_child(
         command,
         prompt.as_bytes().to_vec(),
@@ -406,9 +416,28 @@ pub fn complete_via_codex_with(
     })
 }
 
-fn codex_args(model: &str, output: &Path) -> Vec<String> {
-    let reasoning = format!("model_reasoning_effort=\"{CODEX_QUERY_REASONING}\"");
-    [
+/// Shared Codex lockdown settings, in the original exec argument order.
+pub fn codex_config(effort: Option<&str>) -> Vec<String> {
+    vec![
+        "model_provider=\"openai\"".into(),
+        format!(
+            "model_reasoning_effort={}",
+            serde_json::to_string(effort.unwrap_or(CODEX_QUERY_REASONING)).unwrap()
+        ),
+        "approval_policy=\"never\"".into(),
+        "project_doc_max_bytes=0".into(),
+        "skills.include_instructions=false".into(),
+        "skills.bundled.enabled=false".into(),
+        "features.shell_tool=false".into(),
+        "features.apps=false".into(),
+        "features.multi_agent=false".into(),
+        "features.skill_search=false".into(),
+        "web_search=\"disabled\"".into(),
+    ]
+}
+
+fn codex_args(model: &str, output: &Path, effort: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
         "exec",
         "--ignore-user-config",
         "--ephemeral",
@@ -422,33 +451,15 @@ fn codex_args(model: &str, output: &Path) -> Vec<String> {
         "--json",
         "--output-last-message",
         &output.to_string_lossy(),
-        "-c",
-        "model_provider=\"openai\"",
-        "-c",
-        &reasoning,
-        "-c",
-        "approval_policy=\"never\"",
-        "-c",
-        "project_doc_max_bytes=0",
-        "-c",
-        "skills.include_instructions=false",
-        "-c",
-        "skills.bundled.enabled=false",
-        "-c",
-        "features.shell_tool=false",
-        "-c",
-        "features.apps=false",
-        "-c",
-        "features.multi_agent=false",
-        "-c",
-        "features.skill_search=false",
-        "-c",
-        "web_search=\"disabled\"",
-        "-",
     ]
     .iter()
     .map(|arg| arg.to_string())
-    .collect()
+    .collect();
+    for setting in codex_config(effort) {
+        args.extend(["-c".into(), setting]);
+    }
+    args.push("-".into());
+    args
 }
 
 fn event_message(value: Option<&serde_json::Value>) -> Option<String> {
@@ -521,6 +532,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens"
         let deps = CodexDeps {
             command: Some(vec![fixture().to_string_lossy().into_owned(), mode.into()]),
             timeout: Some(Duration::from_millis(timeout_ms)),
+            effort: None,
         };
         complete_via_codex_with(
             "gpt-6-luna",
@@ -641,10 +653,73 @@ echo '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens"
     }
 
     #[test]
+    fn default_argv_is_unchanged_and_effort_only_changes_its_setting() {
+        let expected = [
+            "exec",
+            "--ignore-user-config",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--model",
+            "gpt-6-luna",
+            "--color",
+            "never",
+            "--json",
+            "--output-last-message",
+            "answer.txt",
+            "-c",
+            "model_provider=\"openai\"",
+            "-c",
+            "model_reasoning_effort=\"medium\"",
+            "-c",
+            "approval_policy=\"never\"",
+            "-c",
+            "project_doc_max_bytes=0",
+            "-c",
+            "skills.include_instructions=false",
+            "-c",
+            "skills.bundled.enabled=false",
+            "-c",
+            "features.shell_tool=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "features.multi_agent=false",
+            "-c",
+            "features.skill_search=false",
+            "-c",
+            "web_search=\"disabled\"",
+            "-",
+        ];
+        assert_eq!(
+            codex_args("gpt-6-luna", Path::new("answer.txt"), None),
+            expected
+        );
+        let deps = CodexDeps {
+            command: Some(vec![fixture().to_string_lossy().into_owned(), "ok".into()]),
+            effort: Some("high".into()),
+            ..CodexDeps::default()
+        };
+        let result =
+            complete_via_codex_with("gpt-6-luna", "prompt", &Cancel::new(), &deps).unwrap();
+        let mut actual: Vec<_> = result
+            .answer
+            .lines()
+            .filter_map(|line| line.strip_prefix("ARG="))
+            .collect();
+        actual[12] = "answer.txt";
+        let mut expected = expected;
+        expected[16] = "model_reasoning_effort=\"high\"";
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn reports_a_missing_codex() {
         let deps = CodexDeps {
             command: Some(vec!["/nonexistent/codex".into()]),
             timeout: None,
+            effort: None,
         };
         let error = complete_via_codex_with("m", "p", &Cancel::new(), &deps).unwrap_err();
         assert_eq!(

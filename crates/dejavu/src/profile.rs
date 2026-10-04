@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::codex_client::{Cancel, Completion, DEFAULT_CODEX_QUERY_MODEL, QueryUsage};
+use crate::codex_client::{Cancel, Completion, QueryUsage};
 use crate::js;
 use crate::memory::locale_compare;
 use crate::query::js_space;
@@ -120,8 +120,9 @@ pub struct Diagnostic {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Explanation {
-    pub model: &'static str,
-    pub reasoning_effort: &'static str,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// The validated `observations` array exactly as the model returned it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observations: Option<Vec<Value>>,
@@ -905,11 +906,17 @@ fn validate(answer: &str, refs: &[String]) -> Result<Vec<Value>, String> {
     Ok(observations)
 }
 
-/// `explainProfile(report, signal, complete)`: Luna (medium) interprets the
+/// `explainProfile(report, signal, complete)`: the selected model interprets the
 /// bounded metrics. Model and validation failures land in `error`.
-pub fn explain_profile(report: &ProfileReport, cancel: &Cancel, complete: Complete) -> Explanation {
+pub fn explain_profile(
+    report: &ProfileReport,
+    model: &str,
+    effort: Option<&str>,
+    cancel: &Cancel,
+    complete: Complete,
+) -> Explanation {
     let (prompt, refs) = explanation_prompt(report);
-    let outcome = complete(DEFAULT_CODEX_QUERY_MODEL, &prompt, cancel).and_then(|result| {
+    let outcome = complete(model, &prompt, cancel).and_then(|result| {
         validate(&result.answer, &refs).map(|observations| (observations, result.usage))
     });
     let (observations, usage, error) = match outcome {
@@ -917,8 +924,8 @@ pub fn explain_profile(report: &ProfileReport, cancel: &Cancel, complete: Comple
         Err(error) => (None, None, Some(error)),
     };
     Explanation {
-        model: DEFAULT_CODEX_QUERY_MODEL,
-        reasoning_effort: "medium",
+        model: model.into(),
+        reasoning_effort: effort.map(str::to_string),
         observations,
         error,
         usage,
@@ -1407,7 +1414,13 @@ mod tests {
                 usage: Some(QueryUsage { input_tokens: 10, output_tokens: 2 }),
             })
         };
-        let result = explain_profile(&report(), &Cancel::new(), &complete);
+        let result = explain_profile(
+            &report(),
+            "gpt-6-luna",
+            Some("medium"),
+            &Cancel::new(),
+            &complete,
+        );
         assert_eq!(result.observations.as_ref().map(Vec::len), Some(1));
         assert_eq!(result.error, None);
         let prompt = prompt.into_inner();
@@ -1439,8 +1452,16 @@ mod tests {
                 })
             }
         };
-        let explain =
-            |complete: Complete| explain_profile(&report(), &Cancel::new(), complete).error;
+        let explain = |complete: Complete| {
+            explain_profile(
+                &report(),
+                "gpt-6-luna",
+                Some("medium"),
+                &Cancel::new(),
+                complete,
+            )
+            .error
+        };
         assert_eq!(
             explain(&answer(
                 "{\"observations\":[{\"summary\":\"Unsupported\",\"evidence\":[\"S1#999\"]}]}"
@@ -1458,7 +1479,13 @@ mod tests {
         );
         assert_eq!(explain(&answer("{\"observations\":[]}")), None);
         let failed = |_: &str, _: &str, _: &Cancel| Err("query was cancelled".to_string());
-        let result = explain_profile(&report(), &Cancel::new(), &failed);
+        let result = explain_profile(
+            &report(),
+            "gpt-6-luna",
+            Some("medium"),
+            &Cancel::new(),
+            &failed,
+        );
         assert_eq!(
             js::stringify(&result),
             "{\"model\":\"gpt-6-luna\",\"reasoningEffort\":\"medium\",\"error\":\"query was cancelled\"}"
@@ -1501,11 +1528,18 @@ echo '{"type":"turn.completed","usage":{"input_tokens":900,"output_tokens":40}}'
         let deps = CodexDeps {
             command: Some(vec![codex.to_string_lossy().into_owned()]),
             timeout: None,
+            effort: None,
         };
         let complete = |model: &str, prompt: &str, cancel: &Cancel| {
             complete_via_codex_with(model, prompt, cancel, &deps)
         };
-        let result = explain_profile(&report(), &Cancel::new(), &complete);
+        let result = explain_profile(
+            &report(),
+            "gpt-6-luna",
+            Some("medium"),
+            &Cancel::new(),
+            &complete,
+        );
         assert_eq!(result.error, None);
         assert_eq!(
             result.usage,
@@ -1597,7 +1631,13 @@ echo '{"type":"turn.completed","usage":{"input_tokens":900,"output_tokens":40}}'
                     usage: None,
                 })
             };
-            report.explanation = Some(explain_profile(&report, &Cancel::new(), &complete));
+            report.explanation = Some(explain_profile(
+                &report,
+                "gpt-6-luna",
+                Some("medium"),
+                &Cancel::new(),
+                &complete,
+            ));
             assert_eq!(
                 prompt.into_inner(),
                 case["prompt"].as_str().unwrap(),

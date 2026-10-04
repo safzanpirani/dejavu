@@ -19,7 +19,8 @@ where practical:
 - locators: JSONL paths and `opencode://<db>#<session>`;
 - environment variables: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`,
   `XDG_DATA_HOME`, `OPENCODE_DB`, `DEJAVU_INDEX_PATH`, `DEJAVU_NO_UPDATE_CHECK`,
-  `DEJAVU_QUERY_VIA_PI`, `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `NO_COLOR`;
+  `DEJAVU_QUERY_VIA_PI`, `DEJAVU_QUERY_HARNESS`, `DEJAVU_QUERY_MODEL`,
+  `DEJAVU_QUERY_EFFORT`, `XDG_CONFIG_HOME`, `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `NO_COLOR`;
 - release asset names `dejavu-<platform>-<arch>[.exe]`, `checksums.txt`, the npm
   package `@safzanpirani/dejavu`, and `dejavu self-update`.
 
@@ -81,7 +82,9 @@ Search, `find`, `pack`, and the index differ in these ways:
   index (`DEJAVU_INDEX_PATH`), so neither touches `~/.cache/dejavu`. Run one Bun
   process at a time under a timeout: Bun's `pack` exhausted memory on large stores.
 - Never run `dejavu query` or `profile --explain` for real: they call a paid model.
-  Test them with a fake `codex` executable.
+  Test them with fake `codex`, `ruddr`, or `pi` executables. Never run real
+  `codex exec` or `ruddr run` during verification. Query/profile harness defaults
+  and the optional query config are documented in README.md.
 - Transcripts hold private data and secrets. Never paste transcript content into
   commits, docs, test fixtures, or reports. Write synthetic fixtures.
 - Commit on your own branch with plain `git commit`. Never pass `-c user.*`,

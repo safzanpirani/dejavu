@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::args::{Args, die, dim};
+use crate::args::{Args, die, dim_stderr};
 use crate::codex_client::SignalGuard;
 use crate::js;
 use crate::query::{self, QueryOptions, RealQuery};
@@ -13,7 +13,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         .value(&["--agent-dir"])
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(home_dir()).join(".pi").join("agent"));
-    let model = args.value(&["--model"]);
+    let flags = crate::query_config::QueryFlags::parse(&mut args);
     args.reject_unknown_flags();
     let Some(locator) = args.shift() else {
         die("query needs a transcript locator from search results");
@@ -25,7 +25,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     }
     let options = QueryOptions {
         agent_dir: &agent_dir,
-        model: model.as_deref(),
+        settings: flags.resolve()?,
     };
     let result = {
         let guard = SignalGuard::install();
@@ -37,7 +37,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         println!("{}", render_query(&result));
     }
     if !common.quiet && !common.json {
-        eprintln!("{}", dim(&query::summary_line(&result)));
+        eprintln!("{}", dim_stderr(&query::summary_line(&result)));
     }
     Ok(0)
 }
