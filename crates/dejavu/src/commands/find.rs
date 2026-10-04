@@ -50,6 +50,11 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         );
     }
     report_skipped_stores(&result.skipped_stores, common.quiet);
+    if result.truncated && !common.quiet {
+        eprintln!(
+            "find: scored 40 eligible candidates; narrow --project, --source, or --since for more coverage"
+        );
+    }
     if !common.quiet && !common.json {
         let timings: Vec<String> = result
             .store_timings

@@ -3,13 +3,10 @@
 //! one-term spam, then scored from visible messages with user messages weighted.
 
 use crate::DEFAULT_MAX_PARALLEL;
-use crate::index::{IndexReader, TieBreak, refresh_transcript_index};
+use crate::index::{IndexReader, refresh_transcript_index};
 use crate::js;
 use crate::opencode::iso_date_from_millis;
-use crate::paths::{
-    date_from_path, js_lower, project_from_claude_path, project_from_droid_path,
-    project_from_pi_path,
-};
+use crate::paths::{date_from_path, js_lower};
 use crate::pool::map_pool;
 use crate::reader::extract_visible_message;
 use crate::scan::locale_compare;
@@ -137,6 +134,8 @@ pub struct FindResult {
     pub skipped_stores: Vec<StoreDiagnostic>,
     pub elapsed_ms: u64,
     pub store_timings: JsObject<u64>,
+    /// More eligible candidates existed than the retrieval cap allowed.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -268,34 +267,37 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
     }
 }
 
+pub(crate) const INJECTED_PREFIXES: &[&str] = &[
+    "# AGENTS.md instructions",
+    "<INSTRUCTIONS>",
+    "<environment_context>",
+    "<user_instructions>",
+    "<system-reminder>",
+    "<command-name>",
+    "<command-message>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "<task-notification>",
+    "<system-notification>",
+    "<fork-boilerplate>",
+    "<project_instructions>",
+    "<recommended_plugins>",
+    "<skill ",
+    "<skill>",
+    "<bash-stdout>",
+    "<bash-input>",
+    "Caveat:",
+    "[Request interrupted",
+    "Base directory for this skill",
+    "This session is being continued from a previous conversation",
+];
+
 pub(crate) fn is_real_user_prompt(text: &str) -> bool {
     let trimmed = js_trim(text);
-    !(trimmed.is_empty()
-        || trimmed.starts_with("# AGENTS.md instructions")
-        || [
-            "<INSTRUCTIONS>",
-            "<environment_context>",
-            "<user_instructions>",
-            "<system-reminder>",
-            "<command-name>",
-            "<command-message>",
-            "<local-command-stdout>",
-            "<local-command-caveat>",
-            "<task-notification>",
-            "<system-notification>",
-            "<fork-boilerplate>",
-            "<project_instructions>",
-            "<recommended_plugins>",
-            "<skill",
-            "<bash-stdout>",
-            "<bash-input>",
-        ]
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix))
-        || trimmed.starts_with("Caveat:")
-        || trimmed.starts_with("[Request interrupted")
-        || trimmed.starts_with("Base directory for this skill")
-        || trimmed.starts_with("This session is being continued from a previous conversation"))
+    !trimmed.is_empty()
+        && !INJECTED_PREFIXES
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
 }
 
 /// `findOpeningPrompt(path, source)`: the first real user prompt, best effort.
@@ -404,6 +406,7 @@ struct Candidate {
     path: String,
     project: Option<String>,
     indexed: bool,
+    date: Option<String>,
     /// Raw counts per term, in term order.
     raw_counts: Vec<(String, usize)>,
 }
@@ -522,6 +525,11 @@ pub fn find_sessions(
         ));
     }
     let max_parallel = options.max_parallel;
+    let since_date = options
+        .since
+        .as_deref()
+        .map(|s| parse_since(s, None))
+        .transpose()?;
 
     // term index -> store path -> ranked matches from the transcript index (without snippets).
     let mut indexed: Vec<ByStore> = Vec::new();
@@ -546,7 +554,12 @@ pub fn find_sessions(
                     .iter()
                     .map(|store| (store.path.clone(), Vec::new()))
                     .collect();
-                for row in reader.grouped_matches(term, &indexed_stores, 800, TieBreak::Date)? {
+                for row in reader.find_matches(
+                    term,
+                    &indexed_stores,
+                    options.project.as_deref(),
+                    since_date.as_deref(),
+                )? {
                     let found = row.into_match();
                     if let Some(list) = by_store.get_mut(&found.store) {
                         list.push(found.matched);
@@ -589,7 +602,7 @@ pub fn find_sessions(
                     .collect();
                 batches.push(batch(term_index, rows, found.clone(), true, None));
             } else if store.kind == StoreKind::Sqlite {
-                match backend.search_opencode(term, &store.path, 200, 4) {
+                match backend.search_opencode(term, &store.path, usize::MAX, 0) {
                     Ok(matches) => {
                         let rows = matches.iter().map(|m| (m.path.clone(), m.count)).collect();
                         batches.push(batch(term_index, rows, matches, false, None));
@@ -673,11 +686,24 @@ pub fn find_sessions(
                         .iter()
                         .find(|m| m.path == *path)
                         .map(|m| m.project.clone()),
+                    date: batch
+                        .matches
+                        .iter()
+                        .find(|m| m.path == *path)
+                        .map(|m| m.date.clone()),
                     indexed: batch.from_index,
                     raw_counts: Vec::new(),
                 });
                 candidates.len() - 1
             });
+            if let Some(found) = batch.matches.iter().find(|m| m.path == *path)
+                && candidates[index]
+                    .date
+                    .as_ref()
+                    .is_none_or(|d| found.date > *d)
+            {
+                candidates[index].date = Some(found.date.clone());
+            }
             let term = &cleaned[batch.term_index];
             let raw = &mut candidates[index].raw_counts;
             match raw.iter_mut().find(|(t, _)| t == term) {
@@ -687,34 +713,90 @@ pub fn find_sessions(
         }
     }
 
-    // Path-derived project filter must run before the candidate cap, or matching
-    // sessions can be capped away before the post-cap project check ever sees them.
-    if let Some(project) = &options.project {
-        let needle = js_lower(project).into_owned();
-        candidates.retain(|candidate| match candidate.source {
-            TranscriptSource::Claude => matches_project(
-                &project_from_claude_path(&candidate.path),
-                &needle,
-                candidate.source,
-            ),
-            TranscriptSource::Pi => matches_project(
-                &project_from_pi_path(&candidate.path),
-                &needle,
-                candidate.source,
-            ),
-            TranscriptSource::Droid => matches_project(
-                &project_from_droid_path(&candidate.path),
-                &needle,
-                candidate.source,
-            ),
-            _ => true,
+    // Resolve every source's project before limiting candidate retrieval.
+    for candidate in &mut candidates {
+        if candidate.project.is_none() {
+            candidate.project = Some(backend.read_project(&candidate.path, candidate.source));
+        }
+    }
+    if let Some(needle) = &options.project {
+        candidates.retain(|c| {
+            matches_project(c.project.as_deref().unwrap_or_default(), needle, c.source)
         });
     }
-    // A filename dates creation, not resumed dialogue. Check message dates after scoring.
-    let since_date = match &options.since {
-        Some(since) => Some(parse_since(since, None)?),
-        None => None,
-    };
+    if let Some(cutoff) = &since_date {
+        let activity = match &reader {
+            Some(reader) => reader.last_activity(
+                &candidates
+                    .iter()
+                    .filter(|c| c.indexed)
+                    .map(|c| c.path.as_str())
+                    .collect::<Vec<_>>(),
+            )?,
+            None => HashMap::new(),
+        };
+        let dates = map_pool(&candidates, max_parallel, |candidate, _| {
+            if let Some(date) = candidate
+                .date
+                .as_ref()
+                .filter(|d| d.as_str() >= cutoff.as_str() && d.as_str() != "unknown")
+            {
+                return date.clone();
+            }
+            if let Some(date) = activity
+                .get(&candidate.path)
+                .filter(|d| d.as_str() < cutoff.as_str())
+            {
+                return date.clone();
+            }
+            // The index fills absent message dates with the creation date. Read
+            // ambiguous matches to distinguish old dialogue from undated dialogue.
+            let mut latest = String::new();
+            for (term, _) in &candidate.raw_counts {
+                backend.visit_lines(term, &candidate.path, usize::MAX, &mut |line| {
+                    if let Some(message) = extract_visible_message(line, candidate.source)
+                        && (message.role != "user" || is_real_user_prompt(&message.text))
+                        && js_lower(&message.text).contains(js_lower(term).as_ref())
+                        && let Some(date) = message.date
+                        && date > latest
+                    {
+                        latest = date;
+                    }
+                    true
+                });
+            }
+            if latest.is_empty() {
+                if let Some(date) = activity.get(&candidate.path) {
+                    return date.clone();
+                }
+                backend.visit_lines("", &candidate.path, usize::MAX, &mut |line| {
+                    if let Some(message) = extract_visible_message(line, candidate.source)
+                        && let Some(date) = message.date
+                        && date > latest
+                    {
+                        latest = date;
+                    }
+                    true
+                });
+            }
+            if latest.is_empty() {
+                candidate.date.clone().unwrap_or_else(|| "unknown".into())
+            } else {
+                latest
+            }
+        })?;
+        candidates = candidates
+            .into_iter()
+            .zip(dates)
+            .filter_map(|(mut c, date)| {
+                if date != "unknown" && date.as_str() < cutoff.as_str() {
+                    return None;
+                }
+                c.date = Some(date);
+                Some(c)
+            })
+            .collect();
+    }
     // Rank balanced multi-term relevance above one-term spam.
     candidates.sort_by(|a, b| {
         b.raw_counts
@@ -723,6 +805,7 @@ pub fn find_sessions(
             .then_with(|| b.raw_min().cmp(&a.raw_min()))
             .then_with(|| b.raw_total().cmp(&a.raw_total()))
     });
+    let truncated = candidates.len() > CANDIDATE_CAP;
     candidates.truncate(CANDIDATE_CAP);
 
     let term_index_of = |term: &str| cleaned.iter().position(|t| t == term).unwrap_or(0);
@@ -811,7 +894,9 @@ pub fn find_sessions(
             if score == 0 {
                 return None;
             }
-            let date = if latest_date.is_empty() {
+            let date = if since_date.is_some() && candidate.date.is_some() {
+                candidate.date.clone().unwrap_or_default()
+            } else if latest_date.is_empty() {
                 activity.get(&candidate.path).cloned().unwrap_or_else(|| {
                     let mut latest = String::new();
                     backend.visit_lines("", &candidate.path, usize::MAX, &mut |line| {
@@ -838,16 +923,7 @@ pub fn find_sessions(
             {
                 return None;
             }
-            let project = if candidate.source == TranscriptSource::Opencode {
-                candidate.project.clone().unwrap_or_default()
-            } else {
-                backend.read_project(&candidate.path, candidate.source)
-            };
-            if let Some(needle) = &options.project
-                && !matches_project(&project, needle, candidate.source)
-            {
-                return None;
-            }
+            let project = candidate.project.clone().unwrap_or_default();
             let opening = find_opening_prompt(&candidate.path, candidate.source, backend);
             Some(FindHit {
                 source: candidate.source,
@@ -909,6 +985,7 @@ pub fn find_sessions(
             .collect(),
         elapsed_ms: started.elapsed().as_millis() as u64,
         store_timings,
+        truncated,
     })
 }
 

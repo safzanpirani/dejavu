@@ -1157,6 +1157,34 @@ impl IndexReader {
         limit: usize,
         tie_break: TieBreak,
     ) -> Result<Vec<GroupedRow>, String> {
+        self.grouped_filtered(query, stores, limit, tie_break, None)
+    }
+
+    /// Find applies project/activity eligibility before any candidate cap.
+    pub fn find_matches(
+        &self,
+        query: &str,
+        stores: &[TranscriptStore],
+        project: Option<&str>,
+        since: Option<&str>,
+    ) -> Result<Vec<GroupedRow>, String> {
+        self.grouped_filtered(
+            query,
+            stores,
+            usize::MAX,
+            TieBreak::Date,
+            Some((project, since)),
+        )
+    }
+
+    fn grouped_filtered(
+        &self,
+        query: &str,
+        stores: &[TranscriptStore],
+        limit: usize,
+        tie_break: TieBreak,
+        filters: Option<(Option<&str>, Option<&str>)>,
+    ) -> Result<Vec<GroupedRow>, String> {
         if js::len(query) < 3 || stores.is_empty() {
             return Ok(Vec::new());
         }
@@ -1165,15 +1193,43 @@ impl IndexReader {
             TieBreak::Path => "path",
             TieBreak::Date => "date",
         };
+        let mut conditions = String::new();
+        let mut filter_values = Vec::new();
+        if let Some((project, since)) = filters {
+            if let Some(project) = project.filter(|p| p.is_ascii()) {
+                conditions.push_str(" AND (instr(lower(r.project), ?) > 0 OR (r.source IN ('claude','pi','droid') AND instr(replace(lower(r.project), '-', '/'), replace(?, '-', '/')) > 0))");
+                let project = js_lower(compact_home(project)).into_owned();
+                filter_values.extend([SqlValue::Text(project.clone()), SqlValue::Text(project)]);
+            }
+            if let Some(since) = since {
+                conditions.push_str(" AND EXISTS (SELECT 1 FROM message_rows activity WHERE activity.path = r.path AND (activity.date >= ? OR activity.date = ''))");
+                filter_values.push(SqlValue::Text(since.to_string()));
+            }
+            conditions.push_str(" AND (r.role <> 'user' OR (");
+            for (i, prefix) in crate::find::INJECTED_PREFIXES.iter().enumerate() {
+                if i > 0 {
+                    conditions.push_str(" AND ");
+                }
+                conditions.push_str(
+                    "substr(ltrim(r.text, char(9)||char(10)||char(13)||' '), 1, length(?)) <> ?",
+                );
+                filter_values.extend([
+                    SqlValue::Text((*prefix).to_string()),
+                    SqlValue::Text((*prefix).to_string()),
+                ]);
+            }
+            conditions.push_str("))");
+        }
+        let date_aggregate = if filters.is_some() { "MAX" } else { "MIN" };
         let sql = format!(
             "
-    SELECT store, path, source, SUM(MAX(1, occurrences)) AS count, MIN(date) AS date, MIN(project) AS project
+    SELECT store, path, source, SUM(MAX(1, occurrences)) AS count, {date_aggregate}(date) AS date, MIN(project) AS project
     FROM (
       SELECT r.store, r.path, r.source, r.date, r.project,
              (length(lower(r.text)) - length(replace(lower(r.text), ?, ''))) / length(?) AS occurrences
       FROM messages
       JOIN message_rows r ON r.id = messages.rowid
-      WHERE messages MATCH ? AND r.store IN ({})
+      WHERE messages MATCH ? AND r.store IN ({}) {conditions}
     )
     GROUP BY path
     ORDER BY count DESC, {tie} DESC
@@ -1187,6 +1243,7 @@ impl IndexReader {
             SqlValue::Text(fts_literal(query)),
         ];
         values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+        values.extend(filter_values);
         values.push(SqlValue::Integer(limit.min(i64::MAX as usize) as i64));
         let mut statement = self.database.prepare(&sql).map_err(sql_error)?;
         let rows = statement

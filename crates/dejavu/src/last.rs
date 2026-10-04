@@ -511,6 +511,7 @@ mod tests {
                 required_terms: terms.to_vec(),
                 sources: Vec::new(),
                 hits,
+                truncated: false,
                 skipped_stores: Vec::new(),
                 elapsed_ms: 0,
                 store_timings: crate::find::JsObject(Vec::new()),

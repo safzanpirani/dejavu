@@ -473,6 +473,7 @@ mod tests {
             required_terms: vec!["needle".into()],
             sources: vec![TranscriptSource::Claude],
             hits: paths.iter().map(|p| hit(p)).collect(),
+            truncated: false,
             skipped_stores: Vec::new(),
             elapsed_ms: 0,
             store_timings: JsObject::default(),
