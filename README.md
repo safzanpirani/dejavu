@@ -288,6 +288,10 @@ With `mbx` installed, prefix the Cargo commands with `mbx` (`mbx clippy`, `mbx t
 
 The CLI is one Rust crate in `crates/dejavu`. It keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
 
+`help.rs` holds each command's help, including the JSON keys it documents. `tests/cli_surface.rs` compares those keys with real `--json` output from fixtures. When you add a JSON field, document it in `help.rs`, or the contract test fails. For excerpts centered on a search term, use `window::centered_excerpt`.
+
+Windows CI runs every test. Compare paths as `PathBuf` values instead of strings with `/`, and gate shell-script fakes with `#[cfg(unix)]`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
