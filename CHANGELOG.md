@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `find` returns sessions it used to drop. OpenCode hits keep their project, so `--project` works for them. `--since` checks the dates of matching messages, so a session resumed after its filename date still matches. Source, project, and date filters run before the 40-candidate limit; a project-scoped search no longer comes back empty because other projects outranked it. Every matching visible message counts toward a session's score, including messages after long tool logs. A hit carries `truncated: true` when eligible candidates were left out.
+- `find` is faster on queries with a short term such as `rg` or `PR`. Long terms pick the candidates from the index, and short terms are checked only inside them. On one large store, `deja find dejavu rg` dropped from 11–30 seconds to about 2.
+- Harness instruction blocks (`# AGENTS.md instructions`, `<INSTRUCTIONS>`, environment context) no longer count as user prompts or user matches. Find excerpts center on a matching term instead of showing the start of the message. `find` and `last` cards cap the opening prompt at 300 characters; `transcript --full` shows the rest.
+- `show --around TERM` centers each matching message's excerpt on the term. Long messages used to be cut before the match.
+- `pack` picks fewer, denser neighborhoods and gives each a useful excerpt. Small budgets now return a few readable excerpts instead of dozens of fragments, and the JSON stays close to `--budget-chars`. A top-level `omitted` array lists what was left out with the `nextEvent` to continue from.
+- `deja search TERMS` searches for TERMS. It used to search for the word "search" as well.
+- `deja <command> --help` and `deja help <command>` print that command's flags, its JSON keys, and a working `jq` line. Help output carries no ANSI codes when piped.
+- `query` and `profile --explain` take `--harness codex|ruddr` and `--effort`. Defaults come from `DEJAVU_QUERY_HARNESS`, `DEJAVU_QUERY_MODEL`, `DEJAVU_QUERY_EFFORT`, or `~/.config/dejavu/config.json`. `codex exec` with `gpt-6-luna` at medium stays the default.
+- Status, warning, and error lines on stderr are colored only when stderr is a terminal and `NO_COLOR` is unset. `--no-color` turns them off too.
+- Windows: transcript paths that mix `\` and `/`, or use 8.3 short names, resolve to their store.
+
 ## 0.5.3
 
 - Windows paths work throughout. `C:\...` and `\\server\...` values of `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `XDG_DATA_HOME`, and `FACTORY_HOME_OVERRIDE` are used as given; they used to be joined onto the current directory, so those stores went missing. Transcript paths with backslashes (`C:\Users\me\.claude\projects\...`) are recognized by `show`, `transcript`, `last`, and the other locator commands. OpenCode locators for a Windows database read `opencode:///C:%5C...` and open again; before, every OpenCode session on Windows failed with `invalid OpenCode locator`. With `HOME` unset, the home directory comes from the account, so projects under it still print relative to `~`. Opening a directory as a transcript reports `Directories cannot be read like files` instead of `EACCES`.
