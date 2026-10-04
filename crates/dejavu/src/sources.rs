@@ -200,10 +200,7 @@ pub fn source_from_locator(
         TranscriptSource::Droid,
     ] {
         let root = roots.jsonl_root(source).unwrap_or_default();
-        if locator.len() > root.len()
-            && locator.starts_with(root)
-            && matches!(locator.as_bytes()[root.len()], b'/' | b'\\')
-        {
+        if is_under_root(locator, root) {
             return Ok(source);
         }
     }
@@ -222,6 +219,30 @@ pub fn source_from_locator(
     Err(format!(
         "cannot determine transcript source from locator: {locator} (use a transcript path or opencode:// locator from search results)"
     ))
+}
+
+fn is_under_root(locator: &str, root: &str) -> bool {
+    if has_root_prefix(locator, root, cfg!(windows)) {
+        return true;
+    }
+    // Windows can spell the same directory with long names or 8.3 aliases.
+    // Resolve only for comparison; keep the caller's locator for reads/output.
+    #[cfg(windows)]
+    if let (Ok(path), Ok(root)) = (
+        std::fs::canonicalize(locator.replace('/', "\\")),
+        std::fs::canonicalize(root.replace('/', "\\")),
+    ) {
+        return path != root && path.starts_with(root);
+    }
+    false
+}
+
+fn has_root_prefix(locator: &str, root: &str, windows: bool) -> bool {
+    locator.len() > root.len()
+        && locator.bytes().zip(root.bytes()).all(|(a, b)| {
+            a == b || (windows && matches!(a, b'/' | b'\\') && matches!(b, b'/' | b'\\'))
+        })
+        && matches!(locator.as_bytes()[root.len()], b'/' | b'\\')
 }
 
 /// `/[/\\]<dir>[/\\]<sub>[/\\]/`, so native Windows paths match too.
@@ -273,6 +294,43 @@ mod tests {
     }
 
     const HOME: &str = "/home/owner";
+
+    #[test]
+    fn configured_root_prefix_accepts_mixed_windows_separators() {
+        for root in [
+            r"C:\Users\RUNNER~1\AppData\Local\Temp\fixture/projects",
+            "C:/Users/RUNNER~1/AppData/Local/Temp/fixture/projects",
+        ] {
+            for path in [
+                r"C:\Users\RUNNER~1\AppData\Local\Temp\fixture\projects/demo\fixture.jsonl",
+                "C:/Users/RUNNER~1/AppData/Local/Temp/fixture/projects/demo/fixture.jsonl",
+            ] {
+                assert!(has_root_prefix(path, root, true), "{path} under {root}");
+            }
+            assert!(!has_root_prefix(root, root, true));
+            assert!(!has_root_prefix(
+                &format!("{root}-other/a.jsonl"),
+                root,
+                true
+            ));
+        }
+        assert!(has_root_prefix(
+            r"\\server\share\projects/demo\a.jsonl",
+            r"\\server\share/projects",
+            true
+        ));
+        // Backslashes stay literal on Unix, including in configured roots.
+        assert!(!has_root_prefix(
+            "/tmp/a/b/projects/x.jsonl",
+            r"/tmp/a\b/projects",
+            false
+        ));
+        assert!(has_root_prefix(
+            r"/tmp/a\b/projects/x.jsonl",
+            r"/tmp/a\b/projects",
+            false
+        ));
+    }
 
     #[test]
     fn defaults_to_home_directory_stores_when_no_variable_is_set() {
