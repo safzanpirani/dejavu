@@ -15,6 +15,7 @@
 - Droid sessions open again. Newer Droid versions record hook runs as message rows and write `SessionEnd` last with no parent, so `show` and `transcript` started from that row and failed with `transcript has no recallable messages`. Hook rows no longer start the active branch. A message id that Droid reuses on a later self-parented row no longer cuts the branch off before the conversation.
 - Droid skill activations no longer read as user text. Droid appends the skill body to the user's message as a `<system-notification>` block; `find`, `show`, and `pack` keep only what the user wrote. The index rebuilds once to pick this up.
 - Archived Codex rollouts in `$CODEX_HOME/archived_sessions` are searched, and `show` opens them. They used to fail with `cannot determine transcript source`.
+- Droid compaction summaries appear where the compaction happened, as a user message headed `[Compaction summary of N earlier messages]`. A Droid session that holds only a summary used to fail with `transcript has no recallable messages`. Codex compactions with a plaintext summary appear the same way; most Codex summaries are encrypted and stay hidden. Like Claude's summaries, they show in `show`, `transcript`, and search, and `find` does not treat them as user prompts. The index rebuilds once to pick this up.
 
 ## 0.5.3
 

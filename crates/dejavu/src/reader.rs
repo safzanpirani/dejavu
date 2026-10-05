@@ -474,18 +474,27 @@ struct Envelope<const FULL: bool> {
     visibility: JsStr,
     /// Droid's `hookEventName`: set on rows that record a hook run, not a turn.
     hook_event: JsStr,
+    /// A Codex `compacted` payload's plaintext summary (`message`).
+    summary: JsStr,
 }
 
 impl<const FULL: bool> LenientFields for Envelope<FULL> {
-    const NAMES: &'static [&'static str] =
-        &["type", "role", "content", "visibility", "hookEventName"];
+    const NAMES: &'static [&'static str] = &[
+        "type",
+        "role",
+        "content",
+        "visibility",
+        "hookEventName",
+        "message",
+    ];
     fn set<'de, A: MapAccess<'de>>(&mut self, field: usize, map: &mut A) -> Result<(), A::Error> {
         match field {
             0 => self.kind = map.next_value()?,
             1 => self.role = map.next_value()?,
             2 => self.content = map.next_value()?,
             3 => self.visibility = map.next_value()?,
-            _ => self.hook_event = map.next_value()?,
+            4 => self.hook_event = map.next_value()?,
+            _ => self.summary = map.next_value()?,
         }
         Ok(())
     }
@@ -541,6 +550,10 @@ struct Row<const FULL: bool> {
     links: [JsVal; 6],
     message: Option<Envelope<FULL>>,
     payload: Option<Envelope<FULL>>,
+    /// Droid `compaction_state` fields.
+    summary_kind: JsStr,
+    summary_text: JsStr,
+    removed_count: JsVal,
 }
 
 const LINK_ID: usize = 0;
@@ -565,6 +578,9 @@ impl<const FULL: bool> LenientFields for Row<FULL> {
         "cwd",
         "message",
         "payload",
+        "summaryKind",
+        "summaryText",
+        "removedCount",
         "id",
         "parentId",
         "uuid",
@@ -579,10 +595,13 @@ impl<const FULL: bool> LenientFields for Row<FULL> {
             2 => self.cwd = map.next_value()?,
             3 => self.message = Some(map.next_value()?),
             4 => self.payload = Some(map.next_value()?),
+            5 => self.summary_kind = map.next_value()?,
+            6 => self.summary_text = map.next_value()?,
+            7 => self.removed_count = map.next_value()?,
             _ if !FULL => {
                 map.next_value::<IgnoredAny>()?;
             }
-            link => self.links[link - 5] = map.next_value()?,
+            link => self.links[link - 8] = map.next_value()?,
         }
         Ok(())
     }
@@ -591,6 +610,49 @@ impl<const FULL: bool> LenientFields for Row<FULL> {
 impl<'de, const FULL: bool> Deserialize<'de> for Row<FULL> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         deserialize_lenient(d)
+    }
+}
+
+/// How a compaction summary reads as a user message. `find` treats the prefix
+/// as injected, as it treats Claude's "This session is being continued" summary.
+pub const COMPACTION_SUMMARY_PREFIX: &str = "[Compaction summary";
+
+/// The user text for a compaction summary, or `None` when the summary is blank.
+/// `removed` is how many earlier messages the summary replaced, when known.
+pub fn compaction_summary_text(summary: &str, removed: Option<f64>) -> Option<String> {
+    if summary.trim_matches(crate::query::js_space).is_empty() {
+        return None;
+    }
+    let header = match removed {
+        Some(count) if count >= 1.0 => {
+            format!("{COMPACTION_SUMMARY_PREFIX} of {count} earlier messages]")
+        }
+        _ => format!("{COMPACTION_SUMMARY_PREFIX}]"),
+    };
+    Some(format!("{header}\n\n{summary}"))
+}
+
+impl<const FULL: bool> Row<FULL> {
+    /// The summary a compaction row carries in plain text: a Droid
+    /// `compaction_state` of kind `llm_summary`, or a Codex `compacted` row with
+    /// a `message`. Codex usually encrypts its summary and leaves `message` empty;
+    /// Droid's `provider_switch_serialization` kind only re-serializes the turns.
+    fn compaction_summary(&self, source: TranscriptSource) -> Option<String> {
+        match (source, self.kind.0.as_deref()) {
+            (TranscriptSource::Droid, Some("compaction_state"))
+                if self.summary_kind.0.as_deref() == Some("llm_summary") =>
+            {
+                let removed = match self.removed_count {
+                    JsVal::Num(count) => Some(count),
+                    _ => None,
+                };
+                compaction_summary_text(self.summary_text.0.as_deref()?, removed)
+            }
+            (TranscriptSource::Codex, Some("compacted")) => {
+                compaction_summary_text(self.payload.as_ref()?.summary.0.as_deref()?, None)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -796,6 +858,14 @@ fn droid_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
             .and_then(|rows| rows.iter().rev().find(|&&row| row < index).copied());
     }
     branch.reverse();
+    // A `compaction_state` row is not a tree node. It goes before the first branch
+    // message written after it, so a session that holds only a summary still has one.
+    for (index, node) in nodes.iter().enumerate() {
+        if node.node_type() == Some("compaction_state") {
+            let at = branch.partition_point(|&row| row < index);
+            branch.insert(at, index);
+        }
+    }
     branch
 }
 
@@ -951,6 +1021,12 @@ pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<Re
         .split('\n')
         .filter(|line| !line.trim().is_empty())
         .filter_map(parse_json_line::<Row<true>>);
+    let summary_message = |row: &Row<true>| {
+        row.compaction_summary(source).map(|text| RecallMessage {
+            role: "user".to_string(),
+            content: vec![RecallBlock::Text { text }],
+        })
+    };
     let to_message = |envelope: Option<Envelope<true>>| {
         envelope
             .and_then(|envelope| envelope.into_recall_from(source))
@@ -969,14 +1045,21 @@ pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<Re
             };
             take_indices(rows, &branch)
                 .into_iter()
-                .filter_map(|row| to_message(row.message))
+                .filter_map(|row| summary_message(&row).or_else(|| to_message(row.message)))
                 .collect()
         }
         _ => rows
-            .filter(|row| row.kind.0.as_deref() == Some("response_item"))
-            .filter_map(|row| row.payload)
-            .filter(|payload| payload.kind.0.as_deref() == Some("message"))
-            .filter_map(|payload| to_message(Some(payload)))
+            .filter_map(|row| {
+                if let Some(message) = summary_message(&row) {
+                    return Some(message);
+                }
+                let payload = row
+                    .payload
+                    .filter(|_| row.kind.0.as_deref() == Some("response_item"))?;
+                to_message(
+                    Some(payload).filter(|payload| payload.kind.0.as_deref() == Some("message")),
+                )
+            })
             .collect(),
     }
 }
@@ -1029,6 +1112,17 @@ pub struct VisibleMessage {
 /// Droid's injected `<system-reminder>` user blocks do not count as text.
 pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<VisibleMessage> {
     let row = parse_json_line::<Row<false>>(line)?;
+    if let Some(text) = row.compaction_summary(source) {
+        return Some(VisibleMessage {
+            role: "user",
+            text,
+            date: row
+                .timestamp
+                .0
+                .map(|timestamp| js::prefix(&timestamp, 10).to_string()),
+            project: row.cwd.0,
+        });
+    }
     let envelope = if source == TranscriptSource::Codex {
         if row.kind.0.as_deref() != Some("response_item") {
             return None;
@@ -1558,6 +1652,54 @@ mod tests {
         assert!(
             extract_visible_message(&row.to_string(), TranscriptSource::Claude)
                 .is_some_and(|message| message.text.contains("<skill"))
+        );
+    }
+
+    #[test]
+    fn compaction_summaries_read_as_user_messages_where_they_happened() {
+        let summary = |kind: &str| {
+            json!({ "type": "compaction_state", "id": "c", "summaryKind": kind,
+                "summaryText": "earlier work", "removedCount": 12, "timestamp": "2026-09-01T09:00:00Z" })
+        };
+        // A Droid session that holds only a summary still recalls it.
+        let only = rows(&[
+            json!({ "type": "session_start", "id": "sess", "cwd": "/w" }),
+            summary("llm_summary"),
+        ]);
+        assert_eq!(
+            texts(&recall_messages_from_text(&only, TranscriptSource::Droid)),
+            ["[Compaction summary of 12 earlier messages]\n\nearlier work"]
+        );
+        // In place, the summary sits before the first message written after it;
+        // provider-switch serializations repeat the turns and are skipped.
+        let mut in_place = droid_rows();
+        in_place.insert(6, summary("llm_summary"));
+        in_place.insert(1, summary("provider_switch_serialization"));
+        let text = rows(&in_place);
+        assert_eq!(
+            texts(&recall_messages_from_text(&text, TranscriptSource::Droid)),
+            [
+                "fix the build",
+                "running",
+                "[Compaction summary of 12 earlier messages]\n\nearlier work",
+                "built"
+            ]
+        );
+        let summary_line = summary("llm_summary").to_string();
+        let visible = extract_visible_message(&summary_line, TranscriptSource::Droid).unwrap();
+        assert_eq!(
+            (visible.role, visible.date.as_deref()),
+            ("user", Some("2026-09-01"))
+        );
+        assert!(extract_visible_message(&summary_line, TranscriptSource::Claude).is_none());
+        // Codex keeps a plaintext summary only in `message`; encrypted ones leave it empty.
+        let codex = |message: &str| json!({ "type": "compacted", "payload": { "message": message, "replacement_history": [] } });
+        let user = json!({ "type": "response_item", "payload": { "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": "next" }] } });
+        let text = rows(&[codex("handoff notes"), codex(""), user]);
+        assert_eq!(
+            texts(&recall_messages_from_text(&text, TranscriptSource::Codex)),
+            ["[Compaction summary]\n\nhandoff notes", "next"]
         );
     }
 

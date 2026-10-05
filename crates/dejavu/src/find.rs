@@ -290,6 +290,7 @@ pub(crate) const INJECTED_PREFIXES: &[&str] = &[
     "[Request interrupted",
     "Base directory for this skill",
     "This session is being continued from a previous conversation",
+    crate::reader::COMPACTION_SUMMARY_PREFIX,
 ];
 
 pub(crate) fn is_real_user_prompt(text: &str) -> bool {

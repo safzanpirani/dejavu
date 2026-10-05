@@ -13,8 +13,8 @@ use crate::opencode::{
 };
 use crate::paths::{compact_home, js_lower, project_from_transcript_path};
 use crate::reader::{
-    TreeEntry, branch_entries, droid_user_text, load_branch_entries, load_recall_messages,
-    parse_json_line, parse_jsonl, read_text,
+    TreeEntry, branch_entries, compaction_summary_text, droid_user_text, load_branch_entries,
+    load_recall_messages, parse_json_line, parse_jsonl, read_text,
 };
 use crate::sources::{default_roots, source_from_locator};
 use crate::types::{RecallBlock, RecallMessage, TranscriptSource};
@@ -488,7 +488,12 @@ fn load_droid_events(locator: &str) -> Result<LoadedEvents, String> {
     let project = droid_project(locator, &entries);
     let events = branch_entries(entries, TranscriptSource::Droid)
         .iter()
-        .flat_map(|entry| claude_events(entry, true))
+        .flat_map(
+            |entry| match compaction_event(entry, TranscriptSource::Droid) {
+                Some(event) => vec![event],
+                None => claude_events(entry, true),
+            },
+        )
         .collect();
     Ok(LoadedEvents {
         project,
@@ -524,7 +529,36 @@ fn codex_project(entries: &[TreeEntry]) -> String {
     "~".into()
 }
 
+/// A compaction row's plaintext summary as a user event: a Droid `compaction_state`
+/// of kind `llm_summary`, or a Codex `compacted` row with a `message`. It has no
+/// source reference, so `scrub --drop` refuses it; `--pattern` still reaches it.
+fn compaction_event(entry: &TreeEntry, source: TranscriptSource) -> Option<TranscriptEvent> {
+    let text = match (source, entry.kind()) {
+        (TranscriptSource::Droid, Some("compaction_state"))
+            if entry.str_field("summaryKind") == Some("llm_summary") =>
+        {
+            compaction_summary_text(
+                entry.str_field("summaryText")?,
+                entry.get("removedCount").and_then(Value::as_f64),
+            )
+        }
+        (TranscriptSource::Codex, Some("compacted")) => compaction_summary_text(
+            entry.payload()?.get("message").and_then(Value::as_str)?,
+            None,
+        ),
+        _ => None,
+    }?;
+    Some(TranscriptEvent::at(
+        dialogue("user", text),
+        entry.timestamp(),
+        None,
+    ))
+}
+
 fn codex_events(entry: &TreeEntry) -> Vec<TranscriptEvent> {
+    if let Some(event) = compaction_event(entry, TranscriptSource::Codex) {
+        return vec![event];
+    }
     if entry.kind() != Some("response_item") {
         return Vec::new();
     }
