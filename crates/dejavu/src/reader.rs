@@ -472,16 +472,20 @@ struct Envelope<const FULL: bool> {
     content: Content<FULL>,
     /// Droid's `visibility`: `llm_only` marks text the harness sent to the model only.
     visibility: JsStr,
+    /// Droid's `hookEventName`: set on rows that record a hook run, not a turn.
+    hook_event: JsStr,
 }
 
 impl<const FULL: bool> LenientFields for Envelope<FULL> {
-    const NAMES: &'static [&'static str] = &["type", "role", "content", "visibility"];
+    const NAMES: &'static [&'static str] =
+        &["type", "role", "content", "visibility", "hookEventName"];
     fn set<'de, A: MapAccess<'de>>(&mut self, field: usize, map: &mut A) -> Result<(), A::Error> {
         match field {
             0 => self.kind = map.next_value()?,
             1 => self.role = map.next_value()?,
             2 => self.content = map.next_value()?,
-            _ => self.visibility = map.next_value()?,
+            3 => self.visibility = map.next_value()?,
+            _ => self.hook_event = map.next_value()?,
         }
         Ok(())
     }
@@ -664,6 +668,8 @@ impl<'a> JsRef<'a> {
 trait TreeNode {
     fn node_type(&self) -> Option<&str>;
     fn link(&self, link: usize) -> Option<JsRef<'_>>;
+    /// Whether the row's message records a Droid hook run (`hookEventName`).
+    fn is_hook(&self) -> bool;
 }
 
 impl<const FULL: bool> TreeNode for Row<FULL> {
@@ -674,6 +680,11 @@ impl<const FULL: bool> TreeNode for Row<FULL> {
         // A JSON null and a missing field behave alike in every walk below.
         Some(JsRef::from_js(&self.links[link]))
     }
+    fn is_hook(&self) -> bool {
+        self.message
+            .as_ref()
+            .is_some_and(|message| message.hook_event.0.is_some())
+    }
 }
 
 impl TreeNode for TreeEntry {
@@ -682,6 +693,11 @@ impl TreeNode for TreeEntry {
     }
     fn link(&self, link: usize) -> Option<JsRef<'_>> {
         self.get(LINK_NAMES[link]).map(JsRef::from_value)
+    }
+    fn is_hook(&self) -> bool {
+        self.get("message")
+            .and_then(|message| message.get("hookEventName"))
+            .is_some_and(|name| !name.is_null())
     }
 }
 
@@ -731,9 +747,10 @@ fn pi_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
     walk(nodes, &by_id, last, |node| node.link(LINK_PARENT_ID))
 }
 
-/// Droid's active branch: from the last `message` row up through `parentId`.
+/// Droid's active branch: from the last non-hook `message` row up through `parentId`.
 /// Only `message` rows are tree nodes; `session_start`, `agent_turn_outcome`, and
-/// the other bookkeeping rows are neither the leaf nor on the branch.
+/// the other bookkeeping rows are neither the leaf nor on the branch. Hook rows
+/// never become the leaf, because Droid writes `SessionEnd` last without a parent.
 fn droid_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
     let mut by_id = HashMap::new();
     let mut last = None;
@@ -741,7 +758,9 @@ fn droid_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
         if node.node_type() != Some("message") {
             continue;
         }
-        last = Some(index);
+        if !node.is_hook() {
+            last = Some(index);
+        }
         if let Some(key) = truthy_link(node, LINK_ID).and_then(JsRef::key) {
             by_id.insert(key, index);
         }
@@ -1435,6 +1454,29 @@ mod tests {
         assert!(extract_visible_message(&padded.to_string(), TranscriptSource::Claude).is_some());
         let assistant = json!({ "type": "message", "message": { "role": "assistant", "content": "<system-reminder>quoted" } });
         assert!(extract_visible_message(&assistant.to_string(), droid).is_some());
+    }
+
+    #[test]
+    fn droid_hook_rows_never_become_the_leaf() {
+        // Droid records hook runs as user rows; SessionEnd comes last with no parent.
+        let hook = |id: &str, parent: Option<&str>, event: &str| {
+            json!({ "type": "message", "id": id, "parentId": parent, "message": {
+                "role": "user", "content": [], "visibility": "user_only", "hookEventName": event } })
+        };
+        let mut rows_with_hooks = droid_rows();
+        rows_with_hooks.insert(1, hook("h0", None, "SessionStart"));
+        rows_with_hooks.push(hook("h1", Some("m4"), "PostToolUse"));
+        rows_with_hooks.push(hook("h2", None, "SessionEnd"));
+        let text = rows(&rows_with_hooks);
+        assert_eq!(
+            texts(&recall_messages_from_text(&text, TranscriptSource::Droid)),
+            ["fix the build", "running", "built"]
+        );
+        let lines: Vec<usize> = branch_entries(parse_jsonl(&text), TranscriptSource::Droid)
+            .iter()
+            .map(|entry| entry.line)
+            .collect();
+        assert_eq!(lines, [3, 4, 7, 8, 9]);
     }
 
     #[test]
