@@ -84,7 +84,7 @@ For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 
 
 ## Find a transcript
 
-Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). Keep these set to search only the current user's history on a shared account:
+Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). Keep these set to search only the current user's history on a shared account:
 
 ```sh
 dejavu --json 'session-recall.ts'

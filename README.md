@@ -71,7 +71,7 @@ The default `dejavu query` harness requires an installed, authenticated `codex` 
 | Agent | Local data | Selected by |
 | --- | --- | --- |
 | Claude Code | JSONL transcripts under `~/.claude/projects` | `CLAUDE_CONFIG_DIR` → `$CLAUDE_CONFIG_DIR/projects` |
-| Codex | JSONL transcripts under `~/.codex/sessions` | `CODEX_HOME` → `$CODEX_HOME/sessions` |
+| Codex | JSONL transcripts under `~/.codex/sessions` and archived rollouts under `~/.codex/archived_sessions` | `CODEX_HOME` → `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions` |
 | Pi | JSONL transcripts under `~/.pi/agent/sessions` and sibling profiles such as `~/.pi/juna/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
 | OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
 | Factory Droid | JSONL transcripts under `~/.factory/sessions`; only `*.jsonl` session files are read | `FACTORY_HOME_OVERRIDE` → `$FACTORY_HOME_OVERRIDE/.factory/sessions` |
@@ -153,7 +153,7 @@ dejavu transcript '<locator>' --full --thinking
 dejavu transcript '<locator>' --no-tools --json
 ```
 
-`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, and Droid sessions. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
+`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, and Droid sessions. A compaction summary appears as a user turn where the compaction happened; Droid and Codex summaries start with `[Compaction summary`. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
 
 ```bash
 dejavu transcript '<locator>' --no-tools --max-chars 1500 --budget-chars 8000 --json
