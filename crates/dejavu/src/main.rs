@@ -4,6 +4,7 @@
 // Modules export API for commands that are not ported yet.
 #![allow(dead_code)]
 
+pub mod agy;
 mod args;
 mod codex_client;
 mod commands;

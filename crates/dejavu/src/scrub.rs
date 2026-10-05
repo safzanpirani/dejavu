@@ -112,6 +112,9 @@ pub fn scrub_transcript_at(
         .clone()
         .unwrap_or_else(|| DEFAULT_PLACEHOLDER.to_string());
     let source = source_from_locator(locator, default_roots())?;
+    if source == TranscriptSource::Agy {
+        return Err("scrub cannot redact agy conversations: agy keeps copies in transcript.jsonl, logs/chunks/, and the binary conversations/<id>.db, so redacting one file would leave the text in the others".into());
+    }
     let events = load_transcript_events(locator, source)?.events;
     let targets = resolve_drops(&events, &drop)?;
     let context = ScrubContext {

@@ -318,6 +318,9 @@ pub fn load_transcript_events(
     if source == TranscriptSource::Droid {
         return load_droid_events(locator);
     }
+    if source == TranscriptSource::Agy {
+        return load_agy_events(locator);
+    }
     let entries = load_branch_entries(locator, source)?;
     let (project, events) = match source {
         TranscriptSource::Claude => (
@@ -511,6 +514,80 @@ fn droid_project(locator: &str, entries: &[TreeEntry]) -> String {
         Some(cwd) => compact_home(cwd).to_string(),
         None => project_from_transcript_path(locator, TranscriptSource::Droid),
     }
+}
+
+// ---------------------------------------------------------------------------
+// agy: ~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript_full.jsonl
+//
+// One step per line. A model reply lists its tool calls without IDs, and the
+// steps after it report their outcomes in the same order, so results pair
+// with calls first in, first out.
+
+fn load_agy_events(locator: &str) -> Result<LoadedEvents, String> {
+    let mut events = Vec::new();
+    let mut pending: std::collections::VecDeque<String> = Default::default();
+    for entry in parse_jsonl(&read_text(locator)?) {
+        let Some(step) = crate::agy::Step::from_value(&entry.value) else {
+            continue;
+        };
+        let timestamp = step.created_at.clone();
+        let mut push = |body, block| {
+            events.push(TranscriptEvent::at(
+                body,
+                timestamp.as_deref(),
+                line_ref(&entry, block),
+            ));
+        };
+        if let Some(text) = step.user_text() {
+            push(EventBody::User { text }, None);
+        } else if step.kind == "PLANNER_RESPONSE" {
+            if let Some(text) = step
+                .thinking
+                .as_deref()
+                .map(js_trim)
+                .filter(|t| !t.is_empty())
+            {
+                push(
+                    EventBody::Thinking {
+                        text: text.to_string(),
+                    },
+                    None,
+                );
+            }
+            if let Some(text) = step.assistant_text() {
+                push(EventBody::Assistant { text }, None);
+            }
+            pending.clear();
+            for (position, (name, input)) in step.tool_calls.iter().enumerate() {
+                let call_id = format!("{}:{position}", entry.line);
+                pending.push_back(call_id.clone());
+                push(
+                    EventBody::ToolCall {
+                        name: name.clone(),
+                        input: js_ordered(input.clone()),
+                        call_id: Some(call_id),
+                    },
+                    Some(position),
+                );
+            }
+        } else if step.is_tool_result() {
+            let call_id = pending.pop_front();
+            let name = call_id.is_none().then(|| js_lower(&step.kind).into_owned());
+            push(
+                EventBody::ToolResult {
+                    name,
+                    call_id,
+                    output: step.tool_output(),
+                    is_error: step.is_error(),
+                },
+                None,
+            );
+        }
+    }
+    Ok(LoadedEvents {
+        project: project_from_transcript_path(locator, TranscriptSource::Agy),
+        events: name_results(events),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,6 +1697,39 @@ pub(crate) mod tests {
         assert_eq!(
             bare(&loaded.events),
             vec![json!({ "kind": "user", "text": "hi" })]
+        );
+    }
+
+    #[test]
+    fn agy_pairs_results_with_calls_in_order_and_hides_injected_input() {
+        let dir = TempDir::new("transcript");
+        let path = dir.write_jsonl(
+            ".gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl",
+            &[
+                json!({ "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-10-05T10:00:00Z", "content": "<USER_REQUEST>\nlist it\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nt\n</ADDITIONAL_METADATA>" }),
+                json!({ "source": "SYSTEM_SDK", "type": "USER_INPUT", "content": "<USER_REQUEST>\n<project-memory>m</project-memory>\n</USER_REQUEST>" }),
+                json!({ "source": "SYSTEM", "type": "CONVERSATION_HISTORY", "content": "null" }),
+                json!({ "source": "MODEL", "type": "PLANNER_RESPONSE", "thinking": "plan", "tool_calls": [
+                    { "name": "run_command", "args": { "CommandLine": "\"ls\"" } },
+                    { "name": "view_file", "args": { "AbsolutePath": "\"/a\"" } },
+                ] }),
+                json!({ "source": "MODEL", "type": "RUN_COMMAND", "status": "DONE", "content": "Created At: x\nCompleted At: y\n\na.txt" }),
+                json!({ "source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "DONE", "error": "no such file" }),
+                json!({ "source": "MODEL", "type": "PLANNER_RESPONSE", "content": "Done." }),
+            ],
+        );
+        let loaded = load_transcript_events(&path, TranscriptSource::Agy).unwrap();
+        assert_eq!(
+            bare(&loaded.events),
+            vec![
+                json!({ "kind": "user", "text": "list it", "timestamp": "2026-10-05T10:00:00Z" }),
+                json!({ "kind": "thinking", "text": "plan" }),
+                json!({ "kind": "tool_call", "name": "run_command", "input": { "CommandLine": "ls" }, "callId": "4:0" }),
+                json!({ "kind": "tool_call", "name": "view_file", "input": { "AbsolutePath": "/a" }, "callId": "4:1" }),
+                json!({ "kind": "tool_result", "name": "run_command", "callId": "4:0", "output": "a.txt", "isError": false }),
+                json!({ "kind": "tool_result", "name": "view_file", "callId": "4:1", "output": "no such file", "isError": true }),
+                json!({ "kind": "assistant", "text": "Done." }),
+            ]
         );
     }
 

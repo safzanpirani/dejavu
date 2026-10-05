@@ -32,7 +32,7 @@ use std::time::Instant;
 /// Bump when stored rows change, including how messages are extracted
 /// (4: Droid skill notifications are cut from user text; 5: Droid and Codex
 /// compaction summaries are indexed).
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 /// Bytes hashed at the start of each JSONL file to detect in-place rewrites versus appends.
 const HEAD_BYTES: u64 = 4096;
 /// Changed files are parsed in parallel in batches of at most this many files
@@ -621,7 +621,10 @@ fn refresh_jsonl_store(
     store: &TranscriptStore,
     max_parallel: usize,
 ) -> Result<(usize, usize), String> {
-    let live_paths = jsonl_files(&store.path)?;
+    let live_paths = match store.source {
+        TranscriptSource::Agy => crate::agy::transcript_files(&store.path)?,
+        _ => jsonl_files(&store.path)?,
+    };
     let known_rows: Vec<FileRow> = {
         let mut statement = database
             .prepare(

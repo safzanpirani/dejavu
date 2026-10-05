@@ -5,7 +5,7 @@ use crate::paths::{is_absolute, join, resolve};
 use crate::types::{SourceSelector, StoreKind, TranscriptSource, TranscriptStore};
 use std::sync::OnceLock;
 
-/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `opencode`, or `droid`.
+/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `opencode`, `droid`, or `agy`.
 pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
     if value == "all" {
         return Ok(SourceSelector::All);
@@ -14,7 +14,7 @@ pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
         .map(SourceSelector::Only)
         .ok_or_else(|| {
             format!(
-                "source must be one of: all, claude, codex, pi, opencode, droid (got '{value}')"
+                "source must be one of: all, claude, codex, pi, opencode, droid, agy (got '{value}')"
             )
         })
 }
@@ -47,6 +47,8 @@ pub struct TranscriptStoreRoots {
     pub pi: String,
     pub opencode: Vec<String>,
     pub droid: String,
+    /// The Antigravity CLI's conversation directories.
+    pub agy: String,
 }
 
 impl TranscriptStoreRoots {
@@ -58,6 +60,7 @@ impl TranscriptStoreRoots {
             TranscriptSource::Pi => Some(&self.pi),
             TranscriptSource::Opencode => None,
             TranscriptSource::Droid => Some(&self.droid),
+            TranscriptSource::Agy => Some(&self.agy),
         }
     }
 }
@@ -74,7 +77,8 @@ pub fn default_roots() -> &'static TranscriptStoreRoots {
 /// `$PI_CODING_AGENT_DIR/sessions` (a leading `~` expands), OpenCode `$OPENCODE_DB`
 /// (relative to the data dir; `:memory:` disables it) or `$XDG_DATA_HOME/opencode/*.db`,
 /// Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (the variable replaces the
-/// home directory, not the Factory directory).
+/// home directory, not the Factory directory), and agy `~/.gemini/antigravity-cli/brain`
+/// (agy reads no variable for it).
 pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots {
     let set = |key: &str| env(key).filter(|value| !value.is_empty());
     let configured =
@@ -118,6 +122,7 @@ pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots
             ".factory",
             "sessions",
         ]),
+        agy: join(&[home, ".gemini", "antigravity-cli", "brain"]),
     }
 }
 
@@ -128,7 +133,7 @@ pub fn discover_stores(selector: SourceSelector) -> Vec<TranscriptStore> {
 
 /// `discoverTranscriptStores(selector, home, env)`: the selected stores that
 /// exist, in order Claude, Codex (live, then archived), Pi (then sibling Pi profiles under `~/.pi`
-/// when `PI_CODING_AGENT_DIR` is unset), OpenCode, Droid.
+/// when `PI_CODING_AGENT_DIR` is unset), OpenCode, Droid, agy.
 pub fn discover_transcript_stores(
     selector: SourceSelector,
     home: &str,
@@ -161,6 +166,7 @@ pub fn discover_transcript_stores(
         path,
     }));
     candidates.push(jsonl(TranscriptSource::Droid, roots.droid));
+    candidates.push(jsonl(TranscriptSource::Agy, roots.agy));
     candidates
         .into_iter()
         .filter(|store| selector.matches(store.source) && std::fs::metadata(&store.path).is_ok())
@@ -187,8 +193,8 @@ fn pi_profile_dirs(home: &str, primary: &str) -> Vec<String> {
 
 /// `sourceFromLocator(locator, roots)`: `opencode://` locators, paths under a
 /// configured root, then the default `.claude/projects/`, `.codex/sessions/`,
-/// `.codex/archived_sessions/`, `.pi/<profile>/sessions/`, and `.factory/sessions/`
-/// layouts.
+/// `.codex/archived_sessions/`, `.pi/<profile>/sessions/`, `.factory/sessions/`, and
+/// `antigravity-cli/brain/` layouts.
 pub fn source_from_locator(
     locator: &str,
     roots: &TranscriptStoreRoots,
@@ -201,6 +207,7 @@ pub fn source_from_locator(
         TranscriptSource::Codex,
         TranscriptSource::Pi,
         TranscriptSource::Droid,
+        TranscriptSource::Agy,
     ] {
         let root = roots.jsonl_root(source).unwrap_or_default();
         if is_under_root(locator, root) {
@@ -223,6 +230,9 @@ pub fn source_from_locator(
     }
     if has_segments(locator, ".factory", "sessions") {
         return Ok(TranscriptSource::Droid);
+    }
+    if has_segments(locator, "antigravity-cli", "brain") {
+        return Ok(TranscriptSource::Agy);
     }
     Err(format!(
         "cannot determine transcript source from locator: {locator} (use a transcript path or opencode:// locator from search results)"
@@ -351,6 +361,7 @@ mod tests {
                 pi: "/home/owner/.pi/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.local/share"),
                 droid: "/home/owner/.factory/sessions".into(),
+                agy: "/home/owner/.gemini/antigravity-cli/brain".into(),
             }
         );
         assert_eq!(
@@ -384,6 +395,7 @@ mod tests {
                 pi: "/home/owner/.pi-rakhi/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.rakhi-data"),
                 droid: "/home/owner/rakhi/.factory/sessions".into(),
+                agy: "/home/owner/.gemini/antigravity-cli/brain".into(),
             }
         );
         assert_eq!(
@@ -606,6 +618,20 @@ mod tests {
         );
         assert!(source_from_locator("/elsewhere/.pi//sessions/a.jsonl", &roots).is_err());
         assert_eq!(
+            source_from_locator(
+                "/home/owner/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript.jsonl",
+                &roots
+            ),
+            Ok(TranscriptSource::Agy)
+        );
+        assert_eq!(
+            source_from_locator(
+                "C:\\Users\\me\\.gemini\\antigravity-cli\\brain\\c1\\.system_generated\\logs\\transcript.jsonl",
+                &roots
+            ),
+            Ok(TranscriptSource::Agy)
+        );
+        assert_eq!(
             source_from_locator("/home/owner/.factory/sessions/-work-app/s.jsonl", &roots),
             Ok(TranscriptSource::Droid)
         );
@@ -685,11 +711,15 @@ mod tests {
         );
         assert_eq!(
             parse_source("gemini").unwrap_err(),
-            "source must be one of: all, claude, codex, pi, opencode, droid (got 'gemini')"
+            "source must be one of: all, claude, codex, pi, opencode, droid, agy (got 'gemini')"
         );
         assert_eq!(
             parse_source("droid"),
             Ok(SourceSelector::Only(TranscriptSource::Droid))
+        );
+        assert_eq!(
+            parse_source("agy"),
+            Ok(SourceSelector::Only(TranscriptSource::Agy))
         );
     }
 }

@@ -97,13 +97,15 @@ pub(crate) fn is_uuid(value: &str) -> bool {
 
 /// The running agent's session ids, so a lookup skips the session asking.
 /// Claude Code exports `CLAUDE_CODE_SESSION_ID`; `CLAUDE_SESSION_ID` is kept
-/// for wrappers that set the older name. Droid exports none, so its session
-/// is inferred from the process tree.
+/// for wrappers that set the older name. agy exports `ANTIGRAVITY_CONVERSATION_ID`
+/// to the commands it runs. Droid exports none, so its session is inferred
+/// from the process tree.
 pub(crate) fn active_session_ids() -> Vec<String> {
     [
         "CODEX_THREAD_ID",
         "CLAUDE_CODE_SESSION_ID",
         "CLAUDE_SESSION_ID",
+        "ANTIGRAVITY_CONVERSATION_ID",
     ]
     .iter()
     .filter_map(|key| std::env::var(key).ok())
@@ -118,6 +120,7 @@ pub(crate) fn excluded(path: &str, source: TranscriptSource, value: &str) -> boo
         || basename_without(path, ".jsonl") == value
         || (source == TranscriptSource::Opencode
             && path.ends_with(&format!("#{}", encode_uri_component(value))))
+        || (source == TranscriptSource::Agy && crate::agy::conversation_id(path) == Some(value))
         || (is_uuid(value)
             && (path.ends_with(&format!("{value}.jsonl")) || path.ends_with(&format!("/{value}"))))
 }
@@ -815,5 +818,8 @@ mod tests {
             "ses 1"
         ));
         assert!(!excluded("/x/other.jsonl", TranscriptSource::Claude, id));
+        let agy = format!("/x/brain/{id}/.system_generated/logs/transcript_full.jsonl");
+        assert!(excluded(&agy, TranscriptSource::Agy, id));
+        assert!(!excluded(&agy, TranscriptSource::Claude, id));
     }
 }

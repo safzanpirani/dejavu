@@ -256,6 +256,9 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
             "droid --resume {}",
             name.strip_suffix(".jsonl").unwrap_or(name)
         )),
+        TranscriptSource::Agy => {
+            crate::agy::conversation_id(path).map(|id| format!("agy --conversation {id}"))
+        }
         TranscriptSource::Opencode => {
             // opencode://<db>#<session id>; the ID is ses_ plus letters and digits.
             let (_, id) = path.rsplit_once('#')?;
@@ -699,7 +702,7 @@ pub fn find_sessions(
         if !direct_terms.is_empty() {
             let queries: Vec<&str> = direct_terms.iter().map(|&i| cleaned[i].as_str()).collect();
             let lists = backend
-                .count_files(&queries, &store.path, max_parallel)
+                .count_files(&queries, &store.path, store.source, max_parallel)
                 .unwrap_or_else(|_| vec![Vec::new(); queries.len()]);
             for (&term_index, counts) in direct_terms.iter().zip(lists) {
                 let rows = counts
@@ -1374,6 +1377,7 @@ mod tests {
                 &self,
                 _: &[&str],
                 _: &str,
+                _source: TranscriptSource,
                 _: usize,
             ) -> Result<Vec<Vec<FileMatchCount>>, String> {
                 panic!("mixed indexed queries must not scan the store")
@@ -1524,6 +1528,7 @@ mod tests {
             &self,
             queries: &[&str],
             _: &str,
+            _source: TranscriptSource,
             _: usize,
         ) -> Result<Vec<Vec<FileMatchCount>>, String> {
             Ok(queries.iter().map(|q| (self.counts)(q)).collect())
@@ -1641,9 +1646,10 @@ mod tests {
                 &self,
                 q: &[&str],
                 r: &str,
+                source: TranscriptSource,
                 m: usize,
             ) -> Result<Vec<Vec<FileMatchCount>>, String> {
-                self.inner.count_files(q, r, m)
+                self.inner.count_files(q, r, source, m)
             }
             fn find_lines(&self, q: &str, path: &str, m: usize) -> Vec<String> {
                 (self.on_file)(path);

@@ -40,9 +40,13 @@ pub trait Backend: Sync {
         &self,
         queries: &[&str],
         root: &str,
+        source: TranscriptSource,
         max_parallel: usize,
     ) -> Result<Vec<Vec<FileMatchCount>>, String> {
-        let files = scan::walk_files(root, |_| true)?;
+        let files = match source {
+            TranscriptSource::Agy => crate::agy::transcript_files(root)?,
+            _ => scan::walk_files(root, |_| true)?,
+        };
         let literals: Vec<scan::Literal> = queries.iter().map(|q| scan::Literal::new(q)).collect();
         scan::count_files(&literals, &files, max_parallel)
     }
@@ -306,7 +310,7 @@ pub fn search_sessions(
             };
         }
         let mut counts = backend
-            .count_files(&[needle], &store.path, max_parallel)
+            .count_files(&[needle], &store.path, store.source, max_parallel)
             .ok()
             .and_then(|mut lists| lists.pop())
             .unwrap_or_default();
@@ -473,6 +477,7 @@ mod tests {
             &self,
             queries: &[&str],
             root: &str,
+            _source: TranscriptSource,
             _: usize,
         ) -> Result<Vec<Vec<FileMatchCount>>, String> {
             Ok(queries.iter().map(|q| (self.counts)(q, root)).collect())
@@ -557,6 +562,7 @@ mod tests {
                 &self,
                 _: &[&str],
                 root: &str,
+                _source: TranscriptSource,
                 _: usize,
             ) -> Result<Vec<Vec<FileMatchCount>>, String> {
                 (self.on_store)((self.index_of)(root));

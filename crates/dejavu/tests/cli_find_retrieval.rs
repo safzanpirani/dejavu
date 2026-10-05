@@ -21,6 +21,8 @@ impl Fixture {
             .env("CODEX_HOME", self.0.join("codex"))
             .env("DEJAVU_INDEX_PATH", self.0.join("index.sqlite"))
             .env("DEJAVU_NO_UPDATE_CHECK", "1")
+            // agy reads no variable for its store, so isolate it through HOME.
+            .env("HOME", &self.0)
             .args(args)
             .output()
             .unwrap();

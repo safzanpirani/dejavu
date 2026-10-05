@@ -235,12 +235,14 @@ fn project_from_encoded_dir(path: &str, home: &str, root: &str, dir: &str, sub: 
     }
 }
 
-/// `projectFromTranscriptPath(path, source)`: Claude, Pi, and Droid decode the path; others are `~`.
+/// `projectFromTranscriptPath(path, source)`: Claude, Pi, and Droid decode the path;
+/// agy looks its conversation up in `conversation_summaries.db`; others are `~`.
 pub fn project_from_transcript_path(path: &str, source: TranscriptSource) -> String {
     match source {
         TranscriptSource::Claude => project_from_claude_path(path),
         TranscriptSource::Pi => project_from_pi_path(path),
         TranscriptSource::Droid => project_from_droid_path(path),
+        TranscriptSource::Agy => crate::agy::project_for_path(path).unwrap_or_else(|| "~".into()),
         _ => "~".to_string(),
     }
 }
@@ -256,7 +258,8 @@ pub fn project_from_transcript_text(path: &str, source: TranscriptSource, text: 
         // recorded cwd is the only lossless project.
         TranscriptSource::Claude => row_cwd(text, None),
         TranscriptSource::Pi => row_cwd(text, Some("session")),
-        TranscriptSource::Opencode => None,
+        // agy keeps the workspace in conversation_summaries.db, read by path.
+        TranscriptSource::Opencode | TranscriptSource::Agy => None,
     };
     match cwd {
         Some(cwd) => compact_home(&cwd).to_string(),

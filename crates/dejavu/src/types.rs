@@ -13,16 +13,18 @@ pub enum TranscriptSource {
     Pi,
     Opencode,
     Droid,
+    Agy,
 }
 
 impl TranscriptSource {
     /// Every source, in discovery order.
-    pub const ALL: [TranscriptSource; 5] = [
+    pub const ALL: [TranscriptSource; 6] = [
         Self::Claude,
         Self::Codex,
         Self::Pi,
         Self::Opencode,
         Self::Droid,
+        Self::Agy,
     ];
 
     /// The source's name as the CLI and JSON spell it.
@@ -33,6 +35,7 @@ impl TranscriptSource {
             Self::Pi => "pi",
             Self::Opencode => "opencode",
             Self::Droid => "droid",
+            Self::Agy => "agy",
         }
     }
 

@@ -1,6 +1,6 @@
 ---
 name: dejavu
-description: Search and query past Claude Code, Codex, Pi, OpenCode, and Factory Droid transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory, and when the user says to continue or pick up where the last session, or a named session, left off. Do not use for shell history, Git history, or repository code search.
+description: Search and query past Claude Code, Codex, Pi, OpenCode, Factory Droid, and agy (Antigravity CLI) transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory, and when the user says to continue or pick up where the last session, or a named session, left off. Do not use for shell history, Git history, or repository code search.
 ---
 
 # Dejavu
@@ -54,7 +54,7 @@ Then:
 
 ## Find a session from a vague memory
 
-When the request is "find that chat where we ...", use `dejavu find` with two or three literal terms. It requires all terms per session (falling back to the best subset), weights user-message matches above assistant ones, and prints a session card: opening user prompt, matching user messages with dates, per-term counts, transcript path, and a resume command for Claude, Codex, Pi, Droid, and OpenCode sessions.
+When the request is "find that chat where we ...", use `dejavu find` with two or three literal terms. It requires all terms per session (falling back to the best subset), weights user-message matches above assistant ones, and prints a session card: opening user prompt, matching user messages with dates, per-term counts, transcript path, and a resume command for Claude, Codex, Pi, Droid, agy, and OpenCode sessions.
 
 ```sh
 dejavu find workshop codex colleagues
@@ -64,11 +64,11 @@ dejavu find controlmaster --user --source claude
 
 OpenCode cards keep their project directory. `--since` uses matching message dates and falls back to session activity when dates are missing. A resumed session can match after its filename date. Harness instruction blocks do not count as user matches or opening prompts. Find excerpts show a 240-character window around a matching term. Find and last cards cap opening prompts at 300 characters and mark cuts with an ellipsis. Use `transcript --full` for the complete prompt. Counts cover all matching visible messages in each scored session, including messages after large tool logs. In mixed queries, long terms select candidates and short terms are checked only inside those sessions. Queries with only short terms scan directly. Source, project, and date filters apply before the 40-candidate scoring limit. Inspect `truncated` in find JSON. A true value means eligible candidates were omitted; narrow the filters for more coverage.
 
-Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-DD` or `7d`/`2w`/`3m`, `--user` requires every term in user messages, `-n` limits results, `--paths` prints only locators (one per line, for piping into `dejavu show` or `dejavu query`), and `--max-parallel N` bounds local store and candidate work with a default of 4. Resume commands cover Claude (`claude --resume`), Codex (`codex resume`), Pi (`pi --session <path>`), and Droid (`droid --resume <id>`). Prefer `dejavu find` over plain search whenever the goal is identifying a whole session rather than a phrase.
+Flags: `-p/--project SUBSTR` filters by project path, `--since` takes `YYYY-MM-DD` or `7d`/`2w`/`3m`, `--user` requires every term in user messages, `-n` limits results, `--paths` prints only locators (one per line, for piping into `dejavu show` or `dejavu query`), and `--max-parallel N` bounds local store and candidate work with a default of 4. Resume commands cover Claude (`claude --resume`), Codex (`codex resume`), Pi (`pi --session <path>`), Droid (`droid --resume <id>`), and agy (`agy --conversation <id>`). Prefer `dejavu find` over plain search whenever the goal is identifying a whole session rather than a phrase.
 
 ## Read a transcript without model cost
 
-For bounded context in one call, use `dejavu pack <term>... --project SUBSTR --budget-chars 8000 --json`. It runs the session finder and returns user/assistant excerpts around matches, with overlapping neighborhoods merged. Defaults: 3 sessions, 2 neighboring dialogue events, 1200 characters per event, 12000 total event-body characters. It ranks neighborhoods by match density, gives user dialogue extra weight, and selects fewer events before sharing the budget. It aims for 200 body characters per excerpt when limits permit and reserves a metadata allowance. Long excerpts center on a term. JSON uses compact formatting and retains event metadata. `omitted` lists omitted match-anchor counts, event counts, locators, and `nextEvent` values per loaded session. `--context 0` returns only matching events. `--exclude-session ID_OR_LOCATOR` is repeatable; active `CODEX_THREAD_ID`/`CLAUDE_CODE_SESSION_ID`/`CLAUDE_SESSION_ID` values and the running Droid session are automatically excluded. It accepts find's source, project, since, user, no-index, and max-parallel flags. Search considers at most 40 ranked candidates, not a complete catalog. Inspect `requiredTerms` for relaxed matching and `skippedStores`/`skippedSessions` for unavailable data.
+For bounded context in one call, use `dejavu pack <term>... --project SUBSTR --budget-chars 8000 --json`. It runs the session finder and returns user/assistant excerpts around matches, with overlapping neighborhoods merged. Defaults: 3 sessions, 2 neighboring dialogue events, 1200 characters per event, 12000 total event-body characters. It ranks neighborhoods by match density, gives user dialogue extra weight, and selects fewer events before sharing the budget. It aims for 200 body characters per excerpt when limits permit and reserves a metadata allowance. Long excerpts center on a term. JSON uses compact formatting and retains event metadata. `omitted` lists omitted match-anchor counts, event counts, locators, and `nextEvent` values per loaded session. `--context 0` returns only matching events. `--exclude-session ID_OR_LOCATOR` is repeatable; active `CODEX_THREAD_ID`/`CLAUDE_CODE_SESSION_ID`/`CLAUDE_SESSION_ID`/`ANTIGRAVITY_CONVERSATION_ID` values and the running Droid session are automatically excluded. It accepts find's source, project, since, user, no-index, and max-parallel flags. Search considers at most 40 ranked candidates, not a complete catalog. Inspect `requiredTerms` for relaxed matching and `skippedStores`/`skippedSessions` for unavailable data.
 
 Use `show --no-tools` for only user/assistant content without tool summaries or tool-only turns. `show --max-chars N` changes the per-message limit in text and JSON. `show --around TERM` centers matching excerpts on the first case-insensitive occurrence and marks cut sides with `…`. `--no-toolcalls` aliases `--no-tools` for both show and transcript.
 
@@ -76,22 +76,22 @@ For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 
 
 `dejavu show <locator>` prints the parsed conversation as `[user]`/`[assistant]` turns (tool calls summarized, long messages truncated; `--full` disables truncation). `--around TERM` prints only messages containing TERM plus three turns of context — use it to jump to the relevant region of a long session. Use `show` to confirm a session is the right one before resuming it or paying for `dejavu query`.
 
-`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, OpenCode, and Droid. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits an object with an `events` array (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
+`dejavu transcript <locator>` prints the full turn-by-turn view: labeled `USER` / `ASSISTANT` turns with timestamps, each tool call with its input (`▶ name`), and each tool result (`◀ name result`, or `◀ name error`). It works identically for Claude, Codex, Pi, OpenCode, Droid, and agy. Tool inputs and outputs are truncated by default; `--full` prints everything, `--thinking` adds model reasoning, `--no-tools` hides tool activity, and `--json` emits an object with an `events` array (`kind` is `user`, `assistant`, `thinking`, `tool_call`, or `tool_result`). Use `transcript` over `show` when the question is what the agent actually ran and what came back.
 
 ## Redact a transcript
 
-`dejavu scrub <locator>` rewrites a transcript in place after saving a `.bak-<epoch>` copy. Use `--drop N` (repeatable, ranges like `30-34`) with the `#N` numbers from `dejavu transcript` to replace a user turn, assistant turn, thinking block, or tool call and its result with `[redacted]`; ids, types, and parent links stay so the session still resumes. Use `--pattern TEXT` (repeatable) to delete every line containing the text from every string field in every record, which also covers tool result copies stored outside the message and inactive branches. Run with `--dry-run` first, report the counts, and remind the user that an agent process that already loaded the session keeps the old content until it restarts. Never print the redacted content back.
+`dejavu scrub <locator>` rewrites a transcript in place after saving a `.bak-<epoch>` copy. Use `--drop N` (repeatable, ranges like `30-34`) with the `#N` numbers from `dejavu transcript` to replace a user turn, assistant turn, thinking block, or tool call and its result with `[redacted]`; ids, types, and parent links stay so the session still resumes. Use `--pattern TEXT` (repeatable) to delete every line containing the text from every string field in every record, which also covers tool result copies stored outside the message and inactive branches. Run with `--dry-run` first, report the counts, and remind the user that an agent process that already loaded the session keeps the old content until it restarts. Never print the redacted content back. Scrub refuses agy conversations, because agy keeps other copies that dejavu cannot redact.
 
 ## Find a transcript
 
-Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). Keep these set to search only the current user's history on a shared account:
+Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). agy has no variable and always reads `~/.gemini/antigravity-cli/brain`. Keep these set to search only the current user's history on a shared account:
 
 ```sh
 dejavu --json 'session-recall.ts'
 dejavu search 'Cannot find module' --json
 ```
 
-The search covers Claude Code, Codex, Pi, OpenCode, and Factory Droid. Narrow it only when the user names a source or broad results are noisy:
+The search covers Claude Code, Codex, Pi, OpenCode, Factory Droid, and agy. Narrow it only when the user names a source or broad results are noisy:
 
 ```sh
 dejavu --source claude --max-parallel 4 --json 'distinctive phrase'
@@ -99,6 +99,7 @@ dejavu --source codex --json 'functionName'
 dejavu --source pi --json 'package-name'
 dejavu --source opencode --json 'exact error text'
 dejavu --source droid --json 'exact error text'
+dejavu --source agy --json 'exact error text'
 ```
 
 Use `dejavu search PHRASE` or the bare `dejavu PHRASE` form. Both perform the same search. Use `dejavu -- search` or `dejavu search search` for the literal word `search`. A quoted phrase such as `dejavu "search failed"` stays literal.

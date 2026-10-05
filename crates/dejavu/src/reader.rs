@@ -1017,6 +1017,9 @@ pub fn load_recall_messages(
 
 /// The recall messages of JSONL transcript text (`source` must not be OpenCode).
 pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<RecallMessage> {
+    if source == TranscriptSource::Agy {
+        return crate::agy::recall_messages(text);
+    }
     let rows = text
         .split('\n')
         .filter(|line| !line.trim().is_empty())
@@ -1121,6 +1124,15 @@ pub struct VisibleMessage {
 /// first 10 units), and its `cwd`. `None` for other rows and empty text.
 /// Droid's injected `<system-reminder>` user blocks do not count as text.
 pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<VisibleMessage> {
+    if source == TranscriptSource::Agy {
+        let (role, text, date) = crate::agy::visible_text(line)?;
+        return Some(VisibleMessage {
+            role,
+            text,
+            date,
+            project: None,
+        });
+    }
     let row = parse_json_line::<Row<false>>(line)?;
     if let Some(text) = row.compaction_summary(source) {
         return Some(VisibleMessage {

@@ -1,6 +1,6 @@
 # dejavu
 
-Agents lose useful context when work moves between Claude Code, Codex, Pi, OpenCode, and Droid. `dejavu` gives them one local command for finding earlier sessions and project memories.
+Agents lose useful context when work moves between Claude Code, Codex, Pi, OpenCode, Droid, and agy. `dejavu` gives them one local command for finding earlier sessions and project memories.
 
 `dejavu` is agent-first. An agent can search past sessions, inspect the relevant conversation, and recover decisions, commands, errors, and file changes. The agent can then verify that historical context against the current workspace. Humans can run the same commands from a terminal.
 
@@ -75,8 +75,9 @@ The default `dejavu query` harness requires an installed, authenticated `codex` 
 | Pi | JSONL transcripts under `~/.pi/agent/sessions` and sibling profiles such as `~/.pi/juna/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
 | OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
 | Factory Droid | JSONL transcripts under `~/.factory/sessions`; only `*.jsonl` session files are read | `FACTORY_HOME_OVERRIDE` → `$FACTORY_HOME_OVERRIDE/.factory/sessions` |
+| agy (Antigravity CLI) | One JSONL step log per conversation at `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` (else `transcript.jsonl`); the project comes from `conversation_summaries.db`, else `history.jsonl` | Home directory only; agy reads no variable for it |
 
-Each variable is the one the agent itself honors. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
+Each variable is the one the agent itself honors; agy has none. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
 
 It also reads Claude Code Markdown memory under `~/.claude/projects/*/memory/`. Set `CLAUDE_CONFIG_DIR` or pass `--root` to use another Claude store.
 
@@ -90,7 +91,7 @@ dejavu search --source codex session-recall.ts --max-parallel 4 --json
 
 The explicit `dejavu search PHRASE` command and bare `dejavu PHRASE` search the same phrase. Use `dejavu -- search` or `dejavu search search` to search for the literal word `search`. A quoted phrase such as `dejavu "search failed"` also stays literal.
 
-Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode|droid` to narrow the search.
+Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode|droid|agy` to narrow the search.
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
@@ -125,7 +126,7 @@ dejavu pack database --context 1 --limit 3 --exclude-session '<session ID or loc
 
 `pack` combines the session finder with user/assistant excerpts around literal matches. It uses no model. Defaults are three sessions, two neighboring dialogue events per match, 1,200 characters per event, and 12,000 event-body characters across the pack. It ranks neighborhoods by match density and gives user dialogue extra weight. It selects fewer events before sharing the budget, reserves a metadata allowance, and aims for at least 200 body characters per excerpt when limits permit. It merges overlapping selections and returns events in transcript order. Long matching events show a region around a search term. Very small budgets can abbreviate or omit matches.
 
-The command accepts `find` filters (`--source`, `--project`, `--since`, `--user`), `--no-index`, and `--max-parallel`. `--context 0` returns matching events only. `--exclude-session` is repeatable and accepts an exact locator or session ID. Available `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, and `CLAUDE_SESSION_ID` values exclude the active session automatically. Under Droid, which exports no session ID, the active session is the newest transcript in the `droid` parent process's working-directory folder. Search examines at most 40 ranked candidates; counts describe those candidates, not every stored session. Results retain relaxed search terms and report unreadable stores and sessions.
+The command accepts `find` filters (`--source`, `--project`, `--since`, `--user`), `--no-index`, and `--max-parallel`. `--context 0` returns matching events only. `--exclude-session` is repeatable and accepts an exact locator or session ID. Available `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, and `ANTIGRAVITY_CONVERSATION_ID` values exclude the active session automatically. Under Droid, which exports no session ID, the active session is the newest transcript in the `droid` parent process's working-directory folder. Search examines at most 40 ranked candidates; counts describe those candidates, not every stored session. Results retain relaxed search terms and report unreadable stores and sessions.
 
 Pack JSON uses compact formatting and preserves event metadata fields. The budget counts body characters; locators, metadata, and JSON encoding add overhead. Each excerpt carries its source locator and original event IDs. `omitted` lists omitted event and match-neighborhood counts per loaded session, with a locator and `nextEvent`. A neighborhood counts as omitted when its matching anchor is absent. Partial neighborhoods can omit context events even when their anchor is present. `window.clipped` lists shortened fields and character offsets; `window.nextEvent` identifies the first omitted excerpt event. Read more with `transcript '<locator>' --from-event N`, or recover a shortened event with `transcript '<locator>' --full --from-event N --limit 1`. Transcript continuation reads the conversation from that ID; it does not repeat the pack's match filter.
 
@@ -143,7 +144,7 @@ dejavu last --anywhere --since 1d --json
 
 `last` prints a session card (date, source, project, opening prompt, last user request, transcript, resume command) and the newest user/assistant turns that fit a budget. Injected harness messages such as task notifications are left out of the tail. It uses no model. With no argument it picks the newest session whose project is the current Git work tree or a directory below it, falling back to the current directory. `--project SUBSTR` matches project paths that contain SUBSTR instead, and `--anywhere` drops the project filter. Terms rank sessions the way `find` does within the current repo, then across every project when the repo has no match. A transcript locator or session ID selects that session directly, even the active one.
 
-The active `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, or `CLAUDE_SESSION_ID` session is skipped, as is the active Droid session (found the way `pack` finds it), so "last session" means the one before this one. `--exclude-session` skips more. The tail defaults to the newest 12 events within 8,000 body characters at 1,500 per event. `--turns`, `--budget-chars`, and `--max-chars` change those bounds. `--tools` adds tool calls and results at `--tool-chars` (default 400) each. `--list` prints only cards. The output ends with a `transcript --from-event` command for earlier turns.
+The active `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, or `ANTIGRAVITY_CONVERSATION_ID` session is skipped, as is the active Droid session (found the way `pack` finds it), so "last session" means the one before this one. `--exclude-session` skips more. The tail defaults to the newest 12 events within 8,000 body characters at 1,500 per event. `--turns`, `--budget-chars`, and `--max-chars` change those bounds. `--tools` adds tool calls and results at `--tool-chars` (default 400) each. `--list` prints only cards. The output ends with a `transcript --from-event` command for earlier turns.
 
 ### View a transcript turn by turn
 
@@ -153,7 +154,7 @@ dejavu transcript '<locator>' --full --thinking
 dejavu transcript '<locator>' --no-tools --json
 ```
 
-`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, and Droid sessions. A compaction summary appears as a user turn where the compaction happened; Droid and Codex summaries start with `[Compaction summary`. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
+`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, Droid, and agy sessions. agy records tool calls without IDs, so each result pairs with the next unanswered call of the reply before it. A compaction summary appears as a user turn where the compaction happened; Droid and Codex summaries start with `[Compaction summary`. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
 
 ```bash
 dejavu transcript '<locator>' --no-tools --max-chars 1500 --budget-chars 8000 --json
@@ -186,7 +187,7 @@ dejavu scrub '<locator>' --drop 12 --drop 30-34 --dry-run
 dejavu scrub '<locator>' --drop 12 --pattern "secret-host" --pattern "api key"
 ```
 
-`scrub` edits the transcript in place after writing a `.bak-<epoch>` copy next to it. `--drop` replaces the content of the numbered events from `dejavu transcript` with a placeholder while keeping ids, types, and parent links intact, so the session still resumes. Dropping a tool call also drops its result. `--pattern` removes every line that contains the text, case-insensitively, from every string field in every record, including tool result copies stored outside the message and branches that are no longer active. `--placeholder` changes the replacement text and `--dry-run` reports without writing. Claude, Codex, Pi, and Droid files are rewritten line by line; OpenCode rows are updated in a transaction after the database file is copied.
+`scrub` edits the transcript in place after writing a `.bak-<epoch>` copy next to it. `--drop` replaces the content of the numbered events from `dejavu transcript` with a placeholder while keeping ids, types, and parent links intact, so the session still resumes. Dropping a tool call also drops its result. `--pattern` removes every line that contains the text, case-insensitively, from every string field in every record, including tool result copies stored outside the message and branches that are no longer active. `--placeholder` changes the replacement text and `--dry-run` reports without writing. Claude, Codex, Pi, and Droid files are rewritten line by line; OpenCode rows are updated in a transaction after the database file is copied. agy conversations are refused, because agy keeps further copies in `transcript.jsonl`, `logs/chunks/`, and a binary `conversations/<id>.db`.
 
 ### Search agent memory
 

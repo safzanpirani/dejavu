@@ -45,7 +45,10 @@ impl Fixture {
             .env("OPENCODE_DB", self.0.join("absent.db"))
             .env("FACTORY_HOME_OVERRIDE", self.0.join("factory"))
             .env("DEJAVU_INDEX_PATH", self.0.join("index.sqlite"))
+            // agy reads no variable for its store, so isolate it through HOME.
+            .env("HOME", &self.0)
             .env_remove("NO_COLOR")
+            .env_remove("ANTIGRAVITY_CONVERSATION_ID")
             .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID");

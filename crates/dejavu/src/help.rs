@@ -88,7 +88,7 @@ Help uses color only on a terminal; NO_COLOR or --no-color disables it."
     )
 }
 
-const SEARCH: &str = r#"  -s, --source NAME      all, claude, codex, pi, opencode, or droid (default all)
+const SEARCH: &str = r#"  -s, --source NAME      all, claude, codex, pi, opencode, droid, or agy (default all)
   -n, --limit N          transcripts to return (default 10)
       --snippets N       snippets per transcript (integer >= 1; default 3)
       --max-parallel N   local store/file workers (default 4)
@@ -122,7 +122,7 @@ const PACK: &str = r#"      --limit N          sessions to return (default 3; se
                          repeatable; active session IDs from the environment are excluded
                          also accepts find's source, project, since, user, no-index, max-parallel
 
-  -s, --source NAME      all, claude, codex, pi, opencode, or droid
+  -s, --source NAME      all, claude, codex, pi, opencode, droid, or agy
   -p, --project SUBSTR   project path substring
       --since WHEN       YYYY-MM-DD or 7d / 2w / 3m
       --user             require every term in user messages
@@ -144,7 +144,7 @@ const LAST: &str = r#"                         no argument: newest session in th
       --exclude-session ID_OR_LOCATOR
                          repeatable; also accepts --source, --since, and --color/--no-color
 
-  -s, --source NAME      all, claude, codex, pi, opencode, or droid
+  -s, --source NAME      all, claude, codex, pi, opencode, droid, or agy
       --since WHEN       YYYY-MM-DD or 7d / 2w / 3m
       --color / --no-color"#;
 
