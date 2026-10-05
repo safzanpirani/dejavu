@@ -751,8 +751,11 @@ fn pi_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
 /// Only `message` rows are tree nodes; `session_start`, `agent_turn_outcome`, and
 /// the other bookkeeping rows are neither the leaf nor on the branch. Hook rows
 /// never become the leaf, because Droid writes `SessionEnd` last without a parent.
+/// Droid appends rows, so a parent always precedes its child: a `parentId` resolves
+/// to the newest earlier row with that id. Droid can repeat an id on a later row
+/// that names itself as parent, and the last-row-wins lookup would loop there.
 fn droid_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
-    let mut by_id = HashMap::new();
+    let mut by_id: HashMap<Key<'_>, Vec<usize>> = HashMap::new();
     let mut last = None;
     for (index, node) in nodes.iter().enumerate() {
         if node.node_type() != Some("message") {
@@ -762,10 +765,20 @@ fn droid_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
             last = Some(index);
         }
         if let Some(key) = truthy_link(node, LINK_ID).and_then(JsRef::key) {
-            by_id.insert(key, index);
+            by_id.entry(key).or_default().push(index);
         }
     }
-    walk(nodes, &by_id, last, |node| node.link(LINK_PARENT_ID))
+    let mut branch = Vec::new();
+    let mut current = last;
+    while let Some(index) = current {
+        branch.push(index);
+        current = truthy_link(&nodes[index], LINK_PARENT_ID)
+            .and_then(JsRef::key)
+            .and_then(|key| by_id.get(&key))
+            .and_then(|rows| rows.iter().rev().find(|&&row| row < index).copied());
+    }
+    branch.reverse();
+    branch
 }
 
 /// Claude's active branch: from the recorded `last-prompt` leaf (or the last row
@@ -1477,6 +1490,28 @@ mod tests {
             .map(|entry| entry.line)
             .collect();
         assert_eq!(lines, [3, 4, 7, 8, 9]);
+    }
+
+    #[test]
+    fn droid_parent_links_resolve_to_earlier_rows_when_an_id_repeats() {
+        // Droid reused m4's id for a self-parented row (a cancelled tool result).
+        let mut repeated = droid_rows();
+        repeated.push(
+            json!({ "type": "message", "id": "m4", "parentId": "m4", "message": {
+            "role": "user", "visibility": "user_only",
+            "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "ok" }] } }),
+        );
+        repeated.push(message("m6", Some("m4"), "user", "next"));
+        let text = rows(&repeated);
+        assert_eq!(
+            texts(&recall_messages_from_text(&text, TranscriptSource::Droid)),
+            ["fix the build", "running", "next"]
+        );
+        let lines: Vec<usize> = branch_entries(parse_jsonl(&text), TranscriptSource::Droid)
+            .iter()
+            .map(|entry| entry.line)
+            .collect();
+        assert_eq!(lines, [2, 3, 6, 7, 10, 11]);
     }
 
     #[test]
