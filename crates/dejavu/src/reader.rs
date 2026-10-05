@@ -507,9 +507,16 @@ impl<const FULL: bool> Envelope<FULL> {
             return None;
         }
         if source == TranscriptSource::Droid && self.role.0.as_deref() == Some("user") {
-            self.content
-                .0
-                .retain(|block| !block.text().is_some_and(is_droid_injected_text));
+            self.content.0.retain_mut(|block| match block {
+                RecallBlock::Text { text } => match droid_user_text(text).map(str::len) {
+                    Some(len) => {
+                        text.truncate(len);
+                        true
+                    }
+                    None => false,
+                },
+                _ => true,
+            });
         }
         self.into_recall()
     }
@@ -587,18 +594,29 @@ impl<'de, const FULL: bool> Deserialize<'de> for Row<FULL> {
     }
 }
 
-/// Droid writes harness context (tool catalogs, skill lists, system information)
-/// into the conversation as user text blocks that begin with `<system-reminder>`.
-/// They are not part of what the user said, so recall, search, and views skip them.
 /// Droid marks harness messages the user never saw (continuation prompts,
 /// interruption notices, older reminders) with `visibility: "llm_only"`.
 pub fn is_droid_model_only(visibility: Option<&str>) -> bool {
     visibility == Some("llm_only")
 }
 
-pub fn is_droid_injected_text(text: &str) -> bool {
-    text.trim_start_matches(crate::query::js_space)
-        .starts_with("<system-reminder>")
+/// Droid writes harness context (tool catalogs, skill lists, system information)
+/// into the conversation as user text blocks that begin with `<system-reminder>`,
+/// and appends an activated skill to the user's own text as a line-leading
+/// `<system-notification>` block. Neither is part of what the user said, so
+/// recall, search, and views keep only the text before them. `None` means
+/// nothing the user wrote is left.
+pub fn droid_user_text(text: &str) -> Option<&str> {
+    const NOTIFICATION: &str = "<system-notification>";
+    let body = text.trim_start_matches(crate::query::js_space);
+    if body.starts_with("<system-reminder>") || body.starts_with(NOTIFICATION) {
+        return None;
+    }
+    let kept = match text.find(&format!("\n{NOTIFICATION}")) {
+        Some(end) => text[..end].trim_end_matches(crate::query::js_space),
+        None => text,
+    };
+    (!kept.trim_start_matches(crate::query::js_space).is_empty()).then_some(kept)
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,6 +1530,35 @@ mod tests {
             .map(|entry| entry.line)
             .collect();
         assert_eq!(lines, [2, 3, 6, 7, 10, 11]);
+    }
+
+    #[test]
+    fn droid_user_text_drops_appended_skill_notifications() {
+        let notification = "<system-notification>\nSkills provide...\n<skill filePath=\"/s/SKILL.md\">body</skill>\n</system-notification>";
+        let prompt = format!("fix the build\n\n{notification}");
+        assert_eq!(droid_user_text(&prompt), Some("fix the build"));
+        assert_eq!(droid_user_text(notification), None);
+        assert_eq!(droid_user_text("  <system-reminder>x"), None);
+        assert_eq!(droid_user_text("\n\n"), None);
+        // Only a line-leading tag is injected; a mention inside a sentence is the user's.
+        assert_eq!(
+            droid_user_text("what is <system-notification> for?"),
+            Some("what is <system-notification> for?")
+        );
+        let row = json!({ "type": "message", "id": "a", "message": { "role": "user",
+            "content": [{ "type": "text", "text": prompt }] } });
+        let text = rows(std::slice::from_ref(&row));
+        assert_eq!(
+            texts(&recall_messages_from_text(&text, TranscriptSource::Droid)),
+            ["fix the build"]
+        );
+        let visible = extract_visible_message(&row.to_string(), TranscriptSource::Droid).unwrap();
+        assert_eq!(visible.text, "fix the build");
+        // Claude keeps the text as written.
+        assert!(
+            extract_visible_message(&row.to_string(), TranscriptSource::Claude)
+                .is_some_and(|message| message.text.contains("<skill"))
+        );
     }
 
     #[test]

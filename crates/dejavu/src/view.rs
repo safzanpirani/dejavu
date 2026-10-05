@@ -13,7 +13,7 @@ use crate::opencode::{
 };
 use crate::paths::{compact_home, js_lower, project_from_transcript_path};
 use crate::reader::{
-    TreeEntry, branch_entries, is_droid_injected_text, load_branch_entries, load_recall_messages,
+    TreeEntry, branch_entries, droid_user_text, load_branch_entries, load_recall_messages,
     parse_json_line, parse_jsonl, read_text,
 };
 use crate::sources::{default_roots, source_from_locator};
@@ -403,8 +403,8 @@ fn dialogue(role: &str, text: String) -> EventBody {
     }
 }
 
-/// The events of one Claude-shaped row. `skip_injected` drops Droid's
-/// `<system-reminder>` user text (Claude keeps its reminders as written).
+/// The events of one Claude-shaped row. `skip_injected` drops Droid's injected
+/// user text ([`droid_user_text`]); Claude keeps its reminders as written.
 fn claude_events(entry: &TreeEntry, skip_injected: bool) -> Vec<TranscriptEvent> {
     let Some(message) = entry.message() else {
         return Vec::new();
@@ -418,18 +418,23 @@ fn claude_events(entry: &TreeEntry, skip_injected: bool) -> Vec<TranscriptEvent>
     {
         return Vec::new();
     }
-    let injected = |text: &str| skip_injected && role == "user" && is_droid_injected_text(text);
+    let authored = |text: String| -> Option<String> {
+        if skip_injected && role == "user" {
+            droid_user_text(&text).map(str::to_string)
+        } else {
+            Some(text)
+        }
+    };
     let timestamp = entry.timestamp();
     match message.get("content") {
         Some(Value::String(content)) => {
-            if js_trim(content).is_empty() || injected(content) {
-                Vec::new()
-            } else {
-                vec![TranscriptEvent::at(
-                    dialogue(role, content.clone()),
+            match authored(content.clone()).filter(|text| !js_trim(text).is_empty()) {
+                Some(text) => vec![TranscriptEvent::at(
+                    dialogue(role, text),
                     timestamp,
                     line_ref(entry, None),
-                )]
+                )],
+                None => Vec::new(),
             }
         }
         Some(Value::Array(blocks)) => blocks
@@ -439,13 +444,7 @@ fn claude_events(entry: &TreeEntry, skip_injected: bool) -> Vec<TranscriptEvent>
                 let block = raw.as_object()?;
                 let reference = line_ref(entry, Some(position));
                 let body = match block.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        let text = nonblank(block.get("text"))?;
-                        if injected(&text) {
-                            return None;
-                        }
-                        dialogue(role, text)
-                    }
+                    Some("text") => dialogue(role, authored(nonblank(block.get("text"))?)?),
                     Some("thinking") => EventBody::Thinking {
                         text: nonblank(block.get("thinking"))?,
                     },

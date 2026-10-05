@@ -29,7 +29,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
-pub const SCHEMA_VERSION: i64 = 3;
+/// Bump when stored rows change, including how messages are extracted
+/// (4: Droid skill notifications are cut from user text).
+pub const SCHEMA_VERSION: i64 = 4;
 /// Bytes hashed at the start of each JSONL file to detect in-place rewrites versus appends.
 const HEAD_BYTES: u64 = 4096;
 /// Changed files are parsed in parallel in batches of at most this many files
