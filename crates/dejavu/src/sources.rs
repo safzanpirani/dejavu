@@ -42,6 +42,8 @@ pub fn home_dir() -> String {
 pub struct TranscriptStoreRoots {
     pub claude: String,
     pub codex: String,
+    /// Codex moves archived rollouts here, flat, out of `codex`.
+    pub codex_archive: String,
     pub pi: String,
     pub opencode: Vec<String>,
     pub droid: String,
@@ -98,15 +100,14 @@ pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots
             .map(|name| join(&[&opencode_data, name]))
             .collect(),
     };
+    let codex_home = configured(set("CODEX_HOME"), join(&[home, ".codex"]));
     TranscriptStoreRoots {
         claude: join(&[
             &configured(set("CLAUDE_CONFIG_DIR"), join(&[home, ".claude"])),
             "projects",
         ]),
-        codex: join(&[
-            &configured(set("CODEX_HOME"), join(&[home, ".codex"])),
-            "sessions",
-        ]),
+        codex: join(&[&codex_home, "sessions"]),
+        codex_archive: join(&[&codex_home, "archived_sessions"]),
         pi: join(&[
             &configured(pi_dir, join(&[home, ".pi", "agent"])),
             "sessions",
@@ -126,7 +127,7 @@ pub fn discover_stores(selector: SourceSelector) -> Vec<TranscriptStore> {
 }
 
 /// `discoverTranscriptStores(selector, home, env)`: the selected stores that
-/// exist, in order Claude, Codex, Pi (then sibling Pi profiles under `~/.pi`
+/// exist, in order Claude, Codex (live, then archived), Pi (then sibling Pi profiles under `~/.pi`
 /// when `PI_CODING_AGENT_DIR` is unset), OpenCode, Droid.
 pub fn discover_transcript_stores(
     selector: SourceSelector,
@@ -142,6 +143,7 @@ pub fn discover_transcript_stores(
     let mut candidates = vec![
         jsonl(TranscriptSource::Claude, roots.claude.clone()),
         jsonl(TranscriptSource::Codex, roots.codex.clone()),
+        jsonl(TranscriptSource::Codex, roots.codex_archive.clone()),
         jsonl(TranscriptSource::Pi, roots.pi.clone()),
     ];
     if env("PI_CODING_AGENT_DIR").is_none_or(|dir| dir.is_empty())
@@ -185,7 +187,8 @@ fn pi_profile_dirs(home: &str, primary: &str) -> Vec<String> {
 
 /// `sourceFromLocator(locator, roots)`: `opencode://` locators, paths under a
 /// configured root, then the default `.claude/projects/`, `.codex/sessions/`,
-/// `.pi/<profile>/sessions/`, and `.factory/sessions/` layouts.
+/// `.codex/archived_sessions/`, `.pi/<profile>/sessions/`, and `.factory/sessions/`
+/// layouts.
 pub fn source_from_locator(
     locator: &str,
     roots: &TranscriptStoreRoots,
@@ -204,10 +207,15 @@ pub fn source_from_locator(
             return Ok(source);
         }
     }
+    if is_under_root(locator, &roots.codex_archive) {
+        return Ok(TranscriptSource::Codex);
+    }
     if has_segments(locator, ".claude", "projects") {
         return Ok(TranscriptSource::Claude);
     }
-    if has_segments(locator, ".codex", "sessions") {
+    if has_segments(locator, ".codex", "sessions")
+        || has_segments(locator, ".codex", "archived_sessions")
+    {
         return Ok(TranscriptSource::Codex);
     }
     if has_pi_profile_segment(locator) {
@@ -339,6 +347,7 @@ mod tests {
             TranscriptStoreRoots {
                 claude: "/home/owner/.claude/projects".into(),
                 codex: "/home/owner/.codex/sessions".into(),
+                codex_archive: "/home/owner/.codex/archived_sessions".into(),
                 pi: "/home/owner/.pi/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.local/share"),
                 droid: "/home/owner/.factory/sessions".into(),
@@ -371,6 +380,7 @@ mod tests {
             TranscriptStoreRoots {
                 claude: "/home/owner/.claude-rakhi/projects".into(),
                 codex: "/home/owner/.codex-rakhi/sessions".into(),
+                codex_archive: "/home/owner/.codex-rakhi/archived_sessions".into(),
                 pi: "/home/owner/.pi-rakhi/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.rakhi-data"),
                 droid: "/home/owner/rakhi/.factory/sessions".into(),
@@ -494,6 +504,32 @@ mod tests {
     }
 
     #[test]
+    fn discovery_lists_archived_codex_rollouts_after_live_ones() {
+        let root = temp_root("codex-archive");
+        for dir in [".codex/sessions", ".codex/archived_sessions"] {
+            std::fs::create_dir_all(format!("{root}/{dir}")).unwrap();
+        }
+        let stores = discover_transcript_stores(
+            SourceSelector::Only(TranscriptSource::Codex),
+            &root,
+            &env(&[]),
+        );
+        assert!(
+            stores
+                .iter()
+                .all(|store| store.source == TranscriptSource::Codex)
+        );
+        assert_eq!(
+            paths(stores),
+            [
+                format!("{root}/.codex/sessions"),
+                format!("{root}/.codex/archived_sessions")
+            ]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn discovery_finds_the_droid_store_under_home_or_factory_home_override() {
         let root = temp_root("droid-store");
         for dir in [
@@ -558,6 +594,13 @@ mod tests {
             Ok(TranscriptSource::Codex)
         );
         assert_eq!(
+            source_from_locator(
+                "/elsewhere/.codex/archived_sessions/rollout-a.jsonl",
+                &roots
+            ),
+            Ok(TranscriptSource::Codex)
+        );
+        assert_eq!(
             source_from_locator("/elsewhere/.claude/projects/-x/a.jsonl", &roots),
             Ok(TranscriptSource::Claude)
         );
@@ -607,6 +650,10 @@ mod tests {
         assert_eq!(
             source_from_locator("/srv/fh/.factory/sessions/-work/s.jsonl", &roots),
             Ok(TranscriptSource::Droid)
+        );
+        assert_eq!(
+            source_from_locator("/srv/cx/archived_sessions/rollout-a.jsonl", &roots),
+            Ok(TranscriptSource::Codex)
         );
         assert_eq!(
             source_from_locator(
