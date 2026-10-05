@@ -12,6 +12,9 @@
 - `query` and `profile --explain` take `--harness codex|ruddr` and `--effort`. Defaults come from `DEJAVU_QUERY_HARNESS`, `DEJAVU_QUERY_MODEL`, `DEJAVU_QUERY_EFFORT`, or `~/.config/dejavu/config.json`. `codex exec` with `gpt-6-luna` at medium stays the default.
 - Status, warning, and error lines on stderr are colored only when stderr is a terminal and `NO_COLOR` is unset. `--no-color` turns them off too.
 - Windows: transcript paths that mix `\` and `/`, or use 8.3 short names, resolve to their store.
+- Droid sessions open again. Newer Droid versions record hook runs as message rows and write `SessionEnd` last with no parent, so `show` and `transcript` started from that row and failed with `transcript has no recallable messages`. Hook rows no longer start the active branch. A message id that Droid reuses on a later self-parented row no longer cuts the branch off before the conversation.
+- Droid skill activations no longer read as user text. Droid appends the skill body to the user's message as a `<system-notification>` block; `find`, `show`, and `pack` keep only what the user wrote. The index rebuilds once to pick this up.
+- Archived Codex rollouts in `$CODEX_HOME/archived_sessions` are searched, and `show` opens them. They used to fail with `cannot determine transcript source`.
 
 ## 0.5.3
 
