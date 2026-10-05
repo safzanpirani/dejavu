@@ -574,7 +574,11 @@ fn codex_events(entry: &TreeEntry) -> Vec<TranscriptEvent> {
                 Some(role @ ("user" | "assistant")) => role,
                 _ => return Vec::new(),
             };
-            let text = text_of(payload.get("content"));
+            let text = if role == "user" {
+                codex_user_text(payload.get("content"))
+            } else {
+                text_of(payload.get("content"))
+            };
             if js_trim(&text).is_empty() {
                 return Vec::new();
             }
@@ -657,6 +661,25 @@ fn parse_json_arguments(value: Option<&Value>) -> Value {
 }
 
 /// `/^(?:Script failed|Error:|Process exited with code [1-9]|Exit code: [1-9])/i` on the trimmed start.
+/// Codex sends AGENTS.md, environment context, and plugin lists as user content
+/// blocks. `find` already ignores them; drop them here so show and transcript
+/// open on the user's own words.
+fn codex_user_text(content: Option<&Value>) -> String {
+    let Some(Value::Array(items)) = content else {
+        return text_of(content);
+    };
+    let kept: Vec<Value> = items
+        .iter()
+        .filter(|item| {
+            item.get("text")
+                .and_then(Value::as_str)
+                .is_none_or(crate::find::is_real_user_prompt)
+        })
+        .cloned()
+        .collect();
+    text_of(Some(&Value::Array(kept)))
+}
+
 fn looks_like_codex_error(output: &str) -> bool {
     let text = js_trim_start(output);
     let starts = |prefix: &str| {
@@ -820,6 +843,21 @@ fn load_opencode_events(locator: &str) -> Result<LoadedEvents, String> {
                     &string_or(part.get("mime"), "attachment"),
                 );
                 push(&mut events, dialogue(role, format!("[file: {name}]")));
+            }
+            // A slash command that runs as a subagent, such as `/usage`.
+            Some("subtask") => {
+                let label = match nonblank(part.get("command")) {
+                    Some(command) => format!("/{command}"),
+                    None => string_or(part.get("agent"), "subtask"),
+                };
+                let mut text = format!("[subtask {label}]");
+                if let Some(description) = nonblank(part.get("description")) {
+                    text = format!("{text} {description}");
+                }
+                if let Some(prompt) = nonblank(part.get("prompt")) {
+                    text = format!("{text}\n{prompt}");
+                }
+                push(&mut events, dialogue(role, text));
             }
             Some("tool") => {
                 let empty = Map::new();
@@ -1586,6 +1624,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn codex_user_messages_drop_harness_instruction_blocks() {
+        let dir = TempDir::new("transcript");
+        let path = dir.write_jsonl(
+            ".codex/sessions/2026/08/02/rollout.jsonl",
+            &[
+                json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [
+                    { "type": "input_text", "text": "# AGENTS.md instructions for /work\n<INSTRUCTIONS>rules</INSTRUCTIONS>" },
+                    { "type": "input_text", "text": "<environment_context>\n  <cwd>/work</cwd>\n</environment_context>" },
+                ] } }),
+                json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [
+                    { "type": "input_text", "text": "<recommended_plugins>x</recommended_plugins>" },
+                    { "type": "input_text", "text": "fix the build" },
+                ] } }),
+            ],
+        );
+        let loaded = load_transcript_events(&path, TranscriptSource::Codex).unwrap();
+        assert_eq!(
+            bare(&loaded.events),
+            vec![json!({ "kind": "user", "text": "fix the build" })]
+        );
+    }
+
+    #[test]
     fn codex_reads_function_custom_and_shell_calls_with_their_outputs() {
         let dir = TempDir::new("transcript");
         let path = dir.write_jsonl(
@@ -1798,6 +1859,12 @@ pub(crate) mod tests {
             ],
             &[
                 ("p1", "m1", 1, json!({ "type": "text", "text": "question" })),
+                (
+                    "p1b",
+                    "m1",
+                    1,
+                    json!({ "type": "subtask", "command": "usage", "description": "Show usage", "prompt": "Print it" }),
+                ),
                 ("p2", "m2", 2, json!({ "type": "reasoning", "text": "why" })),
                 (
                     "p3",
@@ -1820,13 +1887,14 @@ pub(crate) mod tests {
                 .unwrap();
         assert_eq!(loaded.project, "/work/oc");
         assert_eq!(
-            serde_json::to_value(&loaded.events[2].reference).unwrap(),
+            serde_json::to_value(&loaded.events[3].reference).unwrap(),
             json!({ "partId": "p3", "messageId": "m2" })
         );
         assert_eq!(
             bare(&loaded.events),
             vec![
                 json!({ "kind": "user", "text": "question", "timestamp": "2026-08-04T00:00:00.000Z" }),
+                json!({ "kind": "user", "text": "[subtask /usage] Show usage\nPrint it", "timestamp": "2026-08-04T00:00:00.000Z" }),
                 json!({ "kind": "thinking", "text": "why" }),
                 json!({ "kind": "tool_call", "name": "grep", "input": { "pattern": "x" }, "callId": "g1" }),
                 json!({ "kind": "tool_result", "name": "grep", "callId": "g1", "output": "1 match", "isError": false }),

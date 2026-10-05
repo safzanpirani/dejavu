@@ -16,6 +16,8 @@
 - Droid skill activations no longer read as user text. Droid appends the skill body to the user's message as a `<system-notification>` block; `find`, `show`, and `pack` keep only what the user wrote. The index rebuilds once to pick this up.
 - Archived Codex rollouts in `$CODEX_HOME/archived_sessions` are searched, and `show` opens them. They used to fail with `cannot determine transcript source`.
 - Droid compaction summaries appear where the compaction happened, as a user message headed `[Compaction summary of N earlier messages]`. A Droid session that holds only a summary used to fail with `transcript has no recallable messages`. Codex compactions with a plaintext summary appear the same way; most Codex summaries are encrypted and stay hidden. Like Claude's summaries, they show in `show`, `transcript`, and search, and `find` does not treat them as user prompts. The index rebuilds once to pick this up.
+- `show`, `transcript`, and `query` drop the harness blocks Codex sends as user text (`# AGENTS.md instructions`, `<environment_context>`, `<recommended_plugins>`), so a Codex session opens on the user's first prompt. Plain search still matches them.
+- OpenCode subtask parts, such as a `/usage` command that runs as a subagent, appear in `transcript` as a user message headed `[subtask /usage]`.
 
 ## 0.5.3
 

@@ -1028,12 +1028,22 @@ pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<Re
         })
     };
     let to_message = |envelope: Option<Envelope<true>>| {
-        envelope
-            .and_then(|envelope| envelope.into_recall_from(source))
-            .map(|(role, content)| RecallMessage {
-                role: role.to_string(),
-                content,
-            })
+        let (role, mut content) = envelope?.into_recall_from(source)?;
+        // Codex sends AGENTS.md and environment context as user text blocks.
+        // Search still indexes them; show and query drop them, as find does.
+        if source == TranscriptSource::Codex && role == "user" {
+            content.retain(|block| match block {
+                RecallBlock::Text { text } => crate::find::is_real_user_prompt(text),
+                _ => true,
+            });
+            if content.is_empty() {
+                return None;
+            }
+        }
+        Some(RecallMessage {
+            role: role.to_string(),
+            content,
+        })
     };
     match source {
         TranscriptSource::Pi | TranscriptSource::Claude | TranscriptSource::Droid => {
@@ -1415,12 +1425,14 @@ mod tests {
     fn loads_only_user_and_assistant_codex_response_items() {
         let values = [
             json!({ "type": "response_item", "payload": { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "rules" }] } }),
-            json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "question" }] } }),
+            json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "# AGENTS.md instructions for /work" }, { "type": "input_text", "text": "<environment_context>x</environment_context>" }] } }),
+            json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "<recommended_plugins>x</recommended_plugins>" }, { "type": "input_text", "text": "question" }] } }),
             json!({ "type": "response_item", "payload": { "type": "reasoning", "summary": [] } }),
             json!({ "type": "response_item", "payload": { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "answer" }] } }),
         ];
+        let text: String = values.iter().map(|value| format!("{value}\n")).collect();
         assert_eq!(
-            texts(&load(&values, TranscriptSource::Codex)),
+            texts(&recall_messages_from_text(&text, TranscriptSource::Codex)),
             ["question", "answer"]
         );
     }
