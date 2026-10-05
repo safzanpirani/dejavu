@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - `find` returns sessions it used to drop. OpenCode hits keep their project, so `--project` works for them. `--since` checks the dates of matching messages, so a session resumed after its filename date still matches. Source, project, and date filters run before the 40-candidate limit; a project-scoped search no longer comes back empty because other projects outranked it. Every matching visible message counts toward a session's score, including messages after long tool logs. A hit carries `truncated: true` when eligible candidates were left out.
 - `find` is faster on queries with a short term such as `rg` or `PR`. Long terms pick the candidates from the index, and short terms are checked only inside them. On one large store, `deja find dejavu rg` dropped from 11–30 seconds to about 2.
