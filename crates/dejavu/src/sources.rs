@@ -5,7 +5,7 @@ use crate::paths::{is_absolute, join, resolve};
 use crate::types::{SourceSelector, StoreKind, TranscriptSource, TranscriptStore};
 use std::sync::OnceLock;
 
-/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `opencode`, `droid`, or `agy`.
+/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `omp`, `opencode`, `droid`, or `agy`.
 pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
     if value == "all" {
         return Ok(SourceSelector::All);
@@ -14,7 +14,7 @@ pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
         .map(SourceSelector::Only)
         .ok_or_else(|| {
             format!(
-                "source must be one of: all, claude, codex, pi, opencode, droid, agy (got '{value}')"
+                "source must be one of: all, claude, codex, pi, omp, opencode, droid, agy (got '{value}')"
             )
         })
 }
@@ -45,6 +45,8 @@ pub struct TranscriptStoreRoots {
     /// Codex moves archived rollouts here, flat, out of `codex`.
     pub codex_archive: String,
     pub pi: String,
+    /// omp's default profile. Named profiles sit under `~/.omp/profiles`.
+    pub omp: String,
     pub opencode: Vec<String>,
     pub droid: String,
     /// The Antigravity CLI's conversation directories.
@@ -58,6 +60,7 @@ impl TranscriptStoreRoots {
             TranscriptSource::Claude => Some(&self.claude),
             TranscriptSource::Codex => Some(&self.codex),
             TranscriptSource::Pi => Some(&self.pi),
+            TranscriptSource::Omp => Some(&self.omp),
             TranscriptSource::Opencode => None,
             TranscriptSource::Droid => Some(&self.droid),
             TranscriptSource::Agy => Some(&self.agy),
@@ -74,7 +77,9 @@ pub fn default_roots() -> &'static TranscriptStoreRoots {
 /// `transcriptStoreRoots(env, home)`: resolves each agent's store the way the
 /// agent does. A set (non-empty) variable replaces the home-directory default:
 /// Claude `$CLAUDE_CONFIG_DIR/projects`, Codex `$CODEX_HOME/sessions`, Pi
-/// `$PI_CODING_AGENT_DIR/sessions` (a leading `~` expands), OpenCode `$OPENCODE_DB`
+/// `$PI_CODING_AGENT_DIR/sessions` (a leading `~` expands), omp
+/// `~/.omp/agent/sessions` (omp also honors `$PI_CODING_AGENT_DIR`, which dejavu
+/// reads as Pi's), OpenCode `$OPENCODE_DB`
 /// (relative to the data dir; `:memory:` disables it) or `$XDG_DATA_HOME/opencode/*.db`,
 /// Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (the variable replaces the
 /// home directory, not the Factory directory), and agy `~/.gemini/antigravity-cli/brain`
@@ -116,6 +121,7 @@ pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots
             &configured(pi_dir, join(&[home, ".pi", "agent"])),
             "sessions",
         ]),
+        omp: join(&[home, ".omp", "agent", "sessions"]),
         opencode,
         droid: join(&[
             &configured(set("FACTORY_HOME_OVERRIDE"), home.to_string()),
@@ -133,7 +139,8 @@ pub fn discover_stores(selector: SourceSelector) -> Vec<TranscriptStore> {
 
 /// `discoverTranscriptStores(selector, home, env)`: the selected stores that
 /// exist, in order Claude, Codex (live, then archived), Pi (then sibling Pi profiles under `~/.pi`
-/// when `PI_CODING_AGENT_DIR` is unset), OpenCode, Droid, agy.
+/// when `PI_CODING_AGENT_DIR` is unset), omp (then named profiles under `~/.omp/profiles`),
+/// OpenCode, Droid, agy.
 pub fn discover_transcript_stores(
     selector: SourceSelector,
     home: &str,
@@ -158,6 +165,14 @@ pub fn discover_transcript_stores(
             pi_profile_dirs(home, &roots.pi)
                 .into_iter()
                 .map(|path| jsonl(TranscriptSource::Pi, path)),
+        );
+    }
+    candidates.push(jsonl(TranscriptSource::Omp, roots.omp.clone()));
+    if selector.matches(TranscriptSource::Omp) {
+        candidates.extend(
+            omp_profile_dirs(home)
+                .into_iter()
+                .map(|path| jsonl(TranscriptSource::Omp, path)),
         );
     }
     candidates.extend(roots.opencode.into_iter().map(|path| TranscriptStore {
@@ -191,10 +206,33 @@ fn pi_profile_dirs(home: &str, primary: &str) -> Vec<String> {
     dirs
 }
 
+/// Session directories of named omp profiles (`~/.omp/profiles/<name>/agent/sessions`),
+/// sorted like [`pi_profile_dirs`].
+fn omp_profile_dirs(home: &str) -> Vec<String> {
+    let profiles = join(&[home, ".omp", "profiles"]);
+    let Ok(entries) = std::fs::read_dir(&profiles) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| {
+            join(&[
+                &profiles,
+                &entry.file_name().to_string_lossy(),
+                "agent",
+                "sessions",
+            ])
+        })
+        .collect();
+    dirs.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    dirs
+}
+
 /// `sourceFromLocator(locator, roots)`: `opencode://` locators, paths under a
 /// configured root, then the default `.claude/projects/`, `.codex/sessions/`,
-/// `.codex/archived_sessions/`, `.pi/<profile>/sessions/`, `.factory/sessions/`, and
-/// `antigravity-cli/brain/` layouts.
+/// `.codex/archived_sessions/`, `.pi/<profile>/sessions/`, `.omp/agent/` or
+/// `.omp/profiles/`, `.factory/sessions/`, and `antigravity-cli/brain/` layouts.
 pub fn source_from_locator(
     locator: &str,
     roots: &TranscriptStoreRoots,
@@ -206,6 +244,7 @@ pub fn source_from_locator(
         TranscriptSource::Claude,
         TranscriptSource::Codex,
         TranscriptSource::Pi,
+        TranscriptSource::Omp,
         TranscriptSource::Droid,
         TranscriptSource::Agy,
     ] {
@@ -227,6 +266,9 @@ pub fn source_from_locator(
     }
     if has_pi_profile_segment(locator) {
         return Ok(TranscriptSource::Pi);
+    }
+    if has_segments(locator, ".omp", "agent") || has_segments(locator, ".omp", "profiles") {
+        return Ok(TranscriptSource::Omp);
     }
     if has_segments(locator, ".factory", "sessions") {
         return Ok(TranscriptSource::Droid);
@@ -359,6 +401,7 @@ mod tests {
                 codex: "/home/owner/.codex/sessions".into(),
                 codex_archive: "/home/owner/.codex/archived_sessions".into(),
                 pi: "/home/owner/.pi/agent/sessions".into(),
+                omp: "/home/owner/.omp/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.local/share"),
                 droid: "/home/owner/.factory/sessions".into(),
                 agy: "/home/owner/.gemini/antigravity-cli/brain".into(),
@@ -393,6 +436,7 @@ mod tests {
                 codex: "/home/owner/.codex-rakhi/sessions".into(),
                 codex_archive: "/home/owner/.codex-rakhi/archived_sessions".into(),
                 pi: "/home/owner/.pi-rakhi/sessions".into(),
+                omp: "/home/owner/.omp/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.rakhi-data"),
                 droid: "/home/owner/rakhi/.factory/sessions".into(),
                 agy: "/home/owner/.gemini/antigravity-cli/brain".into(),
@@ -483,6 +527,42 @@ mod tests {
                 &env(&[])
             )),
             [format!("{root}/.local/share/opencode/opencode.db")]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn discovery_reads_the_omp_default_store_and_named_profiles() {
+        let root = temp_root("omp-profiles");
+        std::fs::create_dir_all(format!("{root}/.omp/agent/sessions")).unwrap();
+        for profile in ["work", "alt"] {
+            std::fs::create_dir_all(format!("{root}/.omp/profiles/{profile}/agent/sessions"))
+                .unwrap();
+        }
+        let omp = SourceSelector::Only(TranscriptSource::Omp);
+        assert_eq!(
+            paths(discover_transcript_stores(omp, &root, &env(&[]))),
+            [
+                format!("{root}/.omp/agent/sessions"),
+                format!("{root}/.omp/profiles/alt/agent/sessions"),
+                format!("{root}/.omp/profiles/work/agent/sessions")
+            ]
+        );
+        let roots = transcript_store_roots(&env(&[]), &root);
+        assert_eq!(
+            source_from_locator(&format!("{root}/.omp/agent/sessions/--w--/a.jsonl"), &roots),
+            Ok(TranscriptSource::Omp)
+        );
+        assert_eq!(
+            source_from_locator(
+                "/elsewhere/.omp/profiles/work/agent/sessions/--w--/a.jsonl",
+                &roots
+            ),
+            Ok(TranscriptSource::Omp)
+        );
+        assert_eq!(
+            source_from_locator(r"C:\Users\dev\.omp\agent\sessions\--w--\a.jsonl", &roots),
+            Ok(TranscriptSource::Omp)
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -711,7 +791,7 @@ mod tests {
         );
         assert_eq!(
             parse_source("gemini").unwrap_err(),
-            "source must be one of: all, claude, codex, pi, opencode, droid, agy (got 'gemini')"
+            "source must be one of: all, claude, codex, pi, omp, opencode, droid, agy (got 'gemini')"
         );
         assert_eq!(
             parse_source("droid"),

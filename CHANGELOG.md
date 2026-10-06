@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- dejavu reads omp (oh-my-pi) sessions from `~/.omp/agent/sessions` and from named profiles under `~/.omp/profiles/<name>/agent/sessions`. `--source omp` selects them. omp keeps Pi's transcript format, so search, `find`, `last`, `pack`, `show`, `transcript`, `scrub`, `profile`, and `query` read omp sessions the way they read Pi's. omp's `title` row never ends the active branch. Session cards print `omp --resume <path>`. `--harness ruddr` accepts `omp/<model>` once Ruddr supports omp.
+
 ## 0.6.1
 
 - dejavu reads agy (Antigravity CLI) conversations from `~/.gemini/antigravity-cli/brain`. `--source agy` selects them, and search, `find`, `last`, `pack`, `show`, `transcript`, `profile`, and `query` cover them. The project comes from agy's `conversation_summaries.db`, or from `history.jsonl` for older conversations. Session cards print `agy --conversation <id>` to resume. Hook injections and agy's metadata blocks do not count as user text. agy records tool calls without IDs, so `transcript` pairs each result with the next unanswered call. `last` and `pack` skip the conversation in `ANTIGRAVITY_CONVERSATION_ID`, which agy sets for the commands it runs. `scrub` refuses agy conversations, because agy keeps copies dejavu cannot redact. The index rebuilds once to pick this up.

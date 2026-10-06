@@ -11,6 +11,8 @@ pub enum TranscriptSource {
     Claude,
     Codex,
     Pi,
+    /// omp (oh-my-pi), a Pi fork that keeps Pi's transcript format.
+    Omp,
     Opencode,
     Droid,
     Agy,
@@ -18,10 +20,11 @@ pub enum TranscriptSource {
 
 impl TranscriptSource {
     /// Every source, in discovery order.
-    pub const ALL: [TranscriptSource; 6] = [
+    pub const ALL: [TranscriptSource; 7] = [
         Self::Claude,
         Self::Codex,
         Self::Pi,
+        Self::Omp,
         Self::Opencode,
         Self::Droid,
         Self::Agy,
@@ -33,6 +36,7 @@ impl TranscriptSource {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Omp => "omp",
             Self::Opencode => "opencode",
             Self::Droid => "droid",
             Self::Agy => "agy",
@@ -204,6 +208,10 @@ mod tests {
         assert_eq!(
             TranscriptSource::from_name("pi"),
             Some(TranscriptSource::Pi)
+        );
+        assert_eq!(
+            TranscriptSource::from_name("omp"),
+            Some(TranscriptSource::Omp)
         );
         assert_eq!(TranscriptSource::from_name("all"), None);
         assert_eq!(

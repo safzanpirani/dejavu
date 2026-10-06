@@ -330,8 +330,8 @@ pub fn load_transcript_events(
                 .flat_map(|entry| claude_events(entry, false))
                 .collect(),
         ),
-        TranscriptSource::Pi => (
-            crate::search::read_transcript_project(locator, TranscriptSource::Pi),
+        TranscriptSource::Pi | TranscriptSource::Omp => (
+            crate::search::read_transcript_project(locator, source),
             entries.iter().flat_map(pi_events).collect(),
         ),
         _ => (

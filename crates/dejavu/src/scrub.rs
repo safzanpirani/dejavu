@@ -334,7 +334,7 @@ pub fn scrub_patterns(
 }
 
 // ---------------------------------------------------------------------------
-// JSONL stores (Claude, Codex, Pi)
+// JSONL stores (Claude, Codex, Pi, omp)
 
 fn scrub_jsonl(
     locator: &str,

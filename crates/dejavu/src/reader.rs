@@ -811,11 +811,12 @@ fn walk<'a, N: TreeNode>(
 }
 
 /// Pi's active branch: from the last non-`session` row up through `parentId`.
+/// omp also writes a `title` row, which is not a tree node either.
 fn pi_branch<N: TreeNode>(nodes: &[N]) -> Vec<usize> {
     let mut by_id = HashMap::new();
     let mut last = None;
     for (index, node) in nodes.iter().enumerate() {
-        if node.node_type() == Some("session") {
+        if matches!(node.node_type(), Some("session" | "title")) {
             continue;
         }
         last = Some(index);
@@ -967,7 +968,7 @@ pub fn parse_jsonl(text: &str) -> Vec<TreeEntry> {
 }
 
 /// `loadBranchEntries(locator, source)`: the raw rows of a JSONL transcript,
-/// reduced to the active branch for Pi, Claude, and Droid.
+/// reduced to the active branch for Pi, omp, Claude, and Droid.
 pub fn load_branch_entries(
     locator: &str,
     source: TranscriptSource,
@@ -978,7 +979,7 @@ pub fn load_branch_entries(
 /// The active branch of already-parsed rows (all rows for Codex and OpenCode).
 pub fn branch_entries(entries: Vec<TreeEntry>, source: TranscriptSource) -> Vec<TreeEntry> {
     let branch = match source {
-        TranscriptSource::Pi => pi_branch(&entries),
+        TranscriptSource::Pi | TranscriptSource::Omp => pi_branch(&entries),
         TranscriptSource::Claude => claude_branch(&entries),
         TranscriptSource::Droid => droid_branch(&entries),
         _ => return entries,
@@ -1049,10 +1050,13 @@ pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<Re
         })
     };
     match source {
-        TranscriptSource::Pi | TranscriptSource::Claude | TranscriptSource::Droid => {
+        TranscriptSource::Pi
+        | TranscriptSource::Omp
+        | TranscriptSource::Claude
+        | TranscriptSource::Droid => {
             let rows: Vec<Row<true>> = rows.collect();
             let branch = match source {
-                TranscriptSource::Pi => pi_branch(&rows),
+                TranscriptSource::Pi | TranscriptSource::Omp => pi_branch(&rows),
                 TranscriptSource::Droid => droid_branch(&rows),
                 _ => claude_branch(&rows),
             };
@@ -1372,6 +1376,17 @@ mod tests {
             json!({ "type": "model_change", "id": "m", "parentId": "a" }),
         ];
         assert_eq!(texts(&load(&values, TranscriptSource::Pi)), ["root"]);
+        // omp writes a title row first and may rewrite it in place; it is
+        // never the leaf.
+        let values = [
+            message("a", None, "user", "root"),
+            message("b", Some("a"), "assistant", "tip"),
+            json!({ "type": "title", "v": 1, "title": "Named" }),
+        ];
+        assert_eq!(
+            texts(&load(&values, TranscriptSource::Omp)),
+            ["root", "tip"]
+        );
     }
 
     #[test]

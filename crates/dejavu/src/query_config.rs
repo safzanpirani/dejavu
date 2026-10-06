@@ -143,9 +143,12 @@ pub fn resolve_model(
         .model
         .split_once('/')
         .unwrap_or(("codex", &settings.model));
-    if !matches!(provider, "codex" | "claude" | "pi" | "opencode" | "droid") {
+    if !matches!(
+        provider,
+        "codex" | "claude" | "pi" | "omp" | "opencode" | "droid"
+    ) {
         return Err(format!(
-            "unsupported ruddr provider '{provider}'; expected codex, claude, pi, opencode, or droid"
+            "unsupported ruddr provider '{provider}'; expected codex, claude, pi, omp, opencode, or droid"
         ));
     }
     if id.trim().is_empty() || id.starts_with('-') {

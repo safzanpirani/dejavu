@@ -224,7 +224,7 @@ esac
 
     #[test]
     fn records_exact_argv_stdin_usage_and_cleanup_for_every_provider() {
-        for provider in ["codex", "claude", "pi", "opencode", "droid"] {
+        for provider in ["codex", "claude", "pi", "omp", "opencode", "droid"] {
             let (dir, program) = fixture();
             let model = model(&format!("{provider}/test-model"), Some("high"));
             let result = complete_with(

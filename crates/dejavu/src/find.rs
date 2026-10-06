@@ -202,11 +202,14 @@ fn matches_project(project: &str, needle: &str, source: TranscriptSource) -> boo
     if haystack.contains(query.as_ref()) {
         return true;
     }
-    // Claude, Pi, and Droid encode both directory separators and literal hyphens as '-'.
-    // Their decoded paths cannot distinguish these characters.
+    // Claude, Pi, omp, and Droid encode both directory separators and literal hyphens
+    // as '-'. Their decoded paths cannot distinguish these characters.
     matches!(
         source,
-        TranscriptSource::Claude | TranscriptSource::Pi | TranscriptSource::Droid
+        TranscriptSource::Claude
+            | TranscriptSource::Pi
+            | TranscriptSource::Omp
+            | TranscriptSource::Droid
     ) && haystack
         .replace('-', "/")
         .contains(&query.replace('-', "/"))
@@ -252,6 +255,7 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
             opened.then(|| format!("codex resume {id}"))
         }
         TranscriptSource::Pi => Some(format!("pi --session {path}")),
+        TranscriptSource::Omp => Some(format!("omp --resume {path}")),
         TranscriptSource::Droid => Some(format!(
             "droid --resume {}",
             name.strip_suffix(".jsonl").unwrap_or(name)
@@ -1462,6 +1466,10 @@ mod tests {
         assert_eq!(
             resume_command(TranscriptSource::Pi, "/x/2026-05-01T17-00-53-250Z_x.jsonl").as_deref(),
             Some("pi --session /x/2026-05-01T17-00-53-250Z_x.jsonl")
+        );
+        assert_eq!(
+            resume_command(TranscriptSource::Omp, "/x/2026-10-06T08-24-49-835Z_o.jsonl").as_deref(),
+            Some("omp --resume /x/2026-10-06T08-24-49-835Z_o.jsonl")
         );
         assert_eq!(
             resume_command(

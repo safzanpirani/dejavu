@@ -1,6 +1,6 @@
 # dejavu
 
-Agents lose useful context when work moves between Claude Code, Codex, Pi, OpenCode, Droid, and agy. `dejavu` gives them one local command for finding earlier sessions and project memories.
+Agents lose useful context when work moves between Claude Code, Codex, Pi, omp, OpenCode, Droid, and agy. `dejavu` gives them one local command for finding earlier sessions and project memories.
 
 `dejavu` is agent-first. An agent can search past sessions, inspect the relevant conversation, and recover decisions, commands, errors, and file changes. The agent can then verify that historical context against the current workspace. Humans can run the same commands from a terminal.
 
@@ -73,11 +73,12 @@ The default `dejavu query` harness requires an installed, authenticated `codex` 
 | Claude Code | JSONL transcripts under `~/.claude/projects` | `CLAUDE_CONFIG_DIR` → `$CLAUDE_CONFIG_DIR/projects` |
 | Codex | JSONL transcripts under `~/.codex/sessions` and archived rollouts under `~/.codex/archived_sessions` | `CODEX_HOME` → `$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions` |
 | Pi | JSONL transcripts under `~/.pi/agent/sessions` and sibling profiles such as `~/.pi/juna/sessions` | `PI_CODING_AGENT_DIR` → `$PI_CODING_AGENT_DIR/sessions` |
+| omp (oh-my-pi) | Pi-format JSONL transcripts under `~/.omp/agent/sessions` and named profiles under `~/.omp/profiles/<name>/agent/sessions` | Home directory only. omp also honors `PI_CODING_AGENT_DIR`, which Dejavu reads as Pi's store |
 | OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
 | Factory Droid | JSONL transcripts under `~/.factory/sessions`; only `*.jsonl` session files are read | `FACTORY_HOME_OVERRIDE` → `$FACTORY_HOME_OVERRIDE/.factory/sessions` |
 | agy (Antigravity CLI) | One JSONL step log per conversation at `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` (else `transcript.jsonl`); the project comes from `conversation_summaries.db`, else `history.jsonl` | Home directory only; agy reads no variable for it |
 
-Each variable is the one the agent itself honors; agy has none. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
+Each variable is the one the agent itself honors; omp and agy have none. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
 
 It also reads Claude Code Markdown memory under `~/.claude/projects/*/memory/`. Set `CLAUDE_CONFIG_DIR` or pass `--root` to use another Claude store.
 
@@ -91,7 +92,7 @@ dejavu search --source codex session-recall.ts --max-parallel 4 --json
 
 The explicit `dejavu search PHRASE` command and bare `dejavu PHRASE` search the same phrase. Use `dejavu -- search` or `dejavu search search` to search for the literal word `search`. A quoted phrase such as `dejavu "search failed"` also stays literal.
 
-Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|opencode|droid|agy` to narrow the search.
+Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|omp|opencode|droid|agy` to narrow the search.
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
@@ -154,7 +155,7 @@ dejavu transcript '<locator>' --full --thinking
 dejavu transcript '<locator>' --no-tools --json
 ```
 
-`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, OpenCode, Droid, and agy sessions. agy records tool calls without IDs, so each result pairs with the next unanswered call of the reply before it. A compaction summary appears as a user turn where the compaction happened; Droid and Codex summaries start with `[Compaction summary`. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
+`transcript` renders the full conversation with labeled `USER` and `ASSISTANT` turns, timestamps, every tool call with its input, and every tool result. It works the same way for Claude, Codex, Pi, omp, OpenCode, Droid, and agy sessions. agy records tool calls without IDs, so each result pairs with the next unanswered call of the reply before it. A compaction summary appears as a user turn where the compaction happened; Droid and Codex summaries start with `[Compaction summary`. Tool inputs and outputs are truncated by default. Pass `--full` to print everything, `--thinking` to include model reasoning, and `--no-tools` to hide tool activity. Colors are on when stdout is a terminal, and message bodies render as Markdown (headings, emphasis, inline code, code blocks, lists, quotes, links, and tables). `last` does the same for its card and tail. Use `--color` or `--no-color` to override.
 
 ```bash
 dejavu transcript '<locator>' --no-tools --max-chars 1500 --budget-chars 8000 --json
@@ -228,7 +229,7 @@ dejavu profile '<locator>' --explain --harness ruddr --model codex/gpt-6-luna --
 
 With `--harness codex`, a bare model ID or `codex/<id>` selects Codex exec. `--effort` changes its reasoning-effort setting. No Pi configuration is read on this path, and old Pi defaults do not override Luna.
 
-With `--harness ruddr`, the model prefix selects the Ruddr provider: `codex/`, `claude/`, `pi/`, `opencode/`, or `droid/`. A bare model ID selects Codex. Dejavu passes the remaining ID unchanged, including any additional slashes. Ruddr must be on PATH; a missing executable produces an installation hint and never triggers a fallback. Effort levels depend on the provider and model. Ruddr receives the selected level and reports unsupported settings.
+With `--harness ruddr`, the model prefix selects the Ruddr provider: `codex/`, `claude/`, `pi/`, `omp/`, `opencode/`, or `droid/`. A bare model ID selects Codex. Dejavu passes the remaining ID unchanged, including any additional slashes. Ruddr must be on PATH; a missing executable produces an installation hint and never triggers a fallback. Effort levels depend on the provider and model. Ruddr receives the selected level and reports unsupported settings.
 
 Dejavu runs Ruddr in the foreground with a read-only sandbox, `--ephemeral`, an empty temporary working directory, and a separate temporary state directory. The prompt goes through stdin. Dejavu checks completion through `ruddr status --json` and reads the answer through `ruddr result`. Both directories are removed after success or failure. The Codex provider receives the same explicit lockdown config settings as Codex exec. Other providers apply Ruddr's own sandbox behavior. Providers can reject `--ephemeral`; Droid currently rejects it, and Dejavu surfaces that error. Ruddr queries share the 120-second timeout and do not retry automatically.
 
