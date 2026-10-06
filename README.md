@@ -290,7 +290,7 @@ With `mbx` installed, prefix the Cargo commands with `mbx` (`mbx clippy`, `mbx t
 
 `.github/workflows/ci.yml` runs the same checks on Linux, macOS, and Windows for every push and pull request. Pushing a `v*` tag that matches the version in `Cargo.toml` and `package.json` runs `.github/workflows/release.yml`. It tests, builds every platform binary with Cargo on native runners (static musl binaries on Linux), publishes them with checksums as a GitHub release, and publishes the npm package with the `NPM_TOKEN` repository secret.
 
-The CLI is one Rust crate in `crates/dejavu`. It keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules.
+The CLI is one Rust crate in `crates/dejavu`. It keeps JSONL search, SQLite access, transcript parsing, model access, and rendering in separate modules. `virtual_store.rs` renders OpenClaw and Hermes SQLite sessions as Pi-format JSONL behind `openclaw://` and `hermes://` locators; `read_text`, the line scanner, `read_prefix`, and the index refresh call it, so the rest of the code treats those sessions as transcript files.
 
 `help.rs` holds each command's help, including the JSON keys it documents. `tests/cli_surface.rs` compares those keys with real `--json` output from fixtures. When you add a JSON field, document it in `help.rs`, or the contract test fails. For excerpts centered on a search term, use `window::centered_excerpt`.
 
