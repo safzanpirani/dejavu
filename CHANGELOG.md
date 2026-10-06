@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
 
-- dejavu reads omp (oh-my-pi) sessions from `~/.omp/agent/sessions` and from named profiles under `~/.omp/profiles/<name>/agent/sessions`. `--source omp` selects them. omp keeps Pi's transcript format, so search, `find`, `last`, `pack`, `show`, `transcript`, `scrub`, `profile`, and `query` read omp sessions the way they read Pi's. omp's `title` row never ends the active branch. Session cards print `omp --resume <path>`. `--harness ruddr` accepts `omp/<model>` once Ruddr supports omp.
+- dejavu reads omp (oh-my-pi) sessions from `~/.omp/agent/sessions` and from named profiles under `~/.omp/profiles/<name>/agent/sessions`. `--source omp` selects them. omp keeps Pi's transcript format, so search, `find`, `last`, `pack`, `show`, `transcript`, `scrub`, `profile`, and `query` read omp sessions the way they read Pi's. omp's `title` row never ends the active branch. Session cards print `omp --resume <path>`. `--harness ruddr` accepts `omp/<model>` with Ruddr 0.6.5 or later.
 
 ## 0.6.1
 
