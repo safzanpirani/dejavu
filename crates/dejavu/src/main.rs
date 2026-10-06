@@ -34,6 +34,7 @@ pub mod sources;
 pub mod types;
 mod update;
 pub mod view;
+pub mod virtual_store;
 pub mod window;
 pub mod wyhash;
 

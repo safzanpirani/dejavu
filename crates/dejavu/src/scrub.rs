@@ -112,6 +112,11 @@ pub fn scrub_transcript_at(
         .clone()
         .unwrap_or_else(|| DEFAULT_PLACEHOLDER.to_string());
     let source = source_from_locator(locator, default_roots())?;
+    if crate::virtual_store::is_virtual_source(source) {
+        return Err(format!(
+            "scrub cannot redact {source} sessions: they live in the agent's SQLite database, which dejavu opens read-only"
+        ));
+    }
     if source == TranscriptSource::Agy {
         return Err("scrub cannot redact agy conversations: agy keeps copies in transcript.jsonl, logs/chunks/, and the binary conversations/<id>.db, so redacting one file would leave the text in the others".into());
     }

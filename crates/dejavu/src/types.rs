@@ -15,18 +15,24 @@ pub enum TranscriptSource {
     Omp,
     Opencode,
     Droid,
+    /// OpenClaw sessions, read from each agent's SQLite store.
+    Openclaw,
+    /// Hermes Agent sessions, read from its `state.db`.
+    Hermes,
     Agy,
 }
 
 impl TranscriptSource {
     /// Every source, in discovery order.
-    pub const ALL: [TranscriptSource; 7] = [
+    pub const ALL: [TranscriptSource; 9] = [
         Self::Claude,
         Self::Codex,
         Self::Pi,
         Self::Omp,
         Self::Opencode,
         Self::Droid,
+        Self::Openclaw,
+        Self::Hermes,
         Self::Agy,
     ];
 
@@ -39,6 +45,8 @@ impl TranscriptSource {
             Self::Omp => "omp",
             Self::Opencode => "opencode",
             Self::Droid => "droid",
+            Self::Openclaw => "openclaw",
+            Self::Hermes => "hermes",
             Self::Agy => "agy",
         }
     }

@@ -300,6 +300,8 @@ impl Paint {
             "omp" => "1;38;5;177",
             "opencode" => "1;38;5;221",
             "droid" => "1;38;5;75",
+            "openclaw" => "1;38;5;203",
+            "hermes" => "1;38;5;180",
             _ => "1",
         };
         self.wrap(code, name)

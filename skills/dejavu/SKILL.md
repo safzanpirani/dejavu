@@ -1,6 +1,6 @@
 ---
 name: dejavu
-description: Search and query past Claude Code, Codex, Pi, omp (oh-my-pi), OpenCode, Factory Droid, and agy (Antigravity CLI) transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory, and when the user says to continue or pick up where the last session, or a named session, left off. Do not use for shell history, Git history, or repository code search.
+description: Search and query past Claude Code, Codex, Pi, omp (oh-my-pi), OpenCode, Factory Droid, OpenClaw, Hermes Agent, and agy (Antigravity CLI) transcripts, or search and read Claude project memories across every workspace. Use for earlier agent conversations, decisions, commands, errors, and curated cross-project memory, and when the user says to continue or pick up where the last session, or a named session, left off. Do not use for shell history, Git history, or repository code search.
 ---
 
 # Dejavu
@@ -84,20 +84,22 @@ For a bounded event view, use `transcript <locator> --no-tools --max-chars 1500 
 
 ## Find a transcript
 
-Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). omp reads `~/.omp/agent/sessions` and each `~/.omp/profiles/*/agent/sessions` profile. agy has no variable and always reads `~/.gemini/antigravity-cli/brain`. Keep these set to search only the current user's history on a shared account:
+Search all detected stores by default. Each agent's own variable selects its store instead of the home default: `CLAUDE_CONFIG_DIR` (Claude `$CLAUDE_CONFIG_DIR/projects`), `CODEX_HOME` (`$CODEX_HOME/sessions` and `$CODEX_HOME/archived_sessions`), `PI_CODING_AGENT_DIR` (`$PI_CODING_AGENT_DIR/sessions`; unset, Pi covers every `~/.pi/*/sessions` profile), `XDG_DATA_HOME` or `OPENCODE_DB` (OpenCode `$XDG_DATA_HOME/opencode/*.db`), and `FACTORY_HOME_OVERRIDE` (Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions`). omp reads `~/.omp/agent/sessions` and each `~/.omp/profiles/*/agent/sessions` profile. `OPENCLAW_STATE_DIR` (default `~/.openclaw`) selects OpenClaw, whose agents keep sessions in SQLite, and `HERMES_HOME` (default `~/.hermes`) selects Hermes's `state.db`; their locators are `openclaw://...#id` and `hermes://...#id`, and `scrub` refuses them. agy has no variable and always reads `~/.gemini/antigravity-cli/brain`. Keep these set to search only the current user's history on a shared account:
 
 ```sh
 dejavu --json 'session-recall.ts'
 dejavu search 'Cannot find module' --json
 ```
 
-The search covers Claude Code, Codex, Pi, omp, OpenCode, Factory Droid, and agy. Narrow it only when the user names a source or broad results are noisy:
+The search covers Claude Code, Codex, Pi, omp, OpenCode, Factory Droid, OpenClaw, Hermes, and agy. Narrow it only when the user names a source or broad results are noisy:
 
 ```sh
 dejavu --source claude --max-parallel 4 --json 'distinctive phrase'
 dejavu --source codex --json 'functionName'
 dejavu --source pi --json 'package-name'
 dejavu --source omp --json 'package-name'
+dejavu --source openclaw --json 'telegram'
+dejavu --source hermes --json 'exact error text'
 dejavu --source opencode --json 'exact error text'
 dejavu --source droid --json 'exact error text'
 dejavu --source agy --json 'exact error text'

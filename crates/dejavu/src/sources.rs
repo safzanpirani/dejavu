@@ -5,7 +5,8 @@ use crate::paths::{is_absolute, join, resolve};
 use crate::types::{SourceSelector, StoreKind, TranscriptSource, TranscriptStore};
 use std::sync::OnceLock;
 
-/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `omp`, `opencode`, `droid`, or `agy`.
+/// `parseSource(value)`: `all`, `claude`, `codex`, `pi`, `omp`, `opencode`, `droid`,
+/// `openclaw`, `hermes`, or `agy`.
 pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
     if value == "all" {
         return Ok(SourceSelector::All);
@@ -14,7 +15,7 @@ pub fn parse_source(value: &str) -> Result<SourceSelector, String> {
         .map(SourceSelector::Only)
         .ok_or_else(|| {
             format!(
-                "source must be one of: all, claude, codex, pi, omp, opencode, droid, agy (got '{value}')"
+                "source must be one of: all, claude, codex, pi, omp, opencode, droid, openclaw, hermes, agy (got '{value}')"
             )
         })
 }
@@ -49,6 +50,10 @@ pub struct TranscriptStoreRoots {
     pub omp: String,
     pub opencode: Vec<String>,
     pub droid: String,
+    /// OpenClaw's state directory; each agent's database sits under `agents/`.
+    pub openclaw: String,
+    /// Hermes Agent's `state.db`.
+    pub hermes: String,
     /// The Antigravity CLI's conversation directories.
     pub agy: String,
 }
@@ -64,6 +69,8 @@ impl TranscriptStoreRoots {
             TranscriptSource::Opencode => None,
             TranscriptSource::Droid => Some(&self.droid),
             TranscriptSource::Agy => Some(&self.agy),
+            // SQLite stores: their locators carry a scheme instead.
+            TranscriptSource::Openclaw | TranscriptSource::Hermes => None,
         }
     }
 }
@@ -82,8 +89,9 @@ pub fn default_roots() -> &'static TranscriptStoreRoots {
 /// reads as Pi's), OpenCode `$OPENCODE_DB`
 /// (relative to the data dir; `:memory:` disables it) or `$XDG_DATA_HOME/opencode/*.db`,
 /// Droid `$FACTORY_HOME_OVERRIDE/.factory/sessions` (the variable replaces the
-/// home directory, not the Factory directory), and agy `~/.gemini/antigravity-cli/brain`
-/// (agy reads no variable for it).
+/// home directory, not the Factory directory), OpenClaw `$OPENCLAW_STATE_DIR` or
+/// `~/.openclaw`, Hermes `$HERMES_HOME/state.db` or `~/.hermes/state.db`, and agy
+/// `~/.gemini/antigravity-cli/brain` (agy reads no variable for it).
 pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots {
     let set = |key: &str| env(key).filter(|value| !value.is_empty());
     let configured =
@@ -127,6 +135,11 @@ pub fn transcript_store_roots(env: StoreEnv, home: &str) -> TranscriptStoreRoots
             &configured(set("FACTORY_HOME_OVERRIDE"), home.to_string()),
             ".factory",
             "sessions",
+        ]),
+        openclaw: configured(set("OPENCLAW_STATE_DIR"), join(&[home, ".openclaw"])),
+        hermes: join(&[
+            &configured(set("HERMES_HOME"), join(&[home, ".hermes"])),
+            "state.db",
         ]),
         agy: join(&[home, ".gemini", "antigravity-cli", "brain"]),
     }
@@ -181,6 +194,14 @@ pub fn discover_transcript_stores(
         path,
     }));
     candidates.push(jsonl(TranscriptSource::Droid, roots.droid));
+    if selector.matches(TranscriptSource::Openclaw) {
+        candidates.extend(
+            openclaw_databases(&roots.openclaw)
+                .into_iter()
+                .map(|path| jsonl(TranscriptSource::Openclaw, path)),
+        );
+    }
+    candidates.push(jsonl(TranscriptSource::Hermes, roots.hermes));
     candidates.push(jsonl(TranscriptSource::Agy, roots.agy));
     candidates
         .into_iter()
@@ -204,6 +225,29 @@ fn pi_profile_dirs(home: &str, primary: &str) -> Vec<String> {
         .collect();
     dirs.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
     dirs
+}
+
+/// Each OpenClaw agent's database, `<state>/agents/<agent>/agent/openclaw-agent.sqlite`,
+/// sorted like [`pi_profile_dirs`].
+fn openclaw_databases(state_dir: &str) -> Vec<String> {
+    let agents = join(&[state_dir, "agents"]);
+    let Ok(entries) = std::fs::read_dir(&agents) else {
+        return Vec::new();
+    };
+    let mut databases: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| {
+            join(&[
+                &agents,
+                &entry.file_name().to_string_lossy(),
+                "agent",
+                "openclaw-agent.sqlite",
+            ])
+        })
+        .collect();
+    databases.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    databases
 }
 
 /// Session directories of named omp profiles (`~/.omp/profiles/<name>/agent/sessions`),
@@ -239,6 +283,9 @@ pub fn source_from_locator(
 ) -> Result<TranscriptSource, String> {
     if locator.starts_with("opencode://") {
         return Ok(TranscriptSource::Opencode);
+    }
+    if let Some(source) = crate::virtual_store::source_of(locator) {
+        return Ok(source);
     }
     for source in [
         TranscriptSource::Claude,
@@ -404,6 +451,8 @@ mod tests {
                 omp: "/home/owner/.omp/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.local/share"),
                 droid: "/home/owner/.factory/sessions".into(),
+                openclaw: "/home/owner/.openclaw".into(),
+                hermes: "/home/owner/.hermes/state.db".into(),
                 agy: "/home/owner/.gemini/antigravity-cli/brain".into(),
             }
         );
@@ -426,6 +475,8 @@ mod tests {
                 ("PI_CODING_AGENT_DIR", "~/.pi-rakhi"),
                 ("XDG_DATA_HOME", "/home/owner/.rakhi-data"),
                 ("FACTORY_HOME_OVERRIDE", "/home/owner/rakhi"),
+                ("OPENCLAW_STATE_DIR", "/srv/claw"),
+                ("HERMES_HOME", "/srv/hermes"),
             ]),
             HOME,
         );
@@ -439,6 +490,8 @@ mod tests {
                 omp: "/home/owner/.omp/agent/sessions".into(),
                 opencode: opencode_defaults("/home/owner/.rakhi-data"),
                 droid: "/home/owner/rakhi/.factory/sessions".into(),
+                openclaw: "/srv/claw".into(),
+                hermes: "/srv/hermes/state.db".into(),
                 agy: "/home/owner/.gemini/antigravity-cli/brain".into(),
             }
         );
@@ -527,6 +580,52 @@ mod tests {
                 &env(&[])
             )),
             [format!("{root}/.local/share/opencode/opencode.db")]
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn discovery_finds_each_openclaw_agent_database_and_the_hermes_state_db() {
+        let root = temp_root("sqlite-agents");
+        for agent in ["main", "codex"] {
+            std::fs::create_dir_all(format!("{root}/.openclaw/agents/{agent}/agent")).unwrap();
+            std::fs::write(
+                format!("{root}/.openclaw/agents/{agent}/agent/openclaw-agent.sqlite"),
+                b"",
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(format!("{root}/.openclaw/agents/empty/agent")).unwrap();
+        std::fs::create_dir_all(format!("{root}/.hermes")).unwrap();
+        std::fs::write(format!("{root}/.hermes/state.db"), b"").unwrap();
+        assert_eq!(
+            paths(discover_transcript_stores(
+                SourceSelector::Only(TranscriptSource::Openclaw),
+                &root,
+                &env(&[])
+            )),
+            [
+                format!("{root}/.openclaw/agents/codex/agent/openclaw-agent.sqlite"),
+                format!("{root}/.openclaw/agents/main/agent/openclaw-agent.sqlite")
+            ]
+        );
+        assert_eq!(
+            paths(discover_transcript_stores(
+                SourceSelector::Only(TranscriptSource::Hermes),
+                &root,
+                &env(&[])
+            )),
+            [format!("{root}/.hermes/state.db")]
+        );
+        let roots = transcript_store_roots(&env(&[]), &root);
+        let locator = crate::virtual_store::locator(TranscriptSource::Hermes, "/x/state.db", "s1");
+        assert_eq!(
+            source_from_locator(&locator, &roots),
+            Ok(TranscriptSource::Hermes)
+        );
+        assert_eq!(
+            source_from_locator("openclaw:///x/openclaw-agent.sqlite#s", &roots),
+            Ok(TranscriptSource::Openclaw)
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -791,7 +890,7 @@ mod tests {
         );
         assert_eq!(
             parse_source("gemini").unwrap_err(),
-            "source must be one of: all, claude, codex, pi, omp, opencode, droid, agy (got 'gemini')"
+            "source must be one of: all, claude, codex, pi, omp, opencode, droid, openclaw, hermes, agy (got 'gemini')"
         );
         assert_eq!(
             parse_source("droid"),

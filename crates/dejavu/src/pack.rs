@@ -121,6 +121,8 @@ pub(crate) fn excluded(path: &str, source: TranscriptSource, value: &str) -> boo
         || (source == TranscriptSource::Opencode
             && path.ends_with(&format!("#{}", encode_uri_component(value))))
         || (source == TranscriptSource::Agy && crate::agy::conversation_id(path) == Some(value))
+        || (crate::virtual_store::is_virtual_source(source)
+            && crate::virtual_store::session_id(path).as_deref() == Some(value))
         || (is_uuid(value)
             && (path.ends_with(&format!("{value}.jsonl")) || path.ends_with(&format!("/{value}"))))
 }

@@ -1,6 +1,6 @@
 # dejavu
 
-Agents lose useful context when work moves between Claude Code, Codex, Pi, omp, OpenCode, Droid, and agy. `dejavu` gives them one local command for finding earlier sessions and project memories.
+Agents lose useful context when work moves between Claude Code, Codex, Pi, omp, OpenCode, Droid, OpenClaw, Hermes, and agy. `dejavu` gives them one local command for finding earlier sessions and project memories.
 
 `dejavu` is agent-first. An agent can search past sessions, inspect the relevant conversation, and recover decisions, commands, errors, and file changes. The agent can then verify that historical context against the current workspace. Humans can run the same commands from a terminal.
 
@@ -76,6 +76,8 @@ The default `dejavu query` harness requires an installed, authenticated `codex` 
 | omp (oh-my-pi) | Pi-format JSONL transcripts under `~/.omp/agent/sessions` and named profiles under `~/.omp/profiles/<name>/agent/sessions` | Home directory only. omp also honors `PI_CODING_AGENT_DIR`, which Dejavu reads as Pi's store |
 | OpenCode | SQLite databases under `~/.local/share/opencode`, in the legacy `part` schema or the v2 `session_message` schema | `XDG_DATA_HOME` → `$XDG_DATA_HOME/opencode/*.db`; `OPENCODE_DB` → that one database |
 | Factory Droid | JSONL transcripts under `~/.factory/sessions`; only `*.jsonl` session files are read | `FACTORY_HOME_OVERRIDE` → `$FACTORY_HOME_OVERRIDE/.factory/sessions` |
+| OpenClaw | Each agent's SQLite database at `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite`. Only the transcript tables are read; the same file holds OpenClaw's auth profiles, which Dejavu never queries | `OPENCLAW_STATE_DIR` → `$OPENCLAW_STATE_DIR/agents/*/agent/openclaw-agent.sqlite` |
+| Hermes Agent | The `sessions` and `messages` tables of `~/.hermes/state.db` | `HERMES_HOME` → `$HERMES_HOME/state.db` |
 | agy (Antigravity CLI) | One JSONL step log per conversation at `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` (else `transcript.jsonl`); the project comes from `conversation_summaries.db`, else `history.jsonl` | Home directory only; agy reads no variable for it |
 
 Each variable is the one the agent itself honors; omp and agy have none. When it is set, Dejavu searches that store instead of the home-directory default, never both. Two people who share one Unix account with separate agent directories therefore search only their own history.
@@ -92,11 +94,11 @@ dejavu search --source codex session-recall.ts --max-parallel 4 --json
 
 The explicit `dejavu search PHRASE` command and bare `dejavu PHRASE` search the same phrase. Use `dejavu -- search` or `dejavu search search` to search for the literal word `search`. A quoted phrase such as `dejavu "search failed"` also stays literal.
 
-Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|omp|opencode|droid|agy` to narrow the search.
+Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|omp|opencode|droid|openclaw|hermes|agy` to narrow the search.
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
-Each result includes its source, date, project, match count, snippets, and locator. JSONL sources return file paths. OpenCode returns `opencode://...#session-id` locators.
+Each result includes its source, date, project, match count, snippets, and locator. JSONL sources return file paths. OpenCode returns `opencode://...#session-id` locators, OpenClaw `openclaw://...#session-id`, and Hermes `hermes://...#session-id`. OpenClaw stores Pi-format entries and Hermes stores chat rows; Dejavu renders both as Pi transcripts, so every command reads them. `scrub` refuses them, because Dejavu opens those databases read-only. OpenClaw cards print `openclaw resume <session key>` and Hermes cards `hermes --resume <id>`.
 
 ### Find a session from a few terms
 

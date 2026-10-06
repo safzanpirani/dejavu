@@ -26,6 +26,9 @@ use std::fmt;
 /// `Bun.file(path).text()`: the file as UTF-8 (lossy), with a leading BOM
 /// removed. Errors read like Bun's (`ENOENT: no such file or directory, open '<path>'`).
 pub fn read_text(path: &str) -> Result<String, String> {
+    if crate::virtual_store::is_virtual_locator(path) {
+        return crate::virtual_store::render(path);
+    }
     let bytes = std::fs::read(path).map_err(|error| fs_error(&error, "open", path))?;
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
@@ -979,7 +982,10 @@ pub fn load_branch_entries(
 /// The active branch of already-parsed rows (all rows for Codex and OpenCode).
 pub fn branch_entries(entries: Vec<TreeEntry>, source: TranscriptSource) -> Vec<TreeEntry> {
     let branch = match source {
-        TranscriptSource::Pi | TranscriptSource::Omp => pi_branch(&entries),
+        TranscriptSource::Pi
+        | TranscriptSource::Omp
+        | TranscriptSource::Openclaw
+        | TranscriptSource::Hermes => pi_branch(&entries),
         TranscriptSource::Claude => claude_branch(&entries),
         TranscriptSource::Droid => droid_branch(&entries),
         _ => return entries,
@@ -1052,11 +1058,16 @@ pub fn recall_messages_from_text(text: &str, source: TranscriptSource) -> Vec<Re
     match source {
         TranscriptSource::Pi
         | TranscriptSource::Omp
+        | TranscriptSource::Openclaw
+        | TranscriptSource::Hermes
         | TranscriptSource::Claude
         | TranscriptSource::Droid => {
             let rows: Vec<Row<true>> = rows.collect();
             let branch = match source {
-                TranscriptSource::Pi | TranscriptSource::Omp => pi_branch(&rows),
+                TranscriptSource::Pi
+                | TranscriptSource::Omp
+                | TranscriptSource::Openclaw
+                | TranscriptSource::Hermes => pi_branch(&rows),
                 TranscriptSource::Droid => droid_branch(&rows),
                 _ => claude_branch(&rows),
             };

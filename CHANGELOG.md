@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- dejavu reads OpenClaw and Hermes Agent sessions. Both keep transcripts in SQLite: OpenClaw in each agent's `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (`OPENCLAW_STATE_DIR` moves it), Hermes in `~/.hermes/state.db` (`HERMES_HOME` moves it). `--source openclaw` and `--source hermes` select them, and search, `find`, `last`, `pack`, `show`, `transcript`, `profile`, and `query` cover them. Locators look like `openclaw://<db>#<session>` and `hermes://<db>#<session>`. OpenClaw's zstd-compressed rows are decoded with the pure-Rust `ruzstd` crate. Dejavu opens both databases read-only and queries only transcript tables; OpenClaw keeps auth profiles in the same file, and those are never read. `scrub` refuses both. Cards print `openclaw resume <session key>` and `hermes --resume <id>`.
+
 ## 0.6.2
 
 - dejavu reads omp (oh-my-pi) sessions from `~/.omp/agent/sessions` and from named profiles under `~/.omp/profiles/<name>/agent/sessions`. `--source omp` selects them. omp keeps Pi's transcript format, so search, `find`, `last`, `pack`, `show`, `transcript`, `scrub`, `profile`, and `query` read omp sessions the way they read Pi's. omp's `title` row never ends the active branch. Session cards print `omp --resume <path>`. `--harness ruddr` accepts `omp/<model>` with Ruddr 0.6.5 or later.

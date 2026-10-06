@@ -228,6 +228,14 @@ fn is_id_char(c: u8) -> bool {
     c.is_ascii_digit() || (b'a'..=b'f').contains(&c) || c == b'-'
 }
 
+/// Whether `text` can follow a command unquoted: no whitespace or shell syntax.
+fn is_shell_word(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:@+/=".contains(&b))
+}
+
 /// `resumeCommand(source, path)`: how to reopen a session in its agent.
 pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
     let name = basename(path);
@@ -256,6 +264,13 @@ pub fn resume_command(source: TranscriptSource, path: &str) -> Option<String> {
         }
         TranscriptSource::Pi => Some(format!("pi --session {path}")),
         TranscriptSource::Omp => Some(format!("omp --resume {path}")),
+        // OpenClaw resumes by session key, which the database maps the ID to.
+        TranscriptSource::Openclaw => crate::virtual_store::openclaw_session_key(path)
+            .filter(|key| is_shell_word(key))
+            .map(|key| format!("openclaw resume {key}")),
+        TranscriptSource::Hermes => crate::virtual_store::session_id(path)
+            .filter(|id| is_shell_word(id))
+            .map(|id| format!("hermes --resume {id}")),
         TranscriptSource::Droid => Some(format!(
             "droid --resume {}",
             name.strip_suffix(".jsonl").unwrap_or(name)
@@ -674,6 +689,7 @@ pub fn find_sessions(
                     .iter()
                     .filter(|m| {
                         store.kind == StoreKind::Sqlite
+                            || crate::virtual_store::is_virtual_locator(&m.path)
                             || (m.path.ends_with(".jsonl") && !is_noise_path(&m.path))
                     })
                     .map(|m| (m.path.clone(), m.count))
@@ -711,7 +727,10 @@ pub fn find_sessions(
             for (&term_index, counts) in direct_terms.iter().zip(lists) {
                 let rows = counts
                     .into_iter()
-                    .filter(|item| item.path.ends_with(".jsonl") && !is_noise_path(&item.path))
+                    .filter(|item| {
+                        crate::virtual_store::is_virtual_locator(&item.path)
+                            || (item.path.ends_with(".jsonl") && !is_noise_path(&item.path))
+                    })
                     .map(|item| (item.path, item.count))
                     .collect();
                 batches.push(batch(term_index, rows, Vec::new(), false, None));
@@ -1470,6 +1489,22 @@ mod tests {
         assert_eq!(
             resume_command(TranscriptSource::Omp, "/x/2026-10-06T08-24-49-835Z_o.jsonl").as_deref(),
             Some("omp --resume /x/2026-10-06T08-24-49-835Z_o.jsonl")
+        );
+        assert_eq!(
+            resume_command(
+                TranscriptSource::Hermes,
+                "hermes:///x/state.db#20260715_101952_8b547a"
+            )
+            .as_deref(),
+            Some("hermes --resume 20260715_101952_8b547a")
+        );
+        assert_eq!(
+            resume_command(TranscriptSource::Hermes, "hermes:///x/state.db#a%20b"),
+            None
+        );
+        assert_eq!(
+            resume_command(TranscriptSource::Openclaw, "openclaw:///missing.sqlite#s"),
+            None
         );
         assert_eq!(
             resume_command(

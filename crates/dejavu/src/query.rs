@@ -318,7 +318,10 @@ pub fn query_session(
         return Err("question must not be empty".into());
     }
     let source = deps.detect_source(session_path)?;
-    if source != TranscriptSource::Opencode && !deps.path_exists(session_path) {
+    if source != TranscriptSource::Opencode
+        && !crate::virtual_store::is_virtual_source(source)
+        && !deps.path_exists(session_path)
+    {
         return Err(format!("transcript not found: {session_path}"));
     }
     let started = Instant::now();

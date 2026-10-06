@@ -17,3 +17,4 @@ serde_json.workspace = true
 rusqlite.workspace = true
 ureq.workspace = true
 sha2.workspace = true
+ruzstd.workspace = true

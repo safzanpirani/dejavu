@@ -257,7 +257,10 @@ pub fn project_from_transcript_text(path: &str, source: TranscriptSource, text: 
         // The encoded directory name turns both '/' and '-' into '-', so the
         // recorded cwd is the only lossless project.
         TranscriptSource::Claude => row_cwd(text, None),
-        TranscriptSource::Pi | TranscriptSource::Omp => row_cwd(text, Some("session")),
+        TranscriptSource::Pi
+        | TranscriptSource::Omp
+        | TranscriptSource::Openclaw
+        | TranscriptSource::Hermes => row_cwd(text, Some("session")),
         // agy keeps the workspace in conversation_summaries.db, read by path.
         TranscriptSource::Opencode | TranscriptSource::Agy => None,
     };

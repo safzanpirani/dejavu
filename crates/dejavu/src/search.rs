@@ -45,6 +45,12 @@ pub trait Backend: Sync {
     ) -> Result<Vec<Vec<FileMatchCount>>, String> {
         let files = match source {
             TranscriptSource::Agy => crate::agy::transcript_files(root)?,
+            source if crate::virtual_store::is_virtual_source(source) => {
+                crate::virtual_store::list(source, root)?
+                    .into_iter()
+                    .map(|file| file.path)
+                    .collect()
+            }
             _ => scan::walk_files(root, |_| true)?,
         };
         let literals: Vec<scan::Literal> = queries.iter().map(|q| scan::Literal::new(q)).collect();
@@ -118,6 +124,15 @@ impl Backend for Disk {
 /// `Bun.file(path).slice(0, bytes).text()`.
 pub fn read_prefix(path: &str, bytes: u64) -> Result<String, String> {
     use std::io::Read;
+    if crate::virtual_store::is_virtual_locator(path) {
+        let text = crate::virtual_store::render(path)?;
+        let end = (bytes as usize).min(text.len());
+        let end = (0..=end)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
+        return Ok(text[..end].to_string());
+    }
     let file =
         std::fs::File::open(path).map_err(|error| crate::reader::fs_error(&error, "open", path))?;
     let mut buffer = Vec::new();

@@ -88,7 +88,7 @@ Help uses color only on a terminal; NO_COLOR or --no-color disables it."
     )
 }
 
-const SEARCH: &str = r#"  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, or agy (default all)
+const SEARCH: &str = r#"  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, openclaw, hermes, or agy (default all)
   -n, --limit N          transcripts to return (default 10)
       --snippets N       snippets per transcript (integer >= 1; default 3)
       --max-parallel N   local store/file workers (default 4)
@@ -122,7 +122,7 @@ const PACK: &str = r#"      --limit N          sessions to return (default 3; se
                          repeatable; active session IDs from the environment are excluded
                          also accepts find's source, project, since, user, no-index, max-parallel
 
-  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, or agy
+  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, openclaw, hermes, or agy
   -p, --project SUBSTR   project path substring
       --since WHEN       YYYY-MM-DD or 7d / 2w / 3m
       --user             require every term in user messages
@@ -144,7 +144,7 @@ const LAST: &str = r#"                         no argument: newest session in th
       --exclude-session ID_OR_LOCATOR
                          repeatable; also accepts --source, --since, and --color/--no-color
 
-  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, or agy
+  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, openclaw, hermes, or agy
       --since WHEN       YYYY-MM-DD or 7d / 2w / 3m
       --color / --no-color"#;
 
@@ -189,7 +189,7 @@ const COMMON: &str = r#"      --json             emit structured results, respec
   -q, --quiet            suppress stderr diagnostics
   -h, --help             show command help"#;
 
-const STORES: &str = r#"Search covers detected Claude, Codex, Pi, omp, OpenCode, Droid, and agy stores by default.
+const STORES: &str = r#"Search covers detected Claude, Codex, Pi, omp, OpenCode, Droid, OpenClaw, Hermes, and agy stores by default.
 Each agent's variable replaces its home-directory store: CLAUDE_CONFIG_DIR
 ($CLAUDE_CONFIG_DIR/projects), CODEX_HOME ($CODEX_HOME/sessions),
 PI_CODING_AGENT_DIR ($PI_CODING_AGENT_DIR/sessions), XDG_DATA_HOME
@@ -197,6 +197,8 @@ PI_CODING_AGENT_DIR ($PI_CODING_AGENT_DIR/sessions), XDG_DATA_HOME
 FACTORY_HOME_OVERRIDE ($FACTORY_HOME_OVERRIDE/.factory/sessions). Without
 PI_CODING_AGENT_DIR, Pi search also covers sibling profiles (~/.pi/*/sessions).
 omp search reads ~/.omp/agent/sessions and ~/.omp/profiles/*/agent/sessions.
+OpenClaw reads each $OPENCLAW_STATE_DIR/agents/*/agent/openclaw-agent.sqlite
+(default ~/.openclaw); Hermes reads $HERMES_HOME/state.db (default ~/.hermes).
 Memory commands read Claude's cross-project Markdown memory corpus.
 Memory selectors accept exact listed project keys, unique project substrings, or file paths.
 Memory search --snippets also requires an integer >= 1.

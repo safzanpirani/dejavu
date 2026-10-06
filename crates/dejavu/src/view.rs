@@ -330,7 +330,10 @@ pub fn load_transcript_events(
                 .flat_map(|entry| claude_events(entry, false))
                 .collect(),
         ),
-        TranscriptSource::Pi | TranscriptSource::Omp => (
+        TranscriptSource::Pi
+        | TranscriptSource::Omp
+        | TranscriptSource::Openclaw
+        | TranscriptSource::Hermes => (
             crate::search::read_transcript_project(locator, source),
             entries.iter().flat_map(pi_events).collect(),
         ),

@@ -19,6 +19,8 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = "3"
 sha2 = "0.11"
+# Pure-Rust zstd decoder for OpenClaw's compressed transcript rows; no C build.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 [profile.dev]
 debug = "line-tables-only"

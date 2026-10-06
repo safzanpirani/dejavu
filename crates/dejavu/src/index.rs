@@ -555,6 +555,20 @@ fn parse_file(
     previous: Option<&FileRow>,
 ) -> Result<Parsed, String> {
     let file_date = date_from_path(path);
+    if crate::virtual_store::is_virtual_locator(path) {
+        // A rendered session has no stable byte offsets, so it is reparsed whole.
+        let text = crate::virtual_store::render(path)?;
+        let project = project_from_transcript_text(path, source, &text);
+        let rows = visible_rows(&text, source, &project, &file_date);
+        return Ok(Parsed::Replace {
+            size,
+            mtime,
+            head: String::new(),
+            head_bytes: 0,
+            project,
+            rows,
+        });
+    }
     if let Some(previous) = previous
         && size as i64 >= previous.size
         && previous.indexed_bytes <= size as i64
@@ -621,9 +635,16 @@ fn refresh_jsonl_store(
     store: &TranscriptStore,
     max_parallel: usize,
 ) -> Result<(usize, usize), String> {
-    let live_paths = match store.source {
-        TranscriptSource::Agy => crate::agy::transcript_files(&store.path)?,
-        _ => jsonl_files(&store.path)?,
+    // SQLite sessions report their own size and change time; files are stat'ed.
+    let virtual_files = if crate::virtual_store::is_virtual_source(store.source) {
+        Some(crate::virtual_store::list(store.source, &store.path)?)
+    } else {
+        None
+    };
+    let live_paths = match (&virtual_files, store.source) {
+        (Some(files), _) => files.iter().map(|file| file.path.clone()).collect(),
+        (None, TranscriptSource::Agy) => crate::agy::transcript_files(&store.path)?,
+        (None, _) => jsonl_files(&store.path)?,
     };
     let known_rows: Vec<FileRow> = {
         let mut statement = database
@@ -653,11 +674,15 @@ fn refresh_jsonl_store(
         .collect();
 
     let mut jobs = Vec::new();
-    for file_path in &live_paths {
-        let metadata =
-            std::fs::metadata(file_path).map_err(|error| fs_error(&error, "stat", file_path))?;
-        let size = metadata.len();
-        let mtime = mtime_ms(&metadata);
+    for (index, file_path) in live_paths.iter().enumerate() {
+        let (size, mtime) = match &virtual_files {
+            Some(files) => (files[index].size, files[index].mtime_ms),
+            None => {
+                let metadata = std::fs::metadata(file_path)
+                    .map_err(|error| fs_error(&error, "stat", file_path))?;
+                (metadata.len(), mtime_ms(&metadata))
+            }
+        };
         let previous = known.get(file_path.as_str()).copied();
         if let Some(previous) = previous
             && previous.size == size as i64

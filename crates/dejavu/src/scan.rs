@@ -97,13 +97,20 @@ pub fn scan_lines(
     skip_binary: bool,
     mut visit: impl FnMut(&[u8]) -> bool,
 ) -> std::io::Result<()> {
-    let mut file = File::open(path)?;
+    // A SQLite session locator scans its rendered transcript instead of a file.
+    let mut file: Box<dyn Read> = if crate::virtual_store::is_virtual_locator(path) {
+        let text = crate::virtual_store::render(path)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+        Box::new(std::io::Cursor::new(text.into_bytes()))
+    } else {
+        Box::new(File::open(path)?)
+    };
     let mut buffer: Vec<u8> = Vec::with_capacity(CHUNK);
     let mut keep_going = true;
     loop {
         let start = buffer.len();
         buffer.resize(start + CHUNK, 0);
-        let read = read_full(&mut file, &mut buffer[start..])?;
+        let read = read_full(&mut *file, &mut buffer[start..])?;
         buffer.truncate(start + read);
         let eof = read == 0;
         if skip_binary && memchr(0, &buffer[start..]).is_some() {
@@ -137,7 +144,7 @@ pub fn scan_lines(
     }
 }
 
-fn read_full(file: &mut File, buffer: &mut [u8]) -> std::io::Result<usize> {
+fn read_full(file: &mut dyn Read, buffer: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < buffer.len() {
         match file.read(&mut buffer[filled..]) {
@@ -153,7 +160,7 @@ fn read_full(file: &mut File, buffer: &mut [u8]) -> std::io::Result<usize> {
 /// `rg -i -c -F query path`: the number of lines that contain the literal.
 pub fn count_matching_lines(path: &str, literal: &Literal) -> std::io::Result<usize> {
     let mut count = 0;
-    let skip_binary = !path.ends_with(".jsonl");
+    let skip_binary = !path.ends_with(".jsonl") && !crate::virtual_store::is_virtual_locator(path);
     scan_lines(path, literal, skip_binary, |_| {
         count += 1;
         true
