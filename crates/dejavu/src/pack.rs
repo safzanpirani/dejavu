@@ -98,20 +98,25 @@ pub(crate) fn is_uuid(value: &str) -> bool {
 /// The running agent's session ids, so a lookup skips the session asking.
 /// Claude Code exports `CLAUDE_CODE_SESSION_ID`; `CLAUDE_SESSION_ID` is kept
 /// for wrappers that set the older name. agy exports `ANTIGRAVITY_CONVERSATION_ID`
-/// to the commands it runs. Droid exports none, so its session is inferred
-/// from the process tree.
+/// to the commands it runs. Droid exports none by itself; a SessionStart hook
+/// can export `DROID_SESSION_ID` through Droid's `CLAUDE_ENV_FILE`. Without
+/// it, the Droid session is inferred from the process tree.
 pub(crate) fn active_session_ids() -> Vec<String> {
-    [
+    let mut ids: Vec<String> = [
         "CODEX_THREAD_ID",
         "CLAUDE_CODE_SESSION_ID",
         "CLAUDE_SESSION_ID",
         "ANTIGRAVITY_CONVERSATION_ID",
+        "DROID_SESSION_ID",
     ]
     .iter()
     .filter_map(|key| std::env::var(key).ok())
     .filter(|value| !value.is_empty())
-    .chain(crate::droid_active::active_droid_session())
-    .collect()
+    .collect();
+    if std::env::var_os("DROID_SESSION_ID").is_none_or(|value| value.is_empty()) {
+        ids.extend(crate::droid_active::active_droid_session());
+    }
+    ids
 }
 
 /// Whether `value` (a locator, file stem, or session id) names this transcript.

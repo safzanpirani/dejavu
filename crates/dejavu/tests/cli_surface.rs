@@ -49,6 +49,7 @@ impl Fixture {
             .env("HOME", &self.0)
             .env_remove("NO_COLOR")
             .env_remove("ANTIGRAVITY_CONVERSATION_ID")
+            .env_remove("DROID_SESSION_ID")
             .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID");
@@ -314,4 +315,22 @@ fn pack_help_documents_omission_entries_from_a_bounded_fixture() {
     );
     assert!(value["omitted"][0]["events"].as_u64().unwrap() > 0);
     assert!(value["omitted"][0]["nextEvent"].is_u64());
+}
+
+#[test]
+fn last_skips_the_session_named_by_droid_session_id() {
+    let f = Fixture::new();
+    assert_eq!(
+        f.json(&["last", "--anywhere", "--list", "--json"])["total"],
+        1
+    );
+    let out = f
+        .command()
+        .args(["last", "--anywhere", "--list", "--json"])
+        .env("DROID_SESSION_ID", "session")
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["total"], 0, "{value}");
+    assert_eq!(value["excludedCount"], 1, "{value}");
 }

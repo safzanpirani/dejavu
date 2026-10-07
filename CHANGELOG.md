@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `last` and `pack` skip the session named by `DROID_SESSION_ID`. Droid does not set it by itself; a SessionStart hook can export it through Droid's `CLAUDE_ENV_FILE`. When it is set, dejavu no longer infers the Droid session from the process tree.
+
 ## 0.6.3
 
 - dejavu reads OpenClaw and Hermes Agent sessions. Both keep transcripts in SQLite: OpenClaw in each agent's `~/.openclaw/agents/<agent>/agent/openclaw-agent.sqlite` (`OPENCLAW_STATE_DIR` moves it), Hermes in `~/.hermes/state.db` (`HERMES_HOME` moves it). `--source openclaw` and `--source hermes` select them, and search, `find`, `last`, `pack`, `show`, `transcript`, `profile`, and `query` cover them. Locators look like `openclaw://<db>#<session>` and `hermes://<db>#<session>`. OpenClaw's zstd-compressed rows are decoded with the pure-Rust `ruzstd` crate. Dejavu opens both databases read-only and queries only transcript tables; OpenClaw keeps auth profiles in the same file, and those are never read. `scrub` refuses both. Cards print `openclaw resume <session key>` and `hermes --resume <id>`.
