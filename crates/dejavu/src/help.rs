@@ -68,16 +68,26 @@ Commands:
   find <term>...                   rank sessions by several literal terms
   pack <term>...                   collect bounded excerpts around matches
   last [terms | locator | id]      recover the previous session's context
-  show <locator>                  read summarized conversation turns
-  transcript <locator>            read events and tool activity (alias: view)
+  show <locator|id>               read summarized conversation turns
+  transcript <locator|id>         read events and tool activity (alias: view)
   scrub <locator>                  redact events or patterns; creates a backup
-  query <locator> <question>       ask a model about one session (model usage)
-  profile <locator>...             measure tool activity (--explain uses a model)
+  query <locator|id> <question>    ask a model about one session (model usage)
+  profile <locator|id>...          measure tool activity (--explain uses a model)
   memory [list | search | show]    read Claude project Markdown memory
   index [status | update | rebuild] manage the local transcript index
   self-update [--check]            check or install a release
   help [command]                  command flags, JSON shapes, jq, exit codes
   --version, -V                   print the installed version
+
+Common forms:
+  dejavu last                                         continue the previous session here
+  dejavu find deploy timeout --paths                  locators of matching sessions
+  dejavu search 'exact phrase' -n 5 --json | jq -r '.matches[].path'
+  dejavu show <locator|id> --no-tools --around TERM   one region of a conversation
+  dejavu transcript <locator|id> --no-tools --max-chars 1500 --budget-chars 8000
+
+A locator is a path (or opencode://, openclaw://, hermes:// locator) printed by search,
+find, or last. A bare session id also works for show, transcript, query, and profile.
 
 {COMMON}
 

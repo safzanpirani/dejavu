@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `show`, `transcript`, `query`, and `profile` accept a bare session id and resolve it through the index to that session's transcript, the way `last` already did. Passing an id used to fail with "cannot determine transcript source from locator", the most common dejavu error in agent sessions.
+- A session id resolves to the session's own `<id>.jsonl` before any newer Claude subagent transcript stored under `<id>/subagents/`, and `last` and `find` no longer list subagent transcripts as sessions. `search` still reaches their text.
+- `dejavu --help` shows common forms (bounded `transcript` reads, `find --paths`, the search jq path) and says that bare session ids work.
+- The bundled skill is a short core (`skills/dejavu/SKILL.md`) with the previous text in `skills/dejavu/references/full-guide.md`.
 - `last` and `pack` skip the session named by `DROID_SESSION_ID`. Droid does not set it by itself; a SessionStart hook can export it through Droid's `CLAUDE_ENV_FILE`. When it is set, dejavu no longer infers the Droid session from the process tree.
 
 ## 0.6.3

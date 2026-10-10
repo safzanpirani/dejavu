@@ -47,6 +47,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             "transcript accepts one transcript locator (unexpected argument: '{extra}')"
         ));
     }
+    let locator = crate::last::resolve_locator(&locator)?;
     let view = view_transcript(&locator, TranscriptViewOptions { thinking, tools })?;
     let counts = view.counts;
     let source = view.source;

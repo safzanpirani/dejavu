@@ -321,7 +321,7 @@ pub fn recent_sessions(
     let database = open_index_readonly(path)?;
     let sql = format!(
         "SELECT path, source, MAX(date) AS latest FROM message_rows
-      WHERE {clause} AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
+      WHERE {clause} AND {NOT_SUBAGENT} AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
       ORDER BY latest DESC, path ASC",
         placeholders(stores.len())
     );
@@ -347,6 +347,11 @@ pub fn recent_sessions(
 }
 
 /// The indexed transcript whose path contains a session id, newest first.
+/// Claude Code stores each subagent's transcript under `<session-id>/subagents/`.
+/// Those are parts of a session, not sessions: `last` and `find` leave them out,
+/// while `search` still reaches their text.
+const NOT_SUBAGENT: &str = "instr(replace(path, char(92), '/'), '/subagents/') = 0";
+
 pub fn path_for_session_id(
     id: &str,
     stores: &[TranscriptStore],
@@ -358,11 +363,18 @@ pub fn path_for_session_id(
     let database = open_index_readonly(path)?;
     let sql = format!(
         "SELECT path FROM message_rows WHERE instr(lower(path), ?) > 0 AND store IN ({})
-      GROUP BY path ORDER BY MAX(date) DESC LIMIT 1",
+      GROUP BY path
+      ORDER BY instr(replace(lower(path), char(92), '/'), ?) > 0 DESC, {NOT_SUBAGENT} DESC, MAX(date) DESC
+      LIMIT 1",
         placeholders(stores.len())
     );
-    let mut values = vec![SqlValue::Text(js_lower(id).into_owned())];
+    // The session's own file (`<id>.jsonl`) wins over a newer subagent transcript
+    // stored under `<id>/subagents/`, whose path also contains the id.
+    let lowered = js_lower(id).into_owned();
+    // Placeholders bind in order: the id, the store list, then the ORDER BY name.
+    let mut values = vec![SqlValue::Text(lowered.clone())];
     values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+    values.push(SqlValue::Text(format!("/{lowered}.jsonl")));
     database
         .query_row(&sql, params_from_iter(values), |row| row.get(0))
         .optional()
@@ -1243,6 +1255,7 @@ impl IndexReader {
         let mut conditions = String::new();
         let mut filter_values = Vec::new();
         if let Some((project, since)) = filters {
+            conditions.push_str(" AND instr(replace(r.path, char(92), '/'), '/subagents/') = 0");
             if let Some(project) = project.filter(|p| p.is_ascii()) {
                 conditions.push_str(" AND (instr(lower(r.project), ?) > 0 OR (r.source IN ('claude','pi','droid') AND instr(replace(lower(r.project), '-', '/'), replace(?, '-', '/')) > 0))");
                 let project = js_lower(compact_home(project)).into_owned();
@@ -1493,6 +1506,43 @@ mod tests {
             .into_iter()
             .map(|m| m.count)
             .collect()
+    }
+
+    #[test]
+    fn a_session_id_prefers_its_own_transcript_and_lists_skip_subagents() {
+        let root = temp_root("subagents");
+        let store_path = format!("{root}/claude/-work-dejavu");
+        let id = "aaaaaaaa-1111-2222-3333-444444444444";
+        let main = format!("{store_path}/{id}.jsonl");
+        let subagent = format!("{store_path}/{id}/subagents/agent-1.jsonl");
+        let index = format!("{root}/cache/index.sqlite");
+        let stores = [store(
+            TranscriptSource::Claude,
+            StoreKind::Jsonl,
+            &format!("{root}/claude"),
+        )];
+        std::fs::create_dir_all(format!("{store_path}/{id}/subagents")).unwrap();
+        std::fs::write(&main, claude_line("user", "main session text")).unwrap();
+        // The subagent ran later, so a plain newest-first lookup would pick it.
+        std::fs::write(
+            &subagent,
+            claude_line("user", "subagent text")
+                .replace("2026-09-02T10:00:00Z", "2026-09-03T10:00:00Z"),
+        )
+        .unwrap();
+        refresh(&stores, &index);
+
+        assert_eq!(
+            path_for_session_id(id, &stores, &index).unwrap(),
+            Some(main.clone())
+        );
+        let recent = recent_sessions(&ProjectFilter::Any, None, &stores, &index).unwrap();
+        assert_eq!(
+            recent.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+            [main.as_str()]
+        );
+        // Search still reaches the subagent's text.
+        assert_eq!(counts("subagent text", &stores, &index), [1]);
     }
 
     #[test]

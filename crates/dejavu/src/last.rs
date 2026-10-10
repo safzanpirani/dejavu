@@ -8,12 +8,27 @@ use crate::find::{
 };
 use crate::index::{ProjectFilter, RecentSession};
 use crate::pack::{active_session_ids, excluded, is_uuid};
+
 use crate::render::{RenderTranscriptOptions, render_transcript};
 use crate::search::{Disk, read_transcript_project};
 use crate::types::{SourceSelector, StoreDiagnostic, TranscriptSource};
 use crate::view::{EventBody, TranscriptView, TranscriptViewOptions, view_transcript};
 use crate::window::{WindowOptions, WindowedTranscript, render_window, window_transcript};
 use serde::Serialize;
+
+/// The transcript a command argument names. A bare session id (a UUID, as printed in
+/// resume commands and session cards) resolves through the index to that session's
+/// own transcript; anything else is already a locator and passes through unchanged.
+pub fn resolve_locator(arg: &str) -> Result<String, String> {
+    if !is_uuid(arg) {
+        return Ok(arg.to_string());
+    }
+    let stores = crate::sources::discover_stores(crate::types::SourceSelector::All);
+    let path = crate::index::default_index_path();
+    crate::index::refresh_transcript_index(&stores, &path, false, crate::DEFAULT_MAX_PARALLEL)?;
+    crate::index::path_for_session_id(arg, &stores, &path)?
+        .ok_or_else(|| format!("no transcript found for session id {arg}; run `dejavu last --list` or `dejavu find <terms> --paths`"))
+}
 
 /// `find`'s ranked-candidate cap, which a term lookup searches up to.
 const SEARCH_CAP: usize = 40;

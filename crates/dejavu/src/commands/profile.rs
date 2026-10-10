@@ -27,7 +27,12 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         limit,
         threshold,
     };
-    let mut report = profile::profile_sessions(&args.items, &options, &RealProfile)?;
+    let locators = args
+        .items
+        .iter()
+        .map(|item| crate::last::resolve_locator(item))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut report = profile::profile_sessions(&locators, &options, &RealProfile)?;
     if explain && !report.sessions.is_empty() {
         let guard = SignalGuard::install();
         let settings = flags.resolve()?;

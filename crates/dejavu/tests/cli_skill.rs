@@ -3,7 +3,14 @@ use std::process::Command;
 
 #[test]
 fn canonical_skill_teaches_current_commands_json_and_query_defaults() {
-    let skill = include_str!("../../../skills/dejavu/SKILL.md");
+    // SKILL.md is the short core agents load; references/full-guide.md ships beside it
+    // with every flag and setting. Commands must appear in the core; settings and JSON
+    // contracts may live in either file.
+    let core = include_str!("../../../skills/dejavu/SKILL.md");
+    let skill = format!(
+        "{core}\n{}",
+        include_str!("../../../skills/dejavu/references/full-guide.md")
+    );
     for obsolete in ["src/cli.ts", "gpt-5.6-luna"] {
         assert!(
             !skill.contains(obsolete),
@@ -20,8 +27,8 @@ fn canonical_skill_teaches_current_commands_json_and_query_defaults() {
         "query",
     ] {
         assert!(
-            skill.contains(&format!("dejavu {command}")),
-            "skill omits {command}"
+            core.contains(&format!("dejavu {command}")),
+            "skill core omits {command}"
         );
         let help = Command::new(env!("CARGO_BIN_EXE_dejavu"))
             .args([command, "--help"])

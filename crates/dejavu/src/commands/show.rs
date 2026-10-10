@@ -26,6 +26,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         tools,
         max_chars,
     };
+    let locator = crate::last::resolve_locator(&locator)?;
     let result = show_session(&locator, &options)?;
     print_stdout(&if common.json {
         js::pretty(&result)

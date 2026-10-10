@@ -29,7 +29,13 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     };
     let result = {
         let guard = SignalGuard::install();
-        query::query_session(&locator, question, &options, &guard.cancel(), &RealQuery)?
+        query::query_session(
+            &crate::last::resolve_locator(&locator)?,
+            question,
+            &options,
+            &guard.cancel(),
+            &RealQuery,
+        )?
     };
     if common.json {
         println!("{}", js::pretty(&result));
