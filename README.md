@@ -62,6 +62,8 @@ Ask a model to summarize one selected session:
 dejavu query '<locator from search results>' 'What did we decide?'
 ```
 
+`show`, `transcript`, `query`, and `profile` also accept a bare session ID in place of a locator; it resolves through the index to that session's own transcript (never a Claude subagent transcript stored under it).
+
 The default `dejavu query` harness requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Select `--harness ruddr` to use an installed Ruddr and its provider authentication. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
 
 ## What it reads
