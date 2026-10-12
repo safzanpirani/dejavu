@@ -17,6 +17,7 @@ memory. The table below covers what agents need; you should rarely need `--help`
 | Continue the previous session in this repo | `dejavu last` (ambiguous: `dejavu last --list -n 5`) |
 | Continue "the <x> session" | `dejavu last <x terms>` or `dejavu last <session-id>` |
 | Find a session from a vague memory | `dejavu find term1 term2 [-p project-substr] [--since 2w] [-n 5]` |
+| Find a session from a description, without exact terms (TypeSafe Jev, <$0.001) | `dejavu recall 'what we did' [-k exact-term] [-p substr] [--since 2w]` |
 | Find an exact phrase, error, file, or symbol | `dejavu search 'exact phrase' [-n 5]` (bare `dejavu 'phrase'` is the same) |
 | Excerpts about a topic across sessions | `dejavu pack term1 term2 [-p substr] --budget-chars 8000` |
 | Read one session's conversation | `dejavu show <locator> --no-tools [--around TERM]` |

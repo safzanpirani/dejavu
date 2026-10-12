@@ -8,6 +8,7 @@ pub mod memory;
 pub mod pack;
 pub mod profile;
 pub mod query;
+pub mod recall;
 pub mod scrub;
 pub mod search;
 pub mod self_update;

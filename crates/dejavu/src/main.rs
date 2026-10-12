@@ -25,6 +25,7 @@ mod profile;
 mod query;
 mod query_config;
 pub mod reader;
+pub mod recall;
 pub mod render;
 mod ruddr_client;
 pub mod scan;
@@ -88,6 +89,7 @@ fn main() {
             commands::search::run(args, common)
         }
         Some("find") => commands::find::run(args, common),
+        Some("recall") => commands::recall::run(args, common),
         Some("last") => commands::last::run(args, common),
         Some("pack") => commands::pack::run(args, common),
         Some("show") => commands::show::run(args, common),

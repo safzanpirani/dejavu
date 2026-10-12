@@ -5,6 +5,7 @@ use crate::render::Paint;
 pub const COMMANDS: &[&str] = &[
     "search",
     "find",
+    "recall",
     "pack",
     "last",
     "show",
@@ -66,6 +67,7 @@ Usage: dejavu <phrase> [flags]
 Commands:
   search <phrase>                  literal phrase search (also the bare form)
   find <term>...                   rank sessions by several literal terms
+  recall <description>             find sessions by meaning with TypeSafe Jev (model usage)
   pack <term>...                   collect bounded excerpts around matches
   last [terms | locator | id]      recover the previous session's context
   show <locator|id>               read summarized conversation turns
@@ -113,6 +115,20 @@ const FIND: &str = r#"  -s, --source NAME      restrict to one source
       --user             require every term to appear in user messages
       --paths            print matching transcript locators only, one per line
       --max-parallel N   local store/candidate workers (default 4)
+      --no-index         bypass the transcript index and scan files directly
+      --color / --no-color
+                         force ANSI colors on or off (default: on for a terminal)"#;
+
+const RECALL: &str = r#"  -k, --keyword TERM     extra literal retrieval term (repeatable)
+  -s, --source NAME      restrict to one source
+  -n, --limit N          sessions to return (default 5)
+  -p, --project SUBSTR   only sessions whose project path contains SUBSTR
+      --since WHEN       YYYY-MM-DD or 7d / 2w / 3m
+      --candidates N     sessions sent to Jev (default 30)
+      --threshold P      minimum relevance, 0 to 1 (default 0.2)
+      --model ID         TypeSafe model (default jev-latest)
+      --paths            print matching transcript locators only, one per line
+      --max-parallel N   local workers and concurrent Jev requests (default 4)
       --no-index         bypass the transcript index and scan files directly
       --color / --no-color
                          force ANSI colors on or off (default: on for a terminal)"#;
@@ -236,6 +252,12 @@ pub fn command(topic: &str) -> Result<String, String> {
             "JSON object keys: terms, requiredTerms, sources, hits, truncated, skippedStores, elapsedMs, storeTimings\njq: jq '.hits[].path'",
             "Terms match within a session. requiredTerms reports relaxed matching.\ntruncated is true when eligible sessions exceed the 40-candidate scoring limit.\nopeningPrompt previews contain at most 300 characters; an ellipsis marks clipping.\n--paths overrides --json and emits locators instead of JSON.".into(),
             "0: completed, including zero hits or skipped stores; 1: usage or search error.",
+        ),
+        "recall" => (
+            "recall <description> [flags]", RECALL.to_string(),
+            "JSON object keys: query, keywords, model, threshold, candidates, hits, inputTokens, costUsd, skippedStores, elapsedMs\njq: jq '.hits[].path'",
+            "Describe the session in plain words. Up to six description words (plus -k terms)\nretrieve candidates through find, one term at a time; TypeSafe Jev then judges each\ncandidate's opening prompt and excerpts against the description.\nhits carry relevance (0 to 1) and the keywords each session matched.\nThe key comes from TYPESAFE_API_KEY, else `omp token typesafe`. TYPESAFE_BASE_URL\noverrides the endpoint. Jev bills input tokens only ($42 per billion); costUsd reports it.\n--paths overrides --json and emits locators instead of JSON.".into(),
+            "0: completed, including zero hits or skipped stores; 1: usage, search, key, or TypeSafe error.",
         ),
         "pack" => (
             "pack <term> [term...] [flags]", PACK.to_string(),
@@ -362,5 +384,48 @@ mod tests {
                 0,
             );
         }
+    }
+
+    #[test]
+    fn recall_help_matches_the_serialized_result() {
+        // The judge is injected, so the contract runs without a key or network.
+        let hit = crate::find::FindHit {
+            source: crate::types::TranscriptSource::Claude,
+            path: "/s.jsonl".into(),
+            project: "work".into(),
+            date: "2026-10-12".into(),
+            score: 1,
+            term_counts: crate::find::JsObject::default(),
+            opening_prompt: "set up the broker".into(),
+            matches: Vec::new(),
+            resume: None,
+        };
+        let retrieve = |_: &str| {
+            Ok(crate::find::FindResult {
+                terms: Vec::new(),
+                required_terms: Vec::new(),
+                sources: Vec::new(),
+                hits: vec![hit.clone()],
+                skipped_stores: Vec::new(),
+                elapsed_ms: 0,
+                store_timings: crate::find::JsObject::default(),
+                truncated: false,
+            })
+        };
+        let judge = |_: &serde_json::Value| {
+            Ok(serde_json::json!({"model": "jev-1.13.0", "answers": {"s00": {"noul": 0.9}}}))
+        };
+        let result = crate::recall::recall_with(
+            "broker setup",
+            &crate::recall::RecallOptions::default(),
+            &retrieve,
+            &judge,
+        )
+        .unwrap();
+        help_contract::assert_shape(
+            &command("recall").unwrap(),
+            &serde_json::to_value(result).unwrap(),
+            0,
+        );
     }
 }

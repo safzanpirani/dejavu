@@ -111,6 +111,17 @@ dejavu find deployment timeout --project payments-api --since 2w
 
 `find` searches for multiple literal terms in one session. `--since` uses the newest matching message date and falls back to session activity when matching messages have no date. Resumed sessions can match even when their filenames predate the cutoff. OpenCode results retain the session project directory, and `--project` filters that directory. It ranks user-message matches above assistant-message matches. Harness instruction blocks and command wrappers do not count as user matches or opening prompts. Counts include all matching visible messages in each scored session, including dialogue after large tool logs. Match excerpts center on the first matching term and use at most 240 characters. An ellipsis marks each cut side. Mixed queries use indexed terms of at least three characters to select candidates, then check shorter terms inside those sessions. Queries with only short terms use direct scanning. Source, project, and date filters run before the 40-candidate scoring limit. JSON sets `truncated: true` when more eligible candidates exist, and stderr suggests narrower filters. The result includes the opening prompt, matching messages, transcript path, and a resume command when the source supports one. In a terminal, `search` and `find` color each agent, highlight the search terms, render Markdown in excerpts, and indent multi-line excerpts. Piped output stays plain. Use `--color` or `--no-color` to override. Stderr color requires a terminal, and any defined `NO_COLOR` value disables it. Commands that accept `--no-color` also disable stderr color; `--color` only forces stdout color.
 
+### Recall a session from a description
+
+```bash
+dejavu recall 'where we wired the Factory subscription into omp'
+dejavu recall 'the WAF 403 quarantine fix' -k cliproxy --since 3m --json
+```
+
+`recall` finds sessions by meaning when you do not remember exact terms. It takes up to six words from the description, longest first, after dropping stopwords and numbers, and adds every `-k` term. `find` runs once per term, so a candidate needs to match only one of them. Candidates rank by how many terms they matched, then by `find`'s score, and the top 30 (`--candidates N`) go to TypeSafe's Jev model. Jev reads each session's opening prompt and match excerpts and returns the probability that the session is the one described. Sessions at or above `--threshold` (default 0.2) print best first, with that probability as `relevance`.
+
+`recall` is the one search command that uses a model. It reads the TypeSafe key from `TYPESAFE_API_KEY`, else from `omp token typesafe` (the key `omp login typesafe` stores), and needs no key when no candidate matches. `TYPESAFE_BASE_URL` overrides the endpoint and `--model` the Jev model (default `jev-latest`). Jev bills input tokens only, at $42 per billion; a 30-candidate recall uses about 15,000 tokens, under $0.001. Up to `--max-parallel` requests of ten sessions each run at once. The JSON output reports `inputTokens`, `costUsd`, and the versioned `model` that answered. Session text leaves the machine only in this command.
+
 ### Read a transcript
 
 ```bash

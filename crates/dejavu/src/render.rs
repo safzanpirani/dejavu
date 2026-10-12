@@ -214,6 +214,80 @@ pub fn render_find(result: &Value, color: bool) -> String {
     )
 }
 
+/// Text output for `dejavu recall`.
+pub fn render_recall(result: &Value, color: bool) -> String {
+    let paint = Paint { color };
+    let query = display(field(result, "query"));
+    let hits = items(field(result, "hits"));
+    if hits.is_empty() {
+        let candidates = field(result, "candidates").as_u64().unwrap_or(0);
+        return if candidates == 0 {
+            format!(
+                "No sessions matched any keyword of: {query}.\n\nKeywords tried: {}. Add exact terms with -k, or drop filters.",
+                join_terms(field(result, "keywords"), ", ")
+            )
+        } else {
+            format!(
+                "None of {} scored at least {} for: {query}.\n\nDescribe the session differently, add exact terms with -k, or lower --threshold.",
+                plural(
+                    candidates as usize,
+                    "candidate session",
+                    "candidate sessions"
+                ),
+                display(field(result, "threshold"))
+            )
+        };
+    }
+    let words: Vec<String> = items(field(result, "keywords"))
+        .iter()
+        .map(display)
+        .collect();
+    let sections: Vec<String> = hits
+        .iter()
+        .map(|hit| {
+            let relevance = field(hit, "relevance").as_f64().unwrap_or(0.0);
+            let mut lines = vec![paint.heading(
+                &display(field(hit, "date")),
+                &display(field(hit, "source")),
+                &display(field(hit, "project")),
+                &paint.dim(&format!("relevance {relevance:.2}")),
+            )];
+            if let Some(prompt) = truthy_text(field(hit, "openingPrompt")) {
+                let prompt = if color {
+                    crate::markdown::render(&highlight(&prompt, &words, paint))
+                } else {
+                    prompt
+                };
+                lines.push(paint.labeled("Opened with", &paint.hanging(&prompt, 13)));
+            }
+            for item in items(field(hit, "matches")).iter().take(3) {
+                let date = truthy_text(field(item, "date"))
+                    .map(|date| format!(" {date}"))
+                    .unwrap_or_default();
+                lines.push(paint.snippet(
+                    &display(field(item, "role")),
+                    &date,
+                    &display(field(item, "text")),
+                    &words,
+                ));
+            }
+            lines.push(paint.labeled("Transcript", &paint.dim(&display(field(hit, "path")))));
+            if let Some(resume) = truthy_text(field(hit, "resume")) {
+                lines.push(paint.labeled("Resume", &paint.command(&resume)));
+            }
+            lines.join("\n")
+        })
+        .collect();
+    format!(
+        "{} for \"{query}\":\n\n{}",
+        paint.bold(&format!(
+            "Recalled {}",
+            plural(hits.len(), "session", "sessions")
+        )),
+        sections.join(&paint.separator())
+    )
+}
+
 /// `renderShow(result)`.
 pub fn render_show(result: &ShowResult) -> String {
     let blocks: Vec<String> = result
