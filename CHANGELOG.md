@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.4
 
 - `dejavu recall '<description>'` finds sessions by meaning. It retrieves candidates with `find`, one description word (or `-k` term) at a time, and asks TypeSafe's Jev model how likely each session is the one described. Hits carry `relevance` and the matched `keywords`. The key comes from `TYPESAFE_API_KEY` or `omp token typesafe`; a run costs well under $0.001 and is the only search command that sends excerpts off the machine.
 - `show`, `transcript`, `query`, and `profile` accept a bare session id and resolve it through the index to that session's transcript, the way `last` already did. Passing an id used to fail with "cannot determine transcript source from locator", the most common dejavu error in agent sessions.
