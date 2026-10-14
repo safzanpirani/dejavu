@@ -155,16 +155,16 @@ struct MatchedView {
 }
 
 /// Rank dialogue neighborhoods by weighted match density. Tool and reasoning
-/// events do not compete with dialogue or consume its context radius.
+/// events do not compete with dialogue or consume its context radius, and
+/// neither do harness-injected user turns such as `<task-notification>`.
 fn keep_matching(mut view: TranscriptView, needles: &[String], context: usize) -> MatchedView {
     for (position, event) in view.events.iter_mut().enumerate() {
         event.index.get_or_insert(position);
     }
-    view.events.retain(|event| {
-        matches!(
-            event.body,
-            crate::view::EventBody::User { .. } | crate::view::EventBody::Assistant { .. }
-        )
+    view.events.retain(|event| match &event.body {
+        crate::view::EventBody::User { text } => crate::find::is_real_user_prompt(text),
+        crate::view::EventBody::Assistant { .. } => true,
+        _ => false,
     });
     let metrics: Vec<(usize, usize)> = view
         .events
@@ -665,6 +665,39 @@ mod tests {
         assert_eq!(result.sessions[0].window.available_events, 3);
         assert_eq!(result.sessions[0].window.next_event, Some(0));
         assert_eq!(result.omitted[0].events, 2);
+    }
+
+    #[test]
+    fn injected_user_envelopes_are_neither_anchors_nor_context() {
+        let notification =
+            "<task-notification><summary>needle needle needle</summary></task-notification>";
+        let result = pack_sessions(
+            &terms(&["needle"]),
+            &PackOptions {
+                context: Some(1),
+                ..PackOptions::default()
+            },
+            &[],
+            |_, _| Ok(found(&["/a"])),
+            &|path| {
+                Ok(view(
+                    path,
+                    vec![
+                        assistant(0, "needle answer"),
+                        user(1, notification),
+                        assistant(2, "unrelated"),
+                    ],
+                ))
+            },
+        )
+        .unwrap();
+        let kept: Vec<Option<usize>> = result.sessions[0]
+            .view
+            .events
+            .iter()
+            .map(|event| event.index)
+            .collect();
+        assert_eq!(kept, [Some(0), Some(2)]);
     }
 
     #[test]
