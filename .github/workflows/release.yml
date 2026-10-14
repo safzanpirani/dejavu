@@ -84,7 +84,7 @@ jobs:
       - name: Check static linking
         if: contains(matrix.target, 'musl')
         run: file "dist/${{ matrix.asset }}" | tee /dev/stderr | grep -qE 'statically linked|static-pie linked'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: dist/${{ matrix.asset }}
@@ -96,7 +96,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           pattern: dejavu-*
@@ -110,13 +110,13 @@ jobs:
           sha256sum dejavu-* > checksums.txt
           cat checksums.txt
       - name: GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             release/dejavu-*
             release/checksums.txt
           generate_release_notes: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
