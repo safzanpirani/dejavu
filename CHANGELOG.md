@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `pack` drops harness-injected user turns such as `<task-notification>` before it ranks neighborhoods. They used to count as user messages with double weight and could fill a small budget with background-job notices.
+- The release workflow uses the Node 24 majors of `upload-artifact` (v7), `download-artifact` (v8), `setup-node` (v7), and `action-gh-release` (v3).
+- Tests create fake executables through a separate `cp` process. A fake written by the test process could fail to start on Linux with ETXTBSY when a parallel test forked at the same moment.
+
 ## 0.6.5
 
 - `dejavu memory search` takes several words and returns files that contain all of them, across every project's Claude memory. It used to match the words only as one exact phrase. Files rank first when the terms appear in the file name or in the frontmatter `name` or `description`. Each result carries the frontmatter `description` and `type`; text output prints them above the snippets, and snippets skip the frontmatter. `-p SUBSTR` limits the search to matching project keys, and `--type user|feedback|project|reference` filters by frontmatter type.
