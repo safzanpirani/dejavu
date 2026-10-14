@@ -517,13 +517,11 @@ echo '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens"
     fn fixture() -> &'static Path {
         static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         PATH.get_or_init(|| {
-            use std::os::unix::fs::PermissionsExt;
             let dir =
                 std::env::temp_dir().join(format!("dejavu-codex-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("fake-codex.sh");
-            std::fs::write(&path, FAKE).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::test_support::write_executable(&path, FAKE);
             path
         })
     }

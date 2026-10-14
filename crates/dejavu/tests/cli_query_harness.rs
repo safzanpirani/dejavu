@@ -1,7 +1,9 @@
 //! All model invocations use synthetic transcripts and fake PATH executables.
 #![cfg(unix)]
 
-use std::os::unix::fs::PermissionsExt;
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,8 +63,7 @@ esac
 "#;
         for name in ["codex", "ruddr", "pi"] {
             let path = fixture.0.join("bin").join(name);
-            std::fs::write(&path, fake).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            executable::write_executable(&path, fake);
         }
         fixture
     }

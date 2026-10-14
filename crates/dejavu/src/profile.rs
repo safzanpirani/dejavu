@@ -1506,10 +1506,9 @@ mod tests {
     #[test]
     fn explains_through_a_fake_codex_executable() {
         use crate::codex_client::{CodexDeps, TempDir, complete_via_codex_with};
-        use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new("dejavu-profile-test-").unwrap();
         let codex = dir.path().join("codex");
-        std::fs::write(
+        crate::test_support::write_executable(
             &codex,
             r#"#!/bin/sh
 out=
@@ -1522,9 +1521,7 @@ cat >/dev/null
 printf '%s' '{"observations":[{"summary":"Check the failed read.","evidence":["S1#8"]}]}' > "$out"
 echo '{"type":"turn.completed","usage":{"input_tokens":900,"output_tokens":40}}'
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let deps = CodexDeps {
             command: Some(vec![codex.to_string_lossy().into_owned()]),
             timeout: None,

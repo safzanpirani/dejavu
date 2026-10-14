@@ -97,6 +97,9 @@ fn explicit_search_matches_bare_search_and_literal_search_remains_available() {
     assert_eq!(f.run(&["search", "--json"]).status.code(), Some(1));
 }
 
+#[cfg(unix)]
+#[path = "support/executable.rs"]
+mod executable;
 #[path = "support/help_contract.rs"]
 mod help_contract;
 
@@ -255,11 +258,10 @@ fn documented_json_keys_match_real_fixture_commands() {
 #[cfg(unix)]
 #[test]
 fn query_json_help_matches_a_fake_model_without_paid_calls() {
-    use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
     std::fs::create_dir_all(f.0.join("bin")).unwrap();
     let fake = f.0.join("bin/codex");
-    std::fs::write(
+    executable::write_executable(
         &fake,
         r#"#!/bin/sh
 for arg in "$@"; do
@@ -270,9 +272,7 @@ cat >/dev/null
 printf 'Synthetic answer' > "$out"
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":2}}'
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     for topic in ["query", "profile"] {
         let mut cmd = f.command();
         cmd.env(

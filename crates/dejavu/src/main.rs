@@ -32,6 +32,9 @@ pub mod scan;
 pub mod scrub;
 pub mod search;
 pub mod sources;
+#[cfg(all(test, unix))]
+#[path = "../tests/support/executable.rs"]
+mod test_support;
 pub mod types;
 mod update;
 pub mod view;

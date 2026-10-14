@@ -632,10 +632,8 @@ mod tests {
 
     #[cfg(unix)]
     fn script(dir: &Path, name: &str, body: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
-        std::fs::write(&path, body).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(&path, body);
         path.to_string_lossy().into_owned()
     }
 

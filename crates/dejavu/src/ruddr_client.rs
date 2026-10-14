@@ -145,7 +145,6 @@ fn complete_with(
 mod tests {
     use super::*;
     use crate::query_config::{Harness, QuerySettings, resolve_model};
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     const FAKE: &str = r#"#!/bin/sh
@@ -196,8 +195,7 @@ esac
     fn fixture() -> (TempDir, String) {
         let dir = TempDir::new("dejavu-fake-ruddr-").unwrap();
         let path = dir.path().join("ruddr");
-        std::fs::write(&path, FAKE).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(&path, FAKE);
         (dir, path.to_string_lossy().into_owned())
     }
 

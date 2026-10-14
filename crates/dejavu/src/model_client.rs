@@ -1014,15 +1014,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runs_pi_with_the_prompt_on_stdin() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = temp_agent_dir("pi");
         let fake = dir.join("pi");
-        std::fs::write(
+        crate::test_support::write_executable(
             &fake,
             "#!/bin/sh\nprompt=$(cat)\nif [ \"$prompt\" = fail ]; then echo first >&2; echo 'last line' >&2; exit 2; fi\nprintf '  %s via %s %s\\n' \"$prompt\" \"$PI_CODING_AGENT_DIR\" \"$8\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let mut model = resolved();
         model.agent_dir = dir.clone();
         let program = fake.to_string_lossy().into_owned();
