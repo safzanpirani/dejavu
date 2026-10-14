@@ -4,7 +4,6 @@
 //! `~/.gemini/antigravity-cli/brain`. The conversation's workspace lives in
 //! `conversation_summaries.db` next to `brain`.
 
-use crate::js;
 use crate::paths::{compact_home, join};
 use crate::types::{RecallBlock, RecallMessage};
 use crate::view::js_trim;
@@ -145,12 +144,6 @@ impl Step {
     pub fn is_error(&self) -> bool {
         self.kind == "ERROR_MESSAGE" || self.status == "ERROR"
     }
-
-    pub fn date(&self) -> Option<String> {
-        self.created_at
-            .as_deref()
-            .map(|timestamp| js::prefix(timestamp, 10).to_string())
-    }
 }
 
 /// The text inside `<USER_REQUEST>`; agy appends metadata and settings
@@ -185,14 +178,15 @@ fn decode_args(args: Option<&Value>) -> Value {
     }
 }
 
-/// One step's visible user or assistant text, as search and the index read it.
+/// One step's visible user or assistant text and its `created_at` timestamp,
+/// as search and the index read it.
 pub fn visible_text(line: &str) -> Option<(&'static str, String, Option<String>)> {
     let step = Step::parse(line)?;
     if let Some(text) = step.user_text() {
-        return Some(("user", text, step.date()));
+        return Some(("user", text, step.created_at));
     }
     step.assistant_text()
-        .map(|text| ("assistant", text, step.date()))
+        .map(|text| ("assistant", text, step.created_at))
 }
 
 /// User prompts and model replies with their tool calls, in order.
@@ -333,7 +327,10 @@ mod tests {
     fn user_text_is_the_request_and_hook_injections_are_hidden() {
         let step = Step::parse(&user("fix the hook")).unwrap();
         assert_eq!(step.user_text().as_deref(), Some("fix the hook"));
-        assert_eq!(step.date().as_deref(), Some("2026-10-05"));
+        assert_eq!(
+            visible_text(&user("fix the hook")).unwrap().2.as_deref(),
+            Some("2026-10-05T10:57:21Z")
+        );
         let hook = json!({ "source": "SYSTEM_SDK", "type": "USER_INPUT", "content": "<USER_REQUEST>\n<project-memory>x</project-memory>\n</USER_REQUEST>" });
         assert!(visible_text(&hook.to_string()).is_none());
         let system = json!({ "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "content": "<SYSTEM_MESSAGE>x</SYSTEM_MESSAGE>" });

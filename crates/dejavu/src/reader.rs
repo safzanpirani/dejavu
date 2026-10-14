@@ -1132,32 +1132,45 @@ pub struct VisibleMessage {
     pub date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The full timestamp in epoch milliseconds, when it parses as ISO 8601.
+    #[serde(skip)]
+    pub time_ms: Option<i64>,
+}
+
+/// A row timestamp as a date (its first 10 units) and epoch milliseconds.
+fn date_and_time(timestamp: Option<String>) -> (Option<String>, Option<i64>) {
+    let time_ms = timestamp.as_deref().and_then(js::parse_iso_ms);
+    (
+        timestamp.map(|timestamp| js::prefix(&timestamp, 10).to_string()),
+        time_ms,
+    )
 }
 
 /// `extractVisibleMessage(line, source)`: one JSONL row's visible user or
 /// assistant text (text blocks joined by a space), its date (`timestamp`'s
-/// first 10 units), and its `cwd`. `None` for other rows and empty text.
+/// first 10 units) and time, and its `cwd`. `None` for other rows and empty text.
 /// Droid's injected `<system-reminder>` user blocks do not count as text.
 pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<VisibleMessage> {
     if source == TranscriptSource::Agy {
-        let (role, text, date) = crate::agy::visible_text(line)?;
+        let (role, text, timestamp) = crate::agy::visible_text(line)?;
+        let (date, time_ms) = date_and_time(timestamp);
         return Some(VisibleMessage {
             role,
             text,
             date,
             project: None,
+            time_ms,
         });
     }
     let row = parse_json_line::<Row<false>>(line)?;
     if let Some(text) = row.compaction_summary(source) {
+        let (date, time_ms) = date_and_time(row.timestamp.0);
         return Some(VisibleMessage {
             role: "user",
             text,
-            date: row
-                .timestamp
-                .0
-                .map(|timestamp| js::prefix(&timestamp, 10).to_string()),
+            date,
             project: row.cwd.0,
+            time_ms,
         });
     }
     let envelope = if source == TranscriptSource::Codex {
@@ -1187,14 +1200,13 @@ pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<V
     if text.is_empty() {
         return None;
     }
+    let (date, time_ms) = date_and_time(row.timestamp.0);
     Some(VisibleMessage {
         role,
         text,
-        date: row
-            .timestamp
-            .0
-            .map(|timestamp| js::prefix(&timestamp, 10).to_string()),
+        date,
         project: row.cwd.0,
+        time_ms,
     })
 }
 

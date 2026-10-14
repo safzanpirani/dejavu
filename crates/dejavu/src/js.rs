@@ -214,9 +214,125 @@ pub fn number(value: f64) -> serde_json::Value {
     }
 }
 
+/// `Date.parse` for ISO 8601 timestamps, in epoch milliseconds. A date-time
+/// without an offset reads as UTC (JavaScript reads it as local time; both
+/// ends of a latency read the same way, so only a DST change differs).
+pub fn parse_iso_ms(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    let number = |from: usize, len: usize| -> Option<i64> {
+        let part = bytes.get(from..from + len)?;
+        part.iter()
+            .all(u8::is_ascii_digit)
+            .then(|| std::str::from_utf8(part).ok()?.parse().ok())?
+    };
+    let (sign, mut at) = match bytes.first()? {
+        b'+' => (1, 1),
+        b'-' => (-1, 1),
+        _ => (1, 0),
+    };
+    let year_len = if at == 1 { 6 } else { 4 };
+    let year = sign * number(at, year_len)?;
+    at += year_len;
+    let field = |at: &mut usize, sep: u8, min: i64, max: i64| -> Option<Option<i64>> {
+        if bytes.get(*at) != Some(&sep) {
+            return Some(None);
+        }
+        let value = number(*at + 1, 2)?;
+        if value < min || value > max {
+            return None;
+        }
+        *at += 3;
+        Some(Some(value))
+    };
+    let month = field(&mut at, b'-', 1, 12)?.unwrap_or(1);
+    let day = field(&mut at, b'-', 1, 31)?.unwrap_or(1);
+    let mut ms = 0;
+    if at < bytes.len() {
+        if bytes[at] != b'T' && bytes[at] != b't' && bytes[at] != b' ' {
+            return None;
+        }
+        let hour = number(at + 1, 2)?;
+        if bytes.get(at + 3) != Some(&b':') {
+            return None;
+        }
+        let minute = number(at + 4, 2)?;
+        at += 6;
+        let mut second = 0;
+        if bytes.get(at) == Some(&b':') {
+            second = number(at + 1, 2)?;
+            at += 3;
+            if bytes.get(at) == Some(&b'.') {
+                at += 1;
+                let start = at;
+                while at < bytes.len() && bytes[at].is_ascii_digit() {
+                    at += 1;
+                }
+                if at == start {
+                    return None;
+                }
+                let digits = &text[start..at.min(start + 3)];
+                ms = format!("{digits:0<3}").parse().ok()?;
+            }
+        }
+        if hour > 24 || minute > 59 || second > 59 || (hour == 24 && (minute | second | ms) != 0) {
+            return None;
+        }
+        let mut offset = 0;
+        match bytes.get(at) {
+            None => {}
+            Some(b'Z' | b'z') if at + 1 == bytes.len() => {}
+            Some(&sign @ (b'+' | b'-')) => {
+                let hours = number(at + 1, 2)?;
+                let minutes = match bytes.get(at + 3) {
+                    Some(b':') => number(at + 4, 2)?,
+                    _ => number(at + 3, 2)?,
+                };
+                let end = if bytes.get(at + 3) == Some(&b':') {
+                    at + 6
+                } else {
+                    at + 5
+                };
+                if end != bytes.len() {
+                    return None;
+                }
+                offset = (hours * 60 + minutes) * if sign == b'+' { 1 } else { -1 };
+            }
+            _ => return None,
+        }
+        ms += ((hour * 60 + minute - offset) * 60 + second) * 1000;
+    }
+    Some(days_from_civil(year, month, day) * 86_400_000 + ms)
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iso_timestamps() {
+        assert_eq!(parse_iso_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_iso_ms("2026-09-08T10:00:02.5Z"),
+            Some(1_788_861_602_500)
+        );
+        assert_eq!(
+            parse_iso_ms("2026-09-08T12:00:02+02:00"),
+            parse_iso_ms("2026-09-08T10:00:02Z")
+        );
+        assert_eq!(parse_iso_ms("2026-09-08"), Some(1_788_825_600_000));
+        assert_eq!(parse_iso_ms("not a date"), None);
+        assert_eq!(parse_iso_ms("2026-13-01T00:00:00Z"), None);
+    }
 
     #[test]
     fn utf16_lengths_and_slices() {

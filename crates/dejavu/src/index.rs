@@ -31,8 +31,8 @@ use std::time::Instant;
 
 /// Bump when stored rows change, including how messages are extracted
 /// (4: Droid skill notifications are cut from user text; 5: Droid and Codex
-/// compaction summaries are indexed).
-pub const SCHEMA_VERSION: i64 = 6;
+/// compaction summaries are indexed; 7: rows carry `time_ms` for same-day order).
+pub const SCHEMA_VERSION: i64 = 7;
 /// Bytes hashed at the start of each JSONL file to detect in-place rewrites versus appends.
 const HEAD_BYTES: u64 = 4096;
 /// Changed files are parsed in parallel in batches of at most this many files
@@ -173,6 +173,7 @@ CREATE TABLE message_rows (
     source TEXT NOT NULL,
     role TEXT NOT NULL,
     date TEXT NOT NULL,
+    time_ms INTEGER NOT NULL DEFAULT 0,
     project TEXT NOT NULL,
     key TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL
@@ -250,7 +251,7 @@ pub fn list_indexed_sessions(
     let sql = format!(
         "SELECT path, MAX(date) AS latest FROM message_rows
       WHERE instr(lower(project), ?) > 0 AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
-      ORDER BY latest DESC, path ASC",
+      ORDER BY latest DESC, MAX(time_ms) DESC, path ASC",
         placeholders(stores.len())
     );
     let mut values: Vec<SqlValue> = vec![SqlValue::Text(needle)];
@@ -284,7 +285,9 @@ pub struct RecentSession {
 }
 
 /// Indexed sessions with a visible message in a matching project since `since`,
-/// newest first. Projects compare case-insensitively and home-compacted.
+/// newest first. Sessions on the same newest date order by their newest message
+/// time (epoch milliseconds; 0 when a source records no parseable timestamp).
+/// Projects compare case-insensitively and home-compacted.
 pub fn recent_sessions(
     filter: &ProjectFilter,
     since: Option<&str>,
@@ -322,7 +325,7 @@ pub fn recent_sessions(
     let sql = format!(
         "SELECT path, source, MAX(date) AS latest FROM message_rows
       WHERE {clause} AND {NOT_SUBAGENT} AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
-      ORDER BY latest DESC, path ASC",
+      ORDER BY latest DESC, MAX(time_ms) DESC, path ASC",
         placeholders(stores.len())
     );
     values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
@@ -364,7 +367,7 @@ pub fn path_for_session_id(
     let sql = format!(
         "SELECT path FROM message_rows WHERE instr(lower(path), ?) > 0 AND store IN ({})
       GROUP BY path
-      ORDER BY instr(replace(lower(path), char(92), '/'), ?) > 0 DESC, {NOT_SUBAGENT} DESC, MAX(date) DESC
+      ORDER BY instr(replace(lower(path), char(92), '/'), ?) > 0 DESC, {NOT_SUBAGENT} DESC, MAX(date) DESC, MAX(time_ms) DESC
       LIMIT 1",
         placeholders(stores.len())
     );
@@ -495,6 +498,8 @@ fn js_number(value: f64) -> SqlValue {
 struct Row {
     role: &'static str,
     date: String,
+    /// Epoch milliseconds of the message, 0 when unknown.
+    time_ms: i64,
     project: String,
     text: String,
 }
@@ -540,6 +545,7 @@ fn visible_rows(
         .map(|message| Row {
             role: message.role,
             date: message.date.unwrap_or_else(|| file_date.to_string()),
+            time_ms: message.time_ms.unwrap_or(0),
             project: compact_home(message.project.as_deref().unwrap_or(file_project)).to_string(),
             text: message.text,
         })
@@ -778,7 +784,7 @@ fn write_batch<'a>(
     {
         let mut insert = transaction
             .prepare_cached(
-                "INSERT INTO message_rows (store, path, source, role, date, project, text) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO message_rows (store, path, source, role, date, time_ms, project, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .map_err(sql_error)?;
         let mut upsert = transaction
@@ -799,6 +805,7 @@ fn write_batch<'a>(
                             source,
                             row.role,
                             row.date,
+                            row.time_ms,
                             row.project,
                             row.text
                         ])
@@ -1003,7 +1010,7 @@ fn refresh_opencode_rows(
     let mut indexed = 0;
     {
         let mut insert = transaction
-            .prepare_cached("INSERT INTO message_rows (store, path, source, role, date, project, key, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .prepare_cached("INSERT INTO message_rows (store, path, source, role, date, time_ms, project, key, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .map_err(sql_error)?;
         let mut remove = transaction
             .prepare_cached("DELETE FROM message_rows WHERE store = ? AND key = ?")
@@ -1048,6 +1055,7 @@ fn refresh_opencode_rows(
                     "opencode",
                     role,
                     iso_date_from_millis(row.session_updated)?,
+                    row.session_updated as i64,
                     compact_home(project),
                     key,
                     row.text
@@ -1543,6 +1551,33 @@ mod tests {
         );
         // Search still reaches the subagent's text.
         assert_eq!(counts("subagent text", &stores, &index), [1]);
+    }
+
+    #[test]
+    fn sessions_on_the_same_date_order_by_their_newest_message_time() {
+        let root = temp_root("same-day");
+        let store_path = format!("{root}/claude/-work-dejavu");
+        let index = format!("{root}/cache/index.sqlite");
+        let stores = [store(
+            TranscriptSource::Claude,
+            StoreKind::Jsonl,
+            &format!("{root}/claude"),
+        )];
+        std::fs::create_dir_all(&store_path).unwrap();
+        let at = |time: &str| claude_line("user", "work").replace("10:00:00Z", time);
+        // The earlier path holds the older session; ordering by path would pick it.
+        let older = format!("{store_path}/a.jsonl");
+        let newer = format!("{store_path}/b.jsonl");
+        std::fs::write(&older, format!("{}\n{}", at("08:00:00Z"), at("17:33:00Z"))).unwrap();
+        std::fs::write(&newer, at("22:32:00.500+00:00")).unwrap();
+        refresh(&stores, &index);
+
+        let recent = recent_sessions(&ProjectFilter::Any, None, &stores, &index).unwrap();
+        assert_eq!(
+            recent.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+            [newer.as_str(), older.as_str()]
+        );
+        assert!(recent.iter().all(|r| r.date == "2026-09-02"));
     }
 
     #[test]
