@@ -210,11 +210,12 @@ dejavu scrub '<locator>' --drop 12 --pattern "secret-host" --pattern "api key"
 ```bash
 dejavu memory list
 dejavu memory list --files
-dejavu memory search 'deployment boundary' --json
+dejavu memory search deploy staging --json
+dejavu memory search mbx -p dejavu --type feedback
 dejavu memory show '<project or file selector>'
 ```
 
-Memory search stays separate from transcript search. Memory files contain curated facts instead of conversation turns.
+Memory search stays separate from transcript search. Memory files contain curated facts instead of conversation turns. `memory search` reads every project's memory under the Claude projects root in one pass. Each word is a term, and a file must contain all of them. Files whose name, frontmatter `name`, or `description` contain the terms rank first. Each result carries the frontmatter `description` and `type`, so you can pick the right fact without opening the file. `-p` limits the search to projects whose key contains a substring, and `--type` keeps one frontmatter type (`user`, `feedback`, `project`, or `reference`).
 
 ### Query one session
 
@@ -285,7 +286,7 @@ Search JSON contains `.matches`, find JSON contains `.hits`, and memory search r
 ```bash
 dejavu search 'exact phrase' --json | jq '.matches[].path'
 dejavu find deployment timeout --json | jq '.hits[].path'
-dejavu memory search 'deployment boundary' --json | jq '.[].path'
+dejavu memory search deployment boundary --json | jq '.[].path'
 ```
 
 Help uses color only when stdout is a terminal. Any `NO_COLOR` value or `--no-color` disables help styling. Piped help stays plain even with `--color`.

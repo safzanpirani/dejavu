@@ -27,6 +27,22 @@ pub struct MemoryMatch {
     pub path: String,
     pub count: usize,
     pub snippets: Vec<String>,
+    /// The frontmatter `description`, when the file has one.
+    pub description: Option<String>,
+    /// The frontmatter `type` (top level or under `metadata`), when present.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+}
+
+/// Which memory files a search reads and how many results it returns.
+#[derive(Debug, Clone, Default)]
+pub struct SearchOptions {
+    pub limit: usize,
+    pub snippets: usize,
+    /// Case-insensitive substring of the project key.
+    pub project: Option<String>,
+    /// Exact frontmatter type, compared without case.
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,50 +240,168 @@ pub fn list_memories(root: &str, store: &dyn MemoryStore) -> Result<Vec<MemoryPr
     Ok(grouped)
 }
 
+/// The fields Claude's memory frontmatter carries, plus the line where the body starts.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Frontmatter {
+    name: Option<String>,
+    description: Option<String>,
+    kind: Option<String>,
+    body_start: usize,
+}
+
+/// Reads a leading `---` block line by line: `name` and `description` at the
+/// top level, `type` at any depth (Claude nests it under `metadata`).
+fn frontmatter(lines: &[&str]) -> Frontmatter {
+    let mut front = Frontmatter::default();
+    if lines.first().map(|line| line.trim()) != Some("---") {
+        return front;
+    }
+    let Some(end) = lines.iter().skip(1).position(|line| line.trim() == "---") else {
+        return front;
+    };
+    for line in &lines[1..=end] {
+        let trimmed = line.trim_start();
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let value = unquote(value.trim());
+        if value.is_empty() {
+            continue;
+        }
+        let top_level = trimmed.len() == line.len();
+        match key.trim() {
+            "name" if top_level => front.name = Some(value.into()),
+            "description" if top_level => front.description = Some(value.into()),
+            "type" if front.kind.is_none() => front.kind = Some(value.into()),
+            _ => {}
+        }
+    }
+    front.body_start = end + 2;
+    front
+}
+
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
+}
+
+/// Every whitespace-separated term must occur in a file, case-insensitively.
+/// Files rank by terms found in the file name, frontmatter `name`, and
+/// `description`, then the exact phrase, then occurrences (capped per term).
+/// Snippets come from body lines, most distinct terms first.
 pub fn search_memories(
     query: &str,
     root: &str,
-    limit: usize,
-    snippets: usize,
+    options: &SearchOptions,
     store: &dyn MemoryStore,
 ) -> Result<Vec<MemoryMatch>, String> {
-    let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
-        return Err("memory search needs one token or exact phrase".into());
+    let mut terms: Vec<String> = Vec::new();
+    for term in query.split_whitespace().map(str::to_lowercase) {
+        if !terms.contains(&term) {
+            terms.push(term);
+        }
     }
-    let mut matches = Vec::new();
+    if terms.is_empty() {
+        return Err("memory search needs at least one term".into());
+    }
+    let phrase = (terms.len() > 1).then(|| terms.join(" "));
+    let project = options.project.as_deref().map(str::to_lowercase);
+    let mut ranked = Vec::new();
     for file in memory_files(root, store)? {
+        if project
+            .as_deref()
+            .is_some_and(|wanted| !file.project.to_lowercase().contains(wanted))
+        {
+            continue;
+        }
         let Ok(text) = store.read(&file.path) else {
             continue;
         };
-        let matching: Vec<&str> = text
-            .split('\n')
-            .map(|line| line.strip_suffix('\r').unwrap_or(line))
-            .filter(|line| line.to_lowercase().contains(&needle))
+        let lower = text.to_lowercase();
+        let counts: Vec<usize> = terms
+            .iter()
+            .map(|term| lower.matches(term).count())
             .collect();
-        if matching.is_empty() {
+        if counts.contains(&0) {
             continue;
         }
-        let count = text.to_lowercase().matches(&needle).count();
-        matches.push(MemoryMatch {
-            project: file.project,
-            name: file.name,
-            path: file.path,
-            count,
-            snippets: matching
-                .into_iter()
-                .take(snippets)
-                .map(str::to_string)
-                .collect(),
-        });
+        let lines: Vec<&str> = text
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .collect();
+        let front = frontmatter(&lines);
+        if let Some(wanted) = options.kind.as_deref()
+            && !front
+                .kind
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
+        {
+            continue;
+        }
+        let label = format!("{} {}", file.name, front.name.as_deref().unwrap_or("")).to_lowercase();
+        let description = front.description.as_deref().unwrap_or("").to_lowercase();
+        let mut score: usize = terms
+            .iter()
+            .zip(&counts)
+            .map(|(term, count)| {
+                4 * usize::from(label.contains(term))
+                    + 2 * usize::from(description.contains(term))
+                    + count.min(&5)
+            })
+            .sum();
+        if phrase
+            .as_deref()
+            .is_some_and(|phrase| lower.contains(phrase))
+        {
+            score += 5;
+        }
+        let mut matching: Vec<(usize, &str)> = lines[front.body_start.min(lines.len())..]
+            .iter()
+            .filter_map(|line| {
+                let line_lower = line.to_lowercase();
+                let hits = terms
+                    .iter()
+                    .filter(|term| line_lower.contains(*term))
+                    .count();
+                (hits > 0).then_some((hits, *line))
+            })
+            .collect();
+        matching.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+        ranked.push((
+            score,
+            MemoryMatch {
+                project: file.project,
+                name: file.name,
+                path: file.path,
+                count: counts.iter().sum(),
+                snippets: matching
+                    .into_iter()
+                    .take(options.snippets)
+                    .map(|(_, line)| line.to_string())
+                    .collect(),
+                description: front.description,
+                kind: front.kind,
+            },
+        ));
     }
-    matches.sort_by(|a, b| {
-        b.count
-            .cmp(&a.count)
+    ranked.sort_by(|(a_score, a), (b_score, b)| {
+        b_score
+            .cmp(a_score)
+            .then_with(|| b.count.cmp(&a.count))
             .then_with(|| locale_compare(&a.path, &b.path))
     });
-    matches.truncate(limit);
-    Ok(matches)
+    Ok(ranked
+        .into_iter()
+        .take(options.limit)
+        .map(|(_, found)| found)
+        .collect())
 }
 
 pub fn show_memory(
@@ -402,9 +536,17 @@ mod tests {
         );
     }
 
+    fn options() -> SearchOptions {
+        SearchOptions {
+            limit: 20,
+            snippets: 3,
+            ..SearchOptions::default()
+        }
+    }
+
     #[test]
     fn searches_every_project_and_ranks_by_occurrence_count() {
-        let result = search_memories("production", "/mem", 20, 3, &fake()).unwrap();
+        let result = search_memories("production", "/mem", &options(), &fake()).unwrap();
         let ranked: Vec<(&str, usize)> =
             result.iter().map(|m| (m.name.as_str(), m.count)).collect();
         assert_eq!(ranked, [("deploy.md", 2), ("MEMORY.md", 1)]);
@@ -413,10 +555,100 @@ mod tests {
             ["Production deploy passed.", "production stayed healthy."]
         );
         assert!(
-            search_memories("  ", "/mem", 20, 3, &fake())
+            search_memories("  ", "/mem", &options(), &fake())
                 .unwrap_err()
-                .contains("needs one token")
+                .contains("at least one term")
         );
+    }
+
+    fn fact(name: &str, description: &str, kind: &str, body: &str) -> String {
+        format!(
+            "---\nname: {name}\ndescription: \"{description}\"\nmetadata:\n  type: {kind}\n---\n\n{body}"
+        )
+    }
+
+    fn corpus() -> Fake {
+        let files = [
+            (
+                "/mem/-Users-me-api/memory/staging-deploy.md",
+                fact(
+                    "staging-deploy",
+                    "Deploy the API to staging",
+                    "reference",
+                    "Run the pipeline.\nThe deploy waits for staging health.",
+                ),
+            ),
+            (
+                "/mem/-Users-me-web/memory/notes.md",
+                fact(
+                    "notes",
+                    "Assorted notes",
+                    "project",
+                    "deploy deploy deploy deploy deploy deploy\nstaging later",
+                ),
+            ),
+            (
+                "/mem/-Users-me-web/memory/deploy-only.md",
+                "deploy without the other word".to_string(),
+            ),
+        ];
+        Fake {
+            files: files
+                .into_iter()
+                .map(|(path, text)| (path.to_string(), text))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn every_term_must_match_and_frontmatter_hits_outrank_body_counts() {
+        let result = search_memories("Staging DEPLOY", "/mem", &options(), &corpus()).unwrap();
+        let names: Vec<&str> = result.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["staging-deploy.md", "notes.md"]);
+        assert_eq!(
+            result[0].description.as_deref(),
+            Some("Deploy the API to staging")
+        );
+        assert_eq!(result[0].kind.as_deref(), Some("reference"));
+        // Frontmatter lines never become snippets; lines with both terms lead.
+        assert_eq!(result[0].snippets, ["The deploy waits for staging health."]);
+        let json = serde_json::to_value(&result[0]).unwrap();
+        assert_eq!(json["type"], "reference");
+    }
+
+    #[test]
+    fn project_and_type_filters_narrow_the_corpus() {
+        let by_project = SearchOptions {
+            project: Some("ME-WEB".into()),
+            ..options()
+        };
+        let names: Vec<String> = search_memories("deploy", "/mem", &by_project, &corpus())
+            .unwrap()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(names, ["notes.md", "deploy-only.md"]);
+        let by_type = SearchOptions {
+            kind: Some("Reference".into()),
+            ..options()
+        };
+        let names: Vec<String> = search_memories("deploy", "/mem", &by_type, &corpus())
+            .unwrap()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(names, ["staging-deploy.md"]);
+    }
+
+    #[test]
+    fn frontmatter_needs_a_closing_fence() {
+        let lines = ["---", "name: x", "body"];
+        assert_eq!(frontmatter(&lines), Frontmatter::default());
+        let lines = ["---", "name: 'x'", "type: user", "---", "body"];
+        let front = frontmatter(&lines);
+        assert_eq!(front.name.as_deref(), Some("x"));
+        assert_eq!(front.kind.as_deref(), Some("user"));
+        assert_eq!(front.body_start, 4);
     }
 
     #[test]

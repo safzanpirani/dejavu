@@ -11,7 +11,7 @@ Use these jq paths:
 ```sh
 dejavu search 'exact phrase' --json | jq '.matches[].path'
 dejavu find deployment timeout --json | jq '.hits[].path'
-dejavu memory search 'exact phrase' --json | jq '.[].path'
+dejavu memory search deploy staging --json | jq '.[].path'
 dejavu transcript '<locator>' --json | jq '.events[]'
 ```
 
@@ -22,11 +22,12 @@ Memory list and search return bare arrays. Transcript returns an object with an 
 ```sh
 dejavu memory list
 dejavu memory list --files
-dejavu memory search 'exact phrase' --json
+dejavu memory search deploy staging --json
+dejavu memory search mbx -p dejavu --type feedback
 dejavu memory show '<unique project substring or file path>'
 ```
 
-Memory commands read Markdown under `~/.claude/projects/*/memory/`. They search curated memory separately from raw transcripts and never modify it. A project selector with several topic files resolves to its `MEMORY.md` index. Use the exact `project/name` from `memory list --files` when a selector is ambiguous. Set `CLAUDE_CONFIG_DIR` or pass `--root` for another Claude store.
+Memory commands read Markdown under `~/.claude/projects/*/memory/`. They search curated memory separately from raw transcripts and never modify it. `memory search` scans every project in one pass. Every word must appear in a file. Hits in the file name or frontmatter `name`/`description` rank first, and each result carries the frontmatter `description` and `type`. `-p` limits the search to matching project keys; `--type` filters by frontmatter type (`user`, `feedback`, `project`, `reference`). A project selector with several topic files resolves to its `MEMORY.md` index. Use the exact `project/name` from `memory list --files` when a selector is ambiguous. Set `CLAUDE_CONFIG_DIR` or pass `--root` for another Claude store.
 
 ## Continue where a session left off
 

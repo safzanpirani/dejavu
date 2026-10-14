@@ -46,29 +46,42 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             Ok(0)
         }
         "search" => {
-            let limit = args.integer(&["-n", "--limit"], "--limit", 20);
-            let snippets = args.integer(&["--snippets"], "--snippets", 3);
+            let options = memory::SearchOptions {
+                limit: args.integer(&["-n", "--limit"], "--limit", 20),
+                snippets: args.integer(&["--snippets"], "--snippets", 3),
+                project: args.value(&["-p", "--project"]),
+                kind: args.value(&["--type"]),
+            };
             args.reject_unknown_flags();
             let query = args.items.join(" ");
             let query = query.trim();
             if query.is_empty() {
-                die("memory search needs one token or exact phrase");
+                die("memory search needs at least one term");
             }
-            let result = memory::search_memories(query, &root, limit, snippets, &Disk)?;
+            let result = memory::search_memories(query, &root, &options, &Disk)?;
             if common.json {
                 println!("{}", js::pretty(&result));
             } else {
                 let blocks: Vec<String> = result
                     .iter()
                     .map(|found| {
-                        format!(
-                            "{}\t{}/{}\t{}\n  {}",
-                            found.count,
-                            found.project,
-                            found.name,
-                            found.path,
-                            found.snippets.join("\n  ")
-                        )
+                        let mut block = format!(
+                            "{}\t{}/{}\t{}",
+                            found.count, found.project, found.name, found.path
+                        );
+                        match (&found.kind, &found.description) {
+                            (Some(kind), Some(description)) => {
+                                block.push_str(&format!("\n  [{kind}] {description}"));
+                            }
+                            (None, Some(description)) => {
+                                block.push_str(&format!("\n  {description}"));
+                            }
+                            _ => {}
+                        }
+                        for snippet in &found.snippets {
+                            block.push_str(&format!("\n  {snippet}"));
+                        }
+                        block
                     })
                     .collect();
                 println!("{}", blocks.join("\n"));

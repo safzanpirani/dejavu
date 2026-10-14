@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5
+
+- `dejavu memory search` takes several words and returns files that contain all of them, across every project's Claude memory. It used to match the words only as one exact phrase. Files rank first when the terms appear in the file name or in the frontmatter `name` or `description`. Each result carries the frontmatter `description` and `type`; text output prints them above the snippets, and snippets skip the frontmatter. `-p SUBSTR` limits the search to matching project keys, and `--type user|feedback|project|reference` filters by frontmatter type.
+
 ## 0.6.4
 
 - `dejavu recall '<description>'` finds sessions by meaning. It retrieves candidates with `find`, one description word (or `-k` term) at a time, and asks TypeSafe's Jev model how likely each session is the one described. Hits carry `relevance` and the matched `keywords`. The key comes from `TYPESAFE_API_KEY` or `omp token typesafe`; a run costs well under $0.001 and is the only search command that sends excerpts off the machine.

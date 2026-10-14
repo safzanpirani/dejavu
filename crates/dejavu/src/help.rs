@@ -228,11 +228,11 @@ OpenClaw reads each $OPENCLAW_STATE_DIR/agents/*/agent/openclaw-agent.sqlite
 Memory commands read Claude's cross-project Markdown memory corpus.
 Memory selectors accept exact listed project keys, unique project substrings, or file paths.
 Memory search --snippets also requires an integer >= 1.
-It is case-insensitive literal fixed-string search, not semantic search.
-Use one distinctive token or exact phrase per call."#;
+Every word of a memory search must appear in a file, without case sensitivity.
+It is literal term search, not semantic search."#;
 
 const MEMORY_LIST: &str = "JSON array item keys: project, path, files\njq: jq '.[].project'\nWith --files, JSON array item keys: project, name, path\njq (--files): jq '.[].path'";
-const MEMORY_SEARCH: &str = "JSON array item keys: project, name, path, count, snippets\njq: jq '.[].path'\nThe top level is a bare array, with no results or hits wrapper.";
+const MEMORY_SEARCH: &str = "JSON array item keys: project, name, path, count, snippets, description, type\njq: jq '.[].path'\nThe top level is a bare array, with no results or hits wrapper.\ndescription and type come from the file's frontmatter; they are null when it has none.";
 const MEMORY_SHOW: &str =
     "JSON object keys: file, content\njq: jq '.content'\nfile contains project, name, path.";
 const INDEX_STATUS: &str =
@@ -302,7 +302,7 @@ pub fn command(topic: &str) -> Result<String, String> {
             "0: completed without diagnostics; 1: diagnostics, explanation failure, or other error.",
         ),
         "memory" => (
-            "memory [list|search|show] [flags]", "      --root DIR        Claude projects root (default $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)\n      list --files      list individual memory files\n      search <phrase> [-n N|--limit N] [--snippets N]\n                        limit defaults to 20; snippets defaults to 3; both >= 1\n      show <selector>   project key, unique project substring, or file path".into(),
+            "memory [list|search|show] [flags]", "      --root DIR        Claude projects root (default $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)\n      list --files      list individual memory files\n      search <terms> [-n N|--limit N] [--snippets N] [-p SUBSTR] [--type TYPE]\n                        limit defaults to 20; snippets defaults to 3; both >= 1\n      show <selector>   project key, unique project substring, or file path".into(),
             "JSON: list and search return bare arrays; show returns {file, content}.",
             format!("Default command: list.\n\nmemory list:\n{MEMORY_LIST}\n\nmemory search:\n{MEMORY_SEARCH}\n\nmemory show:\n{MEMORY_SHOW}"),
             "0: completed, including empty lists/searches; 1: usage, selection, or read error.",
@@ -313,8 +313,8 @@ pub fn command(topic: &str) -> Result<String, String> {
             "0: completed, including an empty list; 1: usage or read error.",
         ),
         "memory search" => (
-            "memory search <phrase> [flags]", "  -n, --limit N         maximum files (default 20; >= 1)\n      --snippets N      snippets per file (default 3; >= 1)\n      --root DIR        override the Claude projects root".into(), MEMORY_SEARCH,
-            "Search matches a literal phrase without case sensitivity.".into(),
+            "memory search <terms> [flags]", "  -n, --limit N         maximum files (default 20; >= 1)\n      --snippets N      snippets per file (default 3; >= 1)\n  -p, --project SUBSTR  only projects whose key contains SUBSTR\n      --type TYPE       only files whose frontmatter type is TYPE (user, feedback, project, reference)\n      --root DIR        override the Claude projects root".into(), MEMORY_SEARCH,
+            "Search reads every project's memory. Each word is a term, and a file must contain every term\nwithout case sensitivity. Terms in the file name, frontmatter name, or description rank first,\nthen the exact phrase, then occurrence counts. Snippets skip the frontmatter.".into(),
             "0: completed, including zero matches; 1: usage or read error.",
         ),
         "memory show" => (

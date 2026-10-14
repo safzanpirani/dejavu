@@ -23,7 +23,7 @@ memory. The table below covers what agents need; you should rarely need `--help`
 | Read one session's conversation | `dejavu show <locator> --no-tools [--around TERM]` |
 | See what an agent ran and got back | `dejavu transcript <locator> --tool-chars 400 --budget-chars 8000` |
 | Ask a question about one session (model cost) | `dejavu query <locator> 'question'` |
-| Search Claude memory across projects | `dejavu memory search 'phrase'` · `memory list --files` · `memory show <selector>` |
+| Search Claude memory across all projects | `dejavu memory search term1 term2 [-p project-substr] [--type feedback]` · `memory list --files` · `memory show <selector>` |
 | Measure tool activity in a session | `dejavu profile <locator> --json` |
 
 Add `-s claude|codex|pi|omp|opencode|droid|openclaw|hermes|agy` to limit a search to
@@ -59,7 +59,7 @@ Python tracebacks in past sessions):
 ```sh
 dejavu search 'phrase' --json | jq -r '.matches[].path'
 dejavu find a b --json | jq -r '.hits[].path'
-dejavu memory search 'phrase' --json | jq -r '.[].path'      # bare array
+dejavu memory search a b --json | jq -r '.[] | "\(.path)\t\(.description)"'   # bare array
 dejavu transcript '<loc>' --json | jq '.events[] | {kind}'   # window.nextEvent pages
 ```
 
