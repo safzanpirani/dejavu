@@ -33,6 +33,8 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     let snippets = args.integer(&["--snippets"], "--snippets", DEFAULT_SNIPPET_LIMIT);
     let max_parallel = args.integer(&["--max-parallel"], "--max-parallel", DEFAULT_MAX_PARALLEL);
     let no_index = args.flag(&["--no-index"]);
+    let since = args.value(&["--since"]);
+    let tools = args.flag(&["--tools"]);
     let color = args::color_choice(&mut args, common.json);
     args.reject_unknown_flags();
     let query = args.items.join(" ");
@@ -46,6 +48,8 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         snippets,
         max_parallel,
         no_index,
+        since,
+        tools,
     };
     let result = search::search_sessions(query, options, &Disk)?;
     if common.json {

@@ -10,7 +10,7 @@ use crate::paths::{
     project_from_transcript_text, snippet_around,
 };
 use crate::pool::map_pool;
-use crate::reader::{extract_visible_message, load_recall_messages};
+use crate::reader::{VisibleMessage, extract_visible_message, load_recall_messages};
 use crate::scan::{self, FileMatchCount, locale_compare};
 use crate::sources::discover_stores;
 use crate::types::{
@@ -175,13 +175,18 @@ pub struct SearchResult {
     pub elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SearchOptions {
     pub source: SourceSelector,
     pub limit: usize,
     pub snippets: usize,
     pub max_parallel: usize,
     pub no_index: bool,
+    /// `YYYY-MM-DD` or `7d`/`2w`/`3m`: only messages dated on or after it match.
+    pub since: Option<String>,
+    /// Also match tool-call inputs. The index holds only visible messages, so
+    /// this scans JSONL transcripts directly.
+    pub tools: bool,
 }
 
 impl Default for SearchOptions {
@@ -192,8 +197,29 @@ impl Default for SearchOptions {
             snippets: crate::DEFAULT_SNIPPET_LIMIT,
             max_parallel: DEFAULT_MAX_PARALLEL,
             no_index: false,
+            since: None,
+            tools: false,
         }
     }
+}
+
+/// Whether a message `date` is on or after `since`. Undated messages pass.
+fn on_or_after(date: Option<&str>, since: Option<&str>) -> bool {
+    match (date, since) {
+        (Some(date), Some(since)) if !date.is_empty() && date != "unknown" => date >= since,
+        _ => true,
+    }
+}
+
+/// Whether a file was last written before `since`, so none of its messages can
+/// be newer. Unreadable metadata (virtual locators, fixtures) answers no.
+fn written_before(path: &str, since: &str) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| crate::view::iso_from_millis(elapsed.as_millis() as f64).ok())
+        .is_some_and(|iso| js::prefix(&iso, 10) < since)
 }
 
 /// JavaScript `String.prototype.trim()`.
@@ -252,11 +278,18 @@ pub fn search_sessions(
             options.source.as_str()
         ));
     }
+    let since = options
+        .since
+        .as_deref()
+        .map(|since| crate::find::parse_since(since, None))
+        .transpose()?;
+    let since = since.as_deref();
     let started = Instant::now();
     let mut indexed: HashMap<String, Vec<StoreSearchMatch>> = HashMap::new();
     let mut reader: Option<IndexReader> = None;
     if let Some(index_path) = backend.index_path()
         && !options.no_index
+        && !options.tools
         && js::len(needle) >= 3
     {
         let attempt =
@@ -278,7 +311,9 @@ pub fn search_sessions(
                 let cap = limit
                     .saturating_mul(4)
                     .saturating_mul(indexed_stores.len().max(1));
-                for row in reader.grouped_matches(needle, &indexed_stores, cap, TieBreak::Date)? {
+                for row in
+                    reader.grouped_matches(needle, &indexed_stores, cap, TieBreak::Date, since)?
+                {
                     let found = row.into_match();
                     if let Some(list) = by_store.get_mut(&found.store) {
                         list.push(found.matched);
@@ -311,7 +346,10 @@ pub fn search_sessions(
                 limit.saturating_mul(4),
                 snippet_limit,
             ) {
-                Ok(direct) => scan(direct, false, Vec::new(), None),
+                Ok(mut direct) => {
+                    direct.retain(|found| on_or_after(Some(&found.date), since));
+                    scan(direct, false, Vec::new(), None)
+                }
                 Err(error) => scan(
                     Vec::new(),
                     false,
@@ -334,6 +372,9 @@ pub fn search_sessions(
                 .cmp(&a.count)
                 .then_with(|| locale_compare(&b.path, &a.path))
         });
+        if let Some(since) = since {
+            counts.retain(|item| !written_before(&item.path, since));
+        }
         counts.truncate(limit.saturating_mul(4));
         scan(Vec::new(), false, counts, None)
     })?;
@@ -351,13 +392,33 @@ pub fn search_sessions(
             snippet_limit.saturating_mul(20),
             &mut |line| {
                 if let Some(message) = extract_visible_message(line, store.source)
+                    && on_or_after(message.date.as_deref(), since)
                     && js_lower(&message.text).contains(lowered.as_str())
                 {
                     visible.push(message);
+                } else if options.tools {
+                    visible.extend(
+                        crate::view::line_tool_calls(line, store.source)
+                            .into_iter()
+                            .map(|call| VisibleMessage {
+                                role: "tool",
+                                text: call.text,
+                                date: call
+                                    .timestamp
+                                    .map(|stamp| js::prefix(&stamp, 10).to_string()),
+                                project: None,
+                                time_ms: None,
+                            })
+                            .filter(|call| {
+                                on_or_after(call.date.as_deref(), since)
+                                    && js_lower(&call.text).contains(lowered.as_str())
+                            }),
+                    );
                 }
                 visible.len() < snippet_limit
             },
         );
+        visible.truncate(snippet_limit);
         if visible.is_empty() {
             return None;
         }
@@ -408,7 +469,7 @@ pub fn search_sessions(
         .collect();
     let mut snippets = match &reader {
         Some(reader) if !indexed_paths.is_empty() => {
-            reader.snippets(needle, &indexed_paths, snippet_limit)?
+            reader.snippets(needle, &indexed_paths, snippet_limit, since)?
         }
         _ => HashMap::new(),
     };
@@ -827,6 +888,109 @@ mod tests {
                 (format!("{store_path}/-work-a/one.jsonl"), 1),
             ]
         );
+        let since = |since: &str| {
+            let result = search_sessions(
+                "Needle",
+                SearchOptions {
+                    since: Some(since.into()),
+                    ..SearchOptions::default()
+                },
+                &backend,
+            )
+            .unwrap();
+            result
+                .matches
+                .iter()
+                .map(|m| m.snippets.len())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(since("2026-09-01"), [1, 1]);
+        assert_eq!(since("2026-09-02"), Vec::<usize>::new());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn since_drops_older_messages_and_tools_matches_tool_call_inputs() {
+        let tool_call = serde_json::json!({
+            "type": "assistant", "timestamp": "2026-09-05T00:00:00Z",
+            "message": { "role": "assistant", "content": [
+                { "type": "tool_use", "id": "t1", "name": "Skill",
+                  "input": { "skill": "grok-search", "args": "read https://x.com/Needle/status/1" } },
+            ] },
+        })
+        .to_string();
+        let fake = Fake {
+            stores: vec![jsonl(TranscriptSource::Claude, "/claude")],
+            counts: Box::new(|_, _| {
+                ["/claude/p/old.jsonl", "/claude/p/new.jsonl"]
+                    .map(|path| FileMatchCount {
+                        path: path.into(),
+                        count: 1,
+                    })
+                    .into()
+            }),
+            lines: Box::new(move |_, path| {
+                vec![if path.ends_with("old.jsonl") {
+                    line("user", "user", "2026-08-01T00:00:00Z", None, "Needle")
+                } else {
+                    tool_call.clone()
+                }]
+            }),
+            opencode: Box::new(|_| Ok(Vec::new())),
+        };
+        let run = |since: Option<&str>, tools: bool| {
+            search_sessions(
+                "x.com/needle",
+                SearchOptions {
+                    since: since.map(str::to_string),
+                    tools,
+                    ..SearchOptions::default()
+                },
+                &fake,
+            )
+            .unwrap()
+            .matches
+        };
+        assert!(run(None, false).is_empty());
+        let found = run(Some("2026-09-01"), true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, "/claude/p/new.jsonl");
+        assert_eq!(found[0].date, "2026-09-05");
+        assert_eq!(found[0].snippets[0].role, "tool");
+        assert!(
+            found[0].snippets[0]
+                .text
+                .contains("Skill: grok-search read https://x.com/Needle/status/1")
+        );
+
+        let needle = |since: Option<&str>| {
+            search_sessions(
+                "Needle",
+                SearchOptions {
+                    since: since.map(str::to_string),
+                    ..SearchOptions::default()
+                },
+                &fake,
+            )
+            .unwrap()
+            .matches
+            .into_iter()
+            .map(|m| m.path)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(needle(None), ["/claude/p/old.jsonl"]);
+        assert!(needle(Some("2026-09-01")).is_empty());
+        assert!(
+            search_sessions(
+                "Needle",
+                SearchOptions {
+                    since: Some("yesterday".into()),
+                    ..SearchOptions::default()
+                },
+                &fake,
+            )
+            .unwrap_err()
+            .contains("--since")
+        );
     }
 }

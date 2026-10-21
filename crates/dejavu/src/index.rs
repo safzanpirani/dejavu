@@ -1216,15 +1216,17 @@ impl IndexReader {
     /// `groupedMatches`: transcripts ranked by literal occurrence count, aggregated
     /// in SQL so only one row per transcript is read. The trigram match already
     /// guarantees a case-folded substring hit, so a count that SQLite's ASCII-only
-    /// lower() misses is floored at one instead of being dropped.
+    /// lower() misses is floored at one instead of being dropped. With `since`,
+    /// only messages dated on or after it (or undated) count.
     pub fn grouped_matches(
         &self,
         query: &str,
         stores: &[TranscriptStore],
         limit: usize,
         tie_break: TieBreak,
+        since: Option<&str>,
     ) -> Result<Vec<GroupedRow>, String> {
-        self.grouped_filtered(query, stores, limit, tie_break, None)
+        self.grouped_filtered(query, stores, limit, tie_break, since, None)
     }
 
     /// Find applies project/activity eligibility before any candidate cap.
@@ -1240,6 +1242,7 @@ impl IndexReader {
             stores,
             usize::MAX,
             TieBreak::Date,
+            None,
             Some((project, since)),
         )
     }
@@ -1250,6 +1253,7 @@ impl IndexReader {
         stores: &[TranscriptStore],
         limit: usize,
         tie_break: TieBreak,
+        message_since: Option<&str>,
         filters: Option<(Option<&str>, Option<&str>)>,
     ) -> Result<Vec<GroupedRow>, String> {
         if js::len(query) < 3 || stores.is_empty() {
@@ -1262,6 +1266,10 @@ impl IndexReader {
         };
         let mut conditions = String::new();
         let mut filter_values = Vec::new();
+        if let Some(since) = message_since {
+            conditions.push_str(" AND (r.date >= ? OR r.date IN ('', 'unknown'))");
+            filter_values.push(SqlValue::Text(since.to_string()));
+        }
         if let Some((project, since)) = filters {
             conditions.push_str(" AND instr(replace(r.path, char(92), '/'), '/subagents/') = 0");
             if let Some(project) = project.filter(|p| p.is_ascii()) {
@@ -1336,12 +1344,13 @@ impl IndexReader {
     /// index order, as snippets around the query (the TypeScript's per-path
     /// `MATCH ... AND r.path = ? ORDER BY r.id LIMIT ?`). The full-text lookup
     /// runs once for all paths: each lookup decodes every trigram's doclist, so
-    /// one per path would repeat that work.
+    /// one per path would repeat that work. With `since`, older dated messages are skipped.
     pub fn snippets(
         &self,
         query: &str,
         paths: &[&str],
         limit: usize,
+        since: Option<&str>,
     ) -> Result<HashMap<String, Vec<TranscriptSnippet>>, String> {
         let mut out: HashMap<String, Vec<TranscriptSnippet>> = HashMap::new();
         if paths.is_empty() || limit == 0 {
@@ -1349,11 +1358,17 @@ impl IndexReader {
         }
         let sql = format!(
             "WITH hits AS MATERIALIZED (SELECT rowid AS id FROM messages WHERE messages MATCH ?)
-      SELECT r.path, r.id FROM hits JOIN message_rows r ON r.id = hits.id WHERE r.path IN ({})",
-            placeholders(paths.len())
+      SELECT r.path, r.id FROM hits JOIN message_rows r ON r.id = hits.id WHERE r.path IN ({}){}",
+            placeholders(paths.len()),
+            if since.is_some() {
+                " AND (r.date >= ? OR r.date IN ('', 'unknown'))"
+            } else {
+                ""
+            }
         );
         let mut values: Vec<SqlValue> = vec![SqlValue::Text(fts_literal(query))];
         values.extend(paths.iter().map(|p| SqlValue::Text(p.to_string())));
+        values.extend(since.map(|since| SqlValue::Text(since.to_string())));
         let mut ids: HashMap<String, Vec<i64>> = HashMap::new();
         {
             let mut statement = self.database.prepare(&sql).map_err(sql_error)?;
@@ -1405,7 +1420,7 @@ pub fn search_transcript_index(
     }
     let reader = IndexReader::open(path)?;
     Ok(reader
-        .grouped_matches(query, stores, limit, TieBreak::Path)?
+        .grouped_matches(query, stores, limit, TieBreak::Path, None)?
         .into_iter()
         .map(|row| IndexedFileMatch {
             store: row.store,
@@ -1430,12 +1445,12 @@ pub fn search_transcript_index_matches(
     }
     let reader = IndexReader::open(path)?;
     let mut found: Vec<IndexedStoreMatch> = reader
-        .grouped_matches(query, stores, limit, TieBreak::Date)?
+        .grouped_matches(query, stores, limit, TieBreak::Date, None)?
         .into_iter()
         .map(GroupedRow::into_match)
         .collect();
     let paths: Vec<&str> = found.iter().map(|m| m.matched.path.as_str()).collect();
-    let mut snippets = reader.snippets(query, &paths, snippet_limit)?;
+    let mut snippets = reader.snippets(query, &paths, snippet_limit, None)?;
     for item in &mut found {
         item.matched.snippets = snippets.remove(&item.matched.path).unwrap_or_default();
     }

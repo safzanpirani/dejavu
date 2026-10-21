@@ -100,6 +100,8 @@ Search uses case-insensitive fixed-string matching. Spaces form one exact phrase
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
+`--since 2w` (or `YYYY-MM-DD`, `7d`, `3m`) keeps only messages dated on or after the cutoff; counts and snippets come from those messages. `--tools` also matches tool-call inputs, such as a URL passed to a skill or a shell command, and returns them as `tool` snippets. The index holds only visible messages, so `--tools` scans JSONL transcripts directly and takes seconds instead of milliseconds. OpenCode tool calls are not searched.
+
 Each result includes its source, date, project, match count, snippets, and locator. JSONL sources return file paths. OpenCode returns `opencode://...#session-id` locators, OpenClaw `openclaw://...#session-id`, and Hermes `hermes://...#session-id`. OpenClaw stores Pi-format entries and Hermes stores chat rows; Dejavu renders both as Pi transcripts, so every command reads them. `scrub` refuses them, because Dejavu opens those databases read-only. OpenClaw cards print `openclaw resume <session key>` and Hermes cards `hermes --resume <id>`.
 
 ### Find a session from a few terms

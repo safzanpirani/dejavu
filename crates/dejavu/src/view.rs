@@ -387,6 +387,80 @@ fn line_ref(entry: &TreeEntry, block: Option<usize>) -> Option<EventRef> {
     })
 }
 
+/// One tool call from a single JSONL row, for `dejavu search --tools`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineToolCall {
+    /// `name: ` and the input's string, number, and boolean leaves, joined by spaces.
+    pub text: String,
+    pub timestamp: Option<String>,
+}
+
+/// The tool calls one JSONL row records. OpenCode keeps tool calls in SQLite
+/// and has none here.
+pub fn line_tool_calls(line: &str, source: TranscriptSource) -> Vec<LineToolCall> {
+    let Some(value) = parse_json_line::<Value>(line) else {
+        return Vec::new();
+    };
+    let entry = TreeEntry { line: 0, value };
+    let events = match source {
+        TranscriptSource::Claude => claude_events(&entry, false),
+        TranscriptSource::Droid => claude_events(&entry, true),
+        TranscriptSource::Codex => codex_events(&entry),
+        TranscriptSource::Pi
+        | TranscriptSource::Omp
+        | TranscriptSource::Openclaw
+        | TranscriptSource::Hermes => pi_events(&entry),
+        TranscriptSource::Agy => {
+            return match crate::agy::Step::from_value(&entry.value) {
+                Some(step) if step.kind == "PLANNER_RESPONSE" => step
+                    .tool_calls
+                    .iter()
+                    .map(|(name, input)| LineToolCall {
+                        text: tool_call_text(name, input),
+                        timestamp: step.created_at.clone(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+        }
+        TranscriptSource::Opencode => return Vec::new(),
+    };
+    events
+        .into_iter()
+        .filter_map(|event| match event.body {
+            EventBody::ToolCall { name, input, .. } => Some(LineToolCall {
+                text: tool_call_text(&name, &input),
+                timestamp: event.timestamp,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `name: leaf leaf ...`. Leaves keep their raw text, so a literal matches a
+/// URL or command as written rather than its JSON-escaped form.
+fn tool_call_text(name: &str, input: &Value) -> String {
+    fn leaves(value: &Value, out: &mut String) {
+        let mut push = |text: &str| {
+            if !text.is_empty() {
+                out.push(' ');
+                out.push_str(text);
+            }
+        };
+        match value {
+            Value::String(text) => push(text),
+            Value::Number(number) => push(&number.to_string()),
+            Value::Bool(flag) => push(if *flag { "true" } else { "false" }),
+            Value::Array(items) => items.iter().for_each(|item| leaves(item, out)),
+            Value::Object(fields) => fields.values().for_each(|field| leaves(field, out)),
+            Value::Null => {}
+        }
+    }
+    let mut text = format!("{name}:");
+    leaves(input, &mut text);
+    text
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code: ~/.claude/projects/<project>/<session>.jsonl
 
