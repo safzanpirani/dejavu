@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `show`, `transcript`, `query`, and `profile` accept a unique session id prefix of 8 or more characters, like a short git hash. `dejavu show 358a49ad` used to fail with "cannot determine transcript source from locator". A prefix that matches several sessions fails with the matching ids, newest first.
 - `search` takes `--since` like `find`, and counts only messages dated on or after the cutoff. It used to reject the flag.
 - `search --tools` also matches tool-call inputs, so a URL or command that only appeared as a tool argument is found. It scans transcripts directly, because the index holds only visible messages.
 - `last` picks the newest session when several share a date. The index now stores each message's full timestamp, and sessions on the same date order by their newest message instead of by path. The index format changed (schema 7), so each index rebuilds once on first use.

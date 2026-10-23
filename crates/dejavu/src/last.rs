@@ -18,16 +18,63 @@ use serde::Serialize;
 
 /// The transcript a command argument names. A bare session id (a UUID, as printed in
 /// resume commands and session cards) resolves through the index to that session's
-/// own transcript; anything else is already a locator and passes through unchanged.
+/// own transcript, and so does a unique prefix of one (8+ characters, like a short
+/// git hash); an ambiguous prefix is an error that lists the matches. Anything else,
+/// including an existing file with an id-like name, is already a locator and passes
+/// through unchanged.
 pub fn resolve_locator(arg: &str) -> Result<String, String> {
-    if !is_uuid(arg) {
+    let full = is_uuid(arg);
+    if !full && (!is_session_id_prefix(arg) || std::path::Path::new(arg).exists()) {
         return Ok(arg.to_string());
     }
     let stores = crate::sources::discover_stores(crate::types::SourceSelector::All);
     let path = crate::index::default_index_path();
     crate::index::refresh_transcript_index(&stores, &path, false, crate::DEFAULT_MAX_PARALLEL)?;
-    crate::index::path_for_session_id(arg, &stores, &path)?
+    let id = if full {
+        arg.to_string()
+    } else {
+        unique_session_id(
+            arg,
+            &crate::index::session_ids_with_prefix(arg, &stores, &path)?,
+        )?
+    };
+    crate::index::path_for_session_id(&id, &stores, &path)?
         .ok_or_else(|| format!("no transcript found for session id {arg}; run `dejavu last --list` or `dejavu find <terms> --paths`"))
+}
+
+/// Shortest session id prefix `resolve_locator` looks up.
+const MIN_SESSION_PREFIX: usize = 8;
+
+/// A leading part of a UUID: at least [`MIN_SESSION_PREFIX`] characters, hex
+/// digits with dashes only where a UUID has them.
+fn is_session_id_prefix(value: &str) -> bool {
+    let b = value.as_bytes();
+    (MIN_SESSION_PREFIX..36).contains(&b.len())
+        && b.iter().enumerate().all(|(i, &c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                c == b'-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// The one session id a prefix matched, or an error naming none or several.
+fn unique_session_id(prefix: &str, ids: &[String]) -> Result<String, String> {
+    match ids {
+        [] => Err(format!(
+            "no transcript found for session id prefix {prefix}; run `dejavu last --list` or `dejavu find <terms> --paths`"
+        )),
+        [id] => Ok(id.clone()),
+        _ => {
+            let shown = ids[..ids.len().min(5)].join(", ");
+            let more = if ids.len() > 5 { ", …" } else { "" };
+            Err(format!(
+                "session id prefix {prefix} matches {} sessions, newest first ({shown}{more}); pass more characters or the full id",
+                ids.len()
+            ))
+        }
+    }
 }
 
 /// `find`'s ranked-candidate cap, which a term lookup searches up to.

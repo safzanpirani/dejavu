@@ -384,6 +384,66 @@ pub fn path_for_session_id(
         .map_err(sql_error)
 }
 
+/// The full session ids (UUIDs) in indexed transcript paths that start with
+/// `prefix`, newest session first. A subagent transcript carries its session's
+/// id in its path, so it adds no candidate of its own.
+pub fn session_ids_with_prefix(
+    prefix: &str,
+    stores: &[TranscriptStore],
+    path: &str,
+) -> Result<Vec<String>, String> {
+    if stores.is_empty() || prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    let database = open_index_readonly(path)?;
+    let sql = format!(
+        "SELECT path FROM message_rows WHERE instr(lower(path), ?) > 0 AND store IN ({})
+      GROUP BY path
+      ORDER BY MAX(date) DESC, MAX(time_ms) DESC",
+        placeholders(stores.len())
+    );
+    let lowered = prefix.to_ascii_lowercase();
+    let mut values = vec![SqlValue::Text(lowered.clone())];
+    values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+    let mut statement = database.prepare(&sql).map_err(sql_error)?;
+    let paths = statement
+        .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    let mut ids: Vec<String> = Vec::new();
+    for transcript in paths {
+        for id in uuids_starting_with(&transcript.to_ascii_lowercase(), &lowered) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// Every whole UUID in `haystack` (lowercase) that begins with `prefix`.
+fn uuids_starting_with(haystack: &str, prefix: &str) -> Vec<String> {
+    let bytes = haystack.as_bytes();
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = haystack[from..].find(prefix) {
+        let start = from + offset;
+        // `prefix` is ASCII, so the byte after its first one is a char boundary.
+        from = start + 1;
+        if start > 0 && bytes[start - 1].is_ascii_hexdigit() {
+            continue;
+        }
+        if let Some(id) = haystack.get(start..start + 36)
+            && crate::pack::is_uuid(id)
+            && bytes.get(start + 36).is_none_or(|b| !b.is_ascii_hexdigit())
+        {
+            found.push(id.to_string());
+        }
+    }
+    found
+}
+
 // ---------------------------------------------------------------------------
 // Refresh
 // ---------------------------------------------------------------------------
@@ -1566,6 +1626,50 @@ mod tests {
         );
         // Search still reaches the subagent's text.
         assert_eq!(counts("subagent text", &stores, &index), [1]);
+    }
+
+    #[test]
+    fn a_session_id_prefix_finds_whole_ids_once_per_session() {
+        let root = temp_root("id-prefix");
+        let store_path = format!("{root}/claude/-work-dejavu");
+        let index = format!("{root}/cache/index.sqlite");
+        let stores = [store(
+            TranscriptSource::Claude,
+            StoreKind::Jsonl,
+            &format!("{root}/claude"),
+        )];
+        let older = "358a49ad-1111-2222-3333-444444444444";
+        let newer = "358a49ff-1111-2222-3333-444444444444";
+        let other = "aaaaaaaa-1111-2222-3333-444444444444";
+        std::fs::create_dir_all(format!("{store_path}/{older}/subagents")).unwrap();
+        std::fs::write(
+            format!("{store_path}/{older}.jsonl"),
+            claude_line("user", "a"),
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{store_path}/{older}/subagents/agent-1.jsonl"),
+            claude_line("user", "b"),
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{store_path}/{newer}.jsonl"),
+            claude_line("user", "c").replace("2026-09-02", "2026-09-05"),
+        )
+        .unwrap();
+        // The prefix occurs here, but not at the start of a whole id.
+        std::fs::write(
+            format!("{store_path}/x{other}-358a49ad.jsonl"),
+            claude_line("user", "d"),
+        )
+        .unwrap();
+        refresh(&stores, &index);
+
+        let ids = |prefix: &str| session_ids_with_prefix(prefix, &stores, &index).unwrap();
+        assert_eq!(ids("358a49ad"), [older]);
+        assert_eq!(ids("358A49AD-1111"), [older]);
+        assert_eq!(ids("358a49"), [newer, older]);
+        assert!(ids("358a49ae").is_empty());
     }
 
     #[test]
