@@ -151,18 +151,19 @@ Pack JSON uses compact formatting and preserves event metadata fields. The budge
 ### Continue where a session left off
 
 ```bash
-dejavu last                         # newest session in this Git repo
+dejavu last                         # session that wrote text pasted here, else newest in this Git repo
 dejavu last --list -n 5             # cards for the five newest
 dejavu last auth refactor           # find's best match for the terms
 dejavu last '<locator or session ID>'
+dejavu last --said '<a line from an earlier reply>'
 dejavu last --anywhere --since 1d --json
 ```
 
 `find` and `last` cap opening-prompt previews at 300 characters, including a trailing ellipsis when shortened. Use `transcript --full` to read the complete prompt.
 
-`last` prints a session card (date, source, project, opening prompt, last user request, transcript, resume command) and the newest user/assistant turns that fit a budget. Injected harness messages such as task notifications are left out of the tail. It uses no model. With no argument it picks the newest session whose project is the current Git work tree or a directory below it, falling back to the current directory. `--project SUBSTR` matches project paths that contain SUBSTR instead, and `--anywhere` drops the project filter. Terms rank sessions the way `find` does within the current repo, then across every project when the repo has no match. A transcript locator or session ID selects that session directly, even the active one.
+`last` prints a session card (date, source, project, opening prompt, last user request, transcript, resume command) and the newest user/assistant turns that fit a budget. Injected harness messages such as task notifications are left out of the tail. It uses no model. With no argument it first reads the newest prompts of the session that is running it. When one of them holds lines of an earlier assistant reply, as when a user pastes the end of a previous session under "continue this chat", `last` picks the session whose replies contain at least two of those lines (one when only one line is long enough), in any project, and the output starts with a "Picked by pasted text" line. Lines compare as words, so markdown the terminal rendered away, indentation, and wrapping do not matter, and a session that only quotes the text in a user prompt does not count. `--said TEXT` runs the same lookup on text you give. Without such a match it picks the newest session whose project is the current Git work tree or a directory below it, falling back to the current directory. `--project SUBSTR` matches project paths that contain SUBSTR instead, and `--anywhere` drops the project filter; both skip the pasted-text lookup. Terms rank sessions the way `find` does within the current repo, then across every project when the repo has no match; a quoted sentence counts as separate words. A transcript locator or session ID selects that session directly, even the active one. Subagent transcripts (Claude's `<id>/subagents/`, pi's and omp's `<session>/<agent>.jsonl`) are not listed as sessions.
 
-The active `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `ANTIGRAVITY_CONVERSATION_ID`, or `DROID_SESSION_ID` session is skipped, as is the active Droid session (found the way `pack` finds it), so "last session" means the one before this one. `--exclude-session` skips more. The tail defaults to the newest 12 events within 8,000 body characters at 1,500 per event. `--turns`, `--budget-chars`, and `--max-chars` change those bounds. `--tools` adds tool calls and results at `--tool-chars` (default 400) each. `--list` prints only cards. The output ends with a `transcript --from-event` command for earlier turns.
+The active `PI_SESSION_FILE`, `PI_SESSION_ID` (omp), `CODEX_THREAD_ID`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID`, `ANTIGRAVITY_CONVERSATION_ID`, or `DROID_SESSION_ID` session is skipped, as is the active Droid session (found the way `pack` finds it), so "last session" means the one before this one. `--exclude-session` skips more. The tail defaults to the newest 12 events within 8,000 body characters at 1,500 per event. `--turns`, `--budget-chars`, and `--max-chars` change those bounds. `--tools` adds tool calls and results at `--tool-chars` (default 400) each. `--list` prints only cards. The output ends with a `transcript --from-event` command for earlier turns.
 
 ### View a transcript turn by turn
 
