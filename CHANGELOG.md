@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.6
 
 - `dejavu last` finds the session a user pasted from. When a prompt in your own session holds lines of an earlier session's reply (a "continue this chat" message with the old summary under it), `last` picks the session whose assistant replies contain at least two of those lines, in any project, and prints "Picked by pasted text". Words are compared, so rendered markdown, indentation, and terminal wrapping do not break the match. `last --said TEXT` runs the same lookup on text you give. Without a match, or with `-p`/`--anywhere`, `last` picks by recency as before.
 - `last` and `pack` skip the running omp session, which omp names in `PI_SESSION_FILE` and `PI_SESSION_ID`. `last` used to return the session that asked.
