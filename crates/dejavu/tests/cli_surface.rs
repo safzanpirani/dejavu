@@ -52,7 +52,9 @@ impl Fixture {
             .env_remove("DROID_SESSION_ID")
             .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDE_SESSION_ID")
-            .env_remove("CLAUDE_CODE_SESSION_ID");
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("PI_SESSION_FILE")
+            .env_remove("PI_SESSION_ID");
         c
     }
     fn run(&self, args: &[&str]) -> Output {

@@ -31,8 +31,9 @@ use std::time::Instant;
 
 /// Bump when stored rows change, including how messages are extracted
 /// (4: Droid skill notifications are cut from user text; 5: Droid and Codex
-/// compaction summaries are indexed; 7: rows carry `time_ms` for same-day order).
-pub const SCHEMA_VERSION: i64 = 7;
+/// compaction summaries are indexed; 7: rows carry `time_ms` for same-day order;
+/// 8: Claude `api-request-blob` rows are not messages).
+pub const SCHEMA_VERSION: i64 = 8;
 /// Bytes hashed at the start of each JSONL file to detect in-place rewrites versus appends.
 const HEAD_BYTES: u64 = 4096;
 /// Changed files are parsed in parallel in batches of at most this many files
@@ -249,8 +250,8 @@ pub fn list_indexed_sessions(
     let compacted = compact_home(project);
     let needle = js_lower(compacted.strip_prefix("~/").unwrap_or(compacted)).into_owned();
     let sql = format!(
-        "SELECT path, MAX(date) AS latest FROM message_rows
-      WHERE instr(lower(project), ?) > 0 AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
+        "SELECT path, MAX({DATED}) AS latest FROM message_rows
+      WHERE instr(lower(project), ?) > 0 AND store IN ({}) GROUP BY path HAVING latest >= ?
       ORDER BY latest DESC, MAX(time_ms) DESC, path ASC",
         placeholders(stores.len())
     );
@@ -323,8 +324,8 @@ pub fn recent_sessions(
     };
     let database = open_index_readonly(path)?;
     let sql = format!(
-        "SELECT path, source, MAX(date) AS latest FROM message_rows
-      WHERE {clause} AND {NOT_SUBAGENT} AND store IN ({}) GROUP BY path HAVING MAX(date) >= ?
+        "SELECT path, source, MAX({DATED}) AS latest FROM message_rows
+      WHERE {clause} AND {NOT_SUBAGENT} AND store IN ({}) GROUP BY path HAVING latest >= ?
       ORDER BY latest DESC, MAX(time_ms) DESC, path ASC",
         placeholders(stores.len())
     );
@@ -349,12 +350,22 @@ pub fn recent_sessions(
         .collect())
 }
 
-/// The indexed transcript whose path contains a session id, newest first.
 /// Claude Code stores each subagent's transcript under `<session-id>/subagents/`.
-/// Those are parts of a session, not sessions: `last` and `find` leave them out,
-/// while `search` still reaches their text.
-const NOT_SUBAGENT: &str = "instr(replace(path, char(92), '/'), '/subagents/') = 0";
+/// pi and omp store sessions as `<store>/<project>/<session>.jsonl` and a session's
+/// subagents one folder deeper, in a folder named after the session file.
+/// Those are parts of a session, not sessions: `last` leaves them out, while
+/// `search` still reaches their text.
+const NOT_SUBAGENT: &str = "(instr(replace(path, char(92), '/'), '/subagents/') = 0
+      AND (source NOT IN ('pi', 'omp')
+        OR length(substr(path, length(store) + 2))
+          - length(replace(replace(substr(path, length(store) + 2), char(92), ''), '/', '')) = 1))";
 
+/// A row's date, with `''` for the rows a source left undated (stored as `unknown`
+/// or empty), so the newest date of a session ignores them and undated sessions
+/// sort after dated ones.
+const DATED: &str = "CASE WHEN date IN ('', 'unknown') THEN '' ELSE date END";
+
+/// The indexed transcript whose path contains a session id, newest first.
 pub fn path_for_session_id(
     id: &str,
     stores: &[TranscriptStore],
@@ -382,6 +393,67 @@ pub fn path_for_session_id(
         .query_row(&sql, params_from_iter(values), |row| row.get(0))
         .optional()
         .map_err(sql_error)
+}
+
+/// One indexed assistant message, from [`assistant_rows_containing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantRow {
+    pub path: String,
+    pub source: TranscriptSource,
+    /// `''` when the source recorded no date.
+    pub date: String,
+    pub time_ms: i64,
+    pub text: String,
+}
+
+/// The newest `limit` indexed assistant messages that contain every word
+/// (case-insensitive substrings). Words shorter than three characters cannot use
+/// the trigram index, so they are ignored; with none left there are no rows.
+pub fn assistant_rows_containing(
+    words: &[String],
+    limit: usize,
+    stores: &[TranscriptStore],
+    path: &str,
+) -> Result<Vec<AssistantRow>, String> {
+    let query: Vec<String> = words
+        .iter()
+        .filter(|word| word.chars().count() >= 3)
+        .map(|word| fts_literal(word))
+        .collect();
+    if query.is_empty() || stores.is_empty() {
+        return Ok(Vec::new());
+    }
+    let database = open_index_readonly(path)?;
+    let sql = format!(
+        "SELECT r.path, r.source, {DATED}, r.time_ms, r.text
+      FROM messages JOIN message_rows r ON r.id = messages.rowid
+      WHERE messages MATCH ? AND r.role = 'assistant' AND r.store IN ({})
+      ORDER BY r.time_ms DESC LIMIT ?",
+        placeholders(stores.len())
+    );
+    let mut values = vec![SqlValue::Text(query.join(" AND "))];
+    values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+    values.push(SqlValue::Integer(limit as i64));
+    let mut statement = database.prepare(&sql).map_err(sql_error)?;
+    let mut rows = statement
+        .query(params_from_iter(values))
+        .map_err(sql_error)?;
+    let mut found = Vec::new();
+    while let Some(row) = rows.next().map_err(sql_error)? {
+        let Some(source) =
+            TranscriptSource::from_name(&js_text(row.get_ref(1).map_err(sql_error)?))
+        else {
+            continue;
+        };
+        found.push(AssistantRow {
+            path: js_text(row.get_ref(0).map_err(sql_error)?),
+            source,
+            date: js_text(row.get_ref(2).map_err(sql_error)?),
+            time_ms: row.get(3).map_err(sql_error)?,
+            text: js_text(row.get_ref(4).map_err(sql_error)?),
+        });
+    }
+    Ok(found)
 }
 
 /// The full session ids (UUIDs) in indexed transcript paths that start with
@@ -1626,6 +1698,84 @@ mod tests {
         );
         // Search still reaches the subagent's text.
         assert_eq!(counts("subagent text", &stores, &index), [1]);
+    }
+
+    #[test]
+    fn recent_sessions_skip_omp_subagents_and_sort_undated_rows_last() {
+        let root = temp_root("omp-recent");
+        let omp_root = format!("{root}/omp");
+        let stem = "2026-09-02T10-00-00-000Z_01a17d24-7015-7438-97d4-8e719e06bae3";
+        let main = format!("{omp_root}/--work--/{stem}.jsonl");
+        let subagent = format!("{omp_root}/--work--/{stem}/Verdict.jsonl");
+        let claude = format!("{root}/claude/-work/aaaaaaaa-1111-2222-3333-444444444444.jsonl");
+        let index = format!("{root}/cache/index.sqlite");
+        let stores = [
+            store(TranscriptSource::Omp, StoreKind::Jsonl, &omp_root),
+            store(
+                TranscriptSource::Claude,
+                StoreKind::Jsonl,
+                &format!("{root}/claude"),
+            ),
+        ];
+        let omp_line = |role: &str, text: &str, timestamp: &str| {
+            serde_json::json!({ "type": "message", "timestamp": timestamp,
+                "message": { "role": role, "content": [{ "type": "text", "text": text }] } })
+            .to_string()
+        };
+        std::fs::create_dir_all(format!("{omp_root}/--work--/{stem}")).unwrap();
+        std::fs::create_dir_all(format!("{root}/claude/-work")).unwrap();
+        let header = r#"{"type":"session","id":"s","cwd":"/work"}"#;
+        std::fs::write(
+            &main,
+            format!(
+                "{header}\n{}\n",
+                omp_line("user", "the pasted reply text", "2026-09-02T10:00:00Z")
+            ),
+        )
+        .unwrap();
+        // The subagent ran later, so listing it would put it first.
+        std::fs::write(
+            &subagent,
+            format!(
+                "{header}\n{}\n",
+                omp_line("user", "subagent brief", "2026-09-03T10:00:00Z")
+            ),
+        )
+        .unwrap();
+        // An undated row ("unknown") used to outrank every real date.
+        let mut undated: serde_json::Value =
+            serde_json::from_str(&claude_line("user", "an undated row")).unwrap();
+        undated.as_object_mut().unwrap().remove("timestamp");
+        std::fs::write(
+            &claude,
+            format!(
+                "{}\n{}\n{undated}\n",
+                claude_line("user", "old question").replace("2026-09-02", "2026-09-01"),
+                claude_line("assistant", "The pasted reply text, as written.")
+                    .replace("2026-09-02", "2026-09-01"),
+            ),
+        )
+        .unwrap();
+        refresh(&stores, &index);
+
+        let recent = recent_sessions(&ProjectFilter::Any, None, &stores, &index).unwrap();
+        assert_eq!(
+            recent.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+            [main.as_str(), claude.as_str()]
+        );
+        // Only assistant replies count: the omp prompt holding the same words does not.
+        let words = [
+            "pasted".to_string(),
+            "reply".to_string(),
+            "text".to_string(),
+        ];
+        let rows = assistant_rows_containing(&words, 10, &stores, &index).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| (r.path.as_str(), r.date.as_str()))
+                .collect::<Vec<_>>(),
+            [(claude.as_str(), "2026-09-01")]
+        );
     }
 
     #[test]

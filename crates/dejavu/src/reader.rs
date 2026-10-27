@@ -1182,6 +1182,12 @@ pub fn extract_visible_message(line: &str, source: TranscriptSource) -> Option<V
             return None;
         }
         payload
+    } else if source == TranscriptSource::Claude
+        && row.kind.0.as_deref() == Some("api-request-blob")
+    {
+        // Newer Claude Code logs each API request's prompt (system reminders,
+        // CLAUDE.md) as an undated `message`; it is not part of the conversation.
+        return None;
     } else {
         row.message?
     };
@@ -1298,6 +1304,10 @@ mod tests {
             serde_json::to_string(&message).unwrap(),
             r#"{"role":"user","text":"Claude text","date":"2026-09-20","project":"/work"}"#
         );
+        // A logged API request carries the prompt as an undated message; it is not dialogue.
+        let blob = json!({ "type": "api-request-blob", "sessionId": "s", "hash": "h",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "<system-reminder>CLAUDE.md" }] } });
+        assert!(extract_visible_message(&blob.to_string(), TranscriptSource::Claude).is_none());
     }
 
     #[test]

@@ -158,11 +158,15 @@ const PACK: &str = r#"      --limit N          sessions to return (default 3; se
       --max-parallel N   local workers (default 4)
   -n N                  alias for --limit"#;
 
-const LAST: &str = r#"                         no argument: newest session in the current Git repo (or directory);
+const LAST: &str = r#"                         no argument: the session whose replies hold text pasted into
+                         this session's newest prompts, else the newest session in the
+                         current Git repo (or directory);
                          terms: find's best match in this repo, else anywhere;
                          a locator or session id: that session.
-                         The active Claude, Codex, or Droid session is skipped.
-  -p, --project SUBSTR   sessions whose project contains SUBSTR, not the current repo
+                         The active Claude, Codex, omp, agy, or Droid session is skipped.
+      --said TEXT        sessions whose assistant replies contain TEXT's lines, in any
+                         project (words compared, so markdown and wrapping do not matter)
+  -p, --project SUBSTR   newest sessions whose project contains SUBSTR, not the current repo
       --anywhere         newest session in any project
       --list             session cards only; -n/--limit N of them (default 5)
       --turns N          newest events in the tail (default 12)

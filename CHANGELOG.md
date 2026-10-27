@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+- `dejavu last` finds the session a user pasted from. When a prompt in your own session holds lines of an earlier session's reply (a "continue this chat" message with the old summary under it), `last` picks the session whose assistant replies contain at least two of those lines, in any project, and prints "Picked by pasted text". Words are compared, so rendered markdown, indentation, and terminal wrapping do not break the match. `last --said TEXT` runs the same lookup on text you give. Without a match, or with `-p`/`--anywhere`, `last` picks by recency as before.
+- `last` and `pack` skip the running omp session, which omp names in `PI_SESSION_FILE` and `PI_SESSION_ID`. `last` used to return the session that asked.
+- `last` no longer lists omp and pi subagent transcripts (`<session>/<Agent>.jsonl`) as sessions.
+- A session with an undated message no longer sorts as the newest in `last`. The date `unknown` compared above every real date.
+- Claude Code's `api-request-blob` rows are no longer indexed as user messages. Newer Claude Code versions log each API request's prompt (system reminders, CLAUDE.md) this way, without a timestamp.
+- `last "a quoted sentence"` treats the sentence as separate words, like unquoted terms. It used to require the exact phrase.
 - `show`, `transcript`, `query`, and `profile` accept a unique session id prefix of 8 or more characters, like a short git hash. `dejavu show 358a49ad` used to fail with "cannot determine transcript source from locator". A prefix that matches several sessions fails with the matching ids, newest first.
 - `search` takes `--since` like `find`, and counts only messages dated on or after the cutoff. It used to reject the flag.
 - `search --tools` also matches tool-call inputs, so a URL or command that only appeared as a tool argument is found. It scans transcripts directly, because the index holds only visible messages.
-- `last` picks the newest session when several share a date. The index now stores each message's full timestamp, and sessions on the same date order by their newest message instead of by path. The index format changed (schema 7), so each index rebuilds once on first use.
+- `last` picks the newest session when several share a date. The index now stores each message's full timestamp, and sessions on the same date order by their newest message instead of by path. The index format changed (schema 8), so each index rebuilds once on first use.
 - `pack` drops harness-injected user turns such as `<task-notification>` before it ranks neighborhoods. They used to count as user messages with double weight and could fill a small budget with background-job notices.
 - The release workflow uses the Node 24 majors of `upload-artifact` (v7), `download-artifact` (v8), `setup-node` (v7), and `action-gh-release` (v3).
 - Tests create fake executables through a separate `cp` process. A fake written by the test process could fail to start on Linux with ETXTBSY when a parallel test forked at the same moment.

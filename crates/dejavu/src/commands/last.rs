@@ -26,24 +26,37 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     let max_chars = args.integer(&["--max-chars"], "--max-chars", defaults.max_chars);
     let tool_chars = args.integer(&["--tool-chars"], "--tool-chars", defaults.tool_chars);
     let exclude_sessions = args.values(&["--exclude-session"]);
+    let said = args.value(&["--said"]);
     let force_color = args.flag(&["--color"]);
     let no_color = args.flag(&["--no-color"]);
     args.reject_unknown_flags();
     if project.is_some() && anywhere {
         die("use --project or --anywhere, not both");
     }
-    if args.items.iter().any(|term| term.trim().is_empty()) {
+    if args.items.iter().any(|term| term.trim().is_empty())
+        || said.as_ref().is_some_and(|text| text.trim().is_empty())
+    {
         die("last needs nonempty terms");
     }
-    let selector = match args.items.as_slice() {
-        [] => Selector::Recent(match (project, anywhere) {
+    if said.is_some() && !args.items.is_empty() {
+        die("use terms or --said, not both");
+    }
+    let match_paste = project.is_none() && !anywhere;
+    let selector = match (said, args.items.as_slice()) {
+        (Some(text), _) => Selector::Said(text),
+        (None, []) => Selector::Recent(match (project, anywhere) {
             (Some(project), _) => ProjectFilter::Contains(project),
             (None, true) => ProjectFilter::Any,
             (None, false) => ProjectFilter::Under(current_project()),
         }),
-        [one] if is_locator(one) => Selector::Locator(one.clone()),
-        terms => Selector::Terms {
-            terms: terms.to_vec(),
+        (None, [one]) if is_locator(one) => Selector::Locator(one.clone()),
+        // A quoted sentence is words to find, not one exact phrase.
+        (None, terms) => Selector::Terms {
+            terms: terms
+                .iter()
+                .flat_map(|term| term.split_whitespace())
+                .map(str::to_string)
+                .collect(),
             widen: project.is_none() && !anywhere,
             project: match (project, anywhere) {
                 (Some(project), _) => Some(project),
@@ -64,6 +77,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         max_chars,
         tool_chars,
         exclude_sessions,
+        match_paste,
     };
     let result = last_session(&options, &RealLast)?;
     print_stdout(&if common.json {

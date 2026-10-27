@@ -34,14 +34,15 @@ Memory commands read Markdown under `~/.claude/projects/*/memory/`. They search 
 When the user says "continue where the last session left off", "pick up from yesterday's session", or "continue where the <x> session left off", run `dejavu last` and resume the work from its output.
 
 ```sh
-dejavu last                              # the previous session in this repo
+dejavu last                              # the previous session in this repo, or the one that wrote pasted text
 dejavu last --list -n 5                  # pick one when "last" is ambiguous
 dejavu last <x terms>                    # "the <x> session": find's best match
 dejavu last '<locator or session id>'    # a session the user named exactly
+dejavu last --said '<a line it wrote>'   # the session whose reply contains that line, in any project
 dejavu last --anywhere --since 2d        # newest session in any project
 ```
 
-With no argument it picks the newest session in the current Git repo (or a subdirectory) and skips the session you are running in, so "last session" is the one before this one. Newest means the latest visible message, so of two sessions on the same day the one active later wins. Terms rank sessions like `dejavu find` within the current repo, and widen to every project when nothing there matches. `-p SUBSTR` pins one project and `--anywhere` searches all of them. `--source codex` limits to one agent. The output is a session card (date, source, project, opening prompt, last real user request, transcript, resume command) followed by the newest user/assistant turns within 8,000 characters. `--tools` adds tool calls and results. `--turns N` and `--budget-chars N` widen the tail. The last line gives a `dejavu transcript ... --from-event N` command for earlier turns.
+With no argument it first reads your own session's newest prompts. When the user pasted part of an earlier session's reply there (a "continue this chat" message with the old summary under it), `last` picks the session whose assistant replies contain those lines, in any project, and says so in a "Picked by pasted text" line. It compares words, so markdown the terminal rendered away, indentation, and wrapping do not matter; a session needs two of the pasted lines (one when only one line is long enough). Sessions that only quote the paste in a user prompt do not count. Otherwise it picks the newest session in the current Git repo (or a subdirectory). Either way it skips the session you are running in (Claude Code, Codex, omp, agy, and Droid sessions are recognized), so "last session" is the one before this one. Newest means the latest visible message, so of two sessions on the same day the one active later wins; omp and pi subagent transcripts are not sessions. Terms rank sessions like `dejavu find` within the current repo, and widen to every project when nothing there matches; a quoted sentence counts as separate words. `--said TEXT` does the paste lookup on text you give (lines of three or more words). `-p SUBSTR` pins one project and `--anywhere` searches all of them; both skip the paste lookup. `--source codex` limits to one agent. The output is a session card (date, source, project, opening prompt, last real user request, transcript, resume command) followed by the newest user/assistant turns within 8,000 characters. `--tools` adds tool calls and results. `--turns N` and `--budget-chars N` widen the tail. The last line gives a `dejavu transcript ... --from-event N` command for earlier turns.
 
 Then:
 

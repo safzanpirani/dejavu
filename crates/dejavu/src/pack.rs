@@ -97,12 +97,16 @@ pub(crate) fn is_uuid(value: &str) -> bool {
 
 /// The running agent's session ids, so a lookup skips the session asking.
 /// Claude Code exports `CLAUDE_CODE_SESSION_ID`; `CLAUDE_SESSION_ID` is kept
-/// for wrappers that set the older name. agy exports `ANTIGRAVITY_CONVERSATION_ID`
-/// to the commands it runs. Droid exports none by itself; a SessionStart hook
-/// can export `DROID_SESSION_ID` through Droid's `CLAUDE_ENV_FILE`. Without
-/// it, the Droid session is inferred from the process tree.
+/// for wrappers that set the older name. omp exports its transcript path as
+/// `PI_SESSION_FILE` and its id as `PI_SESSION_ID`; the path comes first, so a
+/// reader of the asking session needs no index lookup. agy exports
+/// `ANTIGRAVITY_CONVERSATION_ID` to the commands it runs. Droid exports none by
+/// itself; a SessionStart hook can export `DROID_SESSION_ID` through Droid's
+/// `CLAUDE_ENV_FILE`. Without it, the Droid session is inferred from the process tree.
 pub(crate) fn active_session_ids() -> Vec<String> {
     let mut ids: Vec<String> = [
+        "PI_SESSION_FILE",
+        "PI_SESSION_ID",
         "CODEX_THREAD_ID",
         "CLAUDE_CODE_SESSION_ID",
         "CLAUDE_SESSION_ID",

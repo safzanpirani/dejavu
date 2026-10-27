@@ -15,6 +15,7 @@ memory. The table below covers what agents need; you should rarely need `--help`
 | Goal | Command |
 |---|---|
 | Continue the previous session in this repo | `dejavu last` (ambiguous: `dejavu last --list -n 5`) |
+| "Continue this chat" with the old session's reply pasted in | `dejavu last` (it finds the session that wrote the pasted lines, in any project); else `dejavu last --said '<one pasted line>'` |
 | Continue "the <x> session" | `dejavu last <x terms>` or `dejavu last <session-id>` |
 | Find a session from a vague memory | `dejavu find term1 term2 [-p project-substr] [--since 2w] [-n 5]` |
 | Find a session from a description, without exact terms (TypeSafe Jev, <$0.001) | `dejavu recall 'what we did' [-k exact-term] [-p substr] [--since 2w]` |
@@ -72,8 +73,9 @@ dejavu transcript '<loc>' --json | jq '.events[] | {kind}'   # window.nextEvent 
 When the user says "continue where the last session left off" or names a session:
 
 1. Run `dejavu last` (or `last <terms>`). Say which session you picked in one line
-   (date, source, opening prompt). If several could match, run `dejavu last --list`
-   and ask.
+   (date, source, opening prompt). Output that starts with "Picked by pasted text"
+   is the session the user's paste came from. If several could match, run
+   `dejavu last --list` and ask.
 2. Read the tail for the open thread: the last request, what was finished, what was
    next, anything pending or failing. Use the printed `transcript --from-event`
    command for earlier turns.
