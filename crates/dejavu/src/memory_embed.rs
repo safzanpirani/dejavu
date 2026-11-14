@@ -80,18 +80,24 @@ fn skip_reason(file_name: &str, lines: &[&str]) -> Option<&'static str> {
     }
     let end = lines.iter().skip(1).position(|line| line.trim() == "---")?;
     // A top-level `key:` line starts a field; indented lines continue it.
+    // YAML folds those lines into one value, so the marker may span them.
     let mut in_field = false;
+    let mut fields = String::new();
     for line in &lines[1..=end] {
         if !line.starts_with([' ', '\t'])
             && let Some((key, _)) = line.split_once(':')
         {
             in_field = matches!(key.trim(), "name" | "description");
+            fields.push('\n');
         }
-        if in_field && line.to_lowercase().contains(MARKER) {
-            return Some("gated");
+        if in_field {
+            for word in line.split_whitespace() {
+                fields.push_str(&word.to_lowercase());
+                fields.push(' ');
+            }
         }
     }
-    None
+    fields.contains(MARKER).then_some("gated")
 }
 
 /// True when text holds something shaped like a credential: a private-key
@@ -622,8 +628,7 @@ fn embed_rows(
     let total = rows.len();
     let mut finished = 0;
     for group in rows.chunks(STANDARD_GROUP) {
-        if !take_lease(database)? {
-            stats.notes.push(LEASE_LOST.into());
+        if !keep_lease(database, stats)? {
             return Ok(false);
         }
         let texts: Vec<String> = group.iter().map(document).collect();
@@ -632,6 +637,9 @@ fn embed_rows(
             match (&outcome, options.rate_limit_wait) {
                 (Err(error), Some(wait)) if error.status == Some(429) => {
                     std::thread::sleep(wait);
+                    if !keep_lease(database, stats)? {
+                        return Ok(false);
+                    }
                     outcome = embedder.embed(&texts, options.timeout);
                 }
                 _ => break,
@@ -654,6 +662,9 @@ fn embed_rows(
                 ..
             }) if group.len() > 1 => {
                 for row in group {
+                    if !keep_lease(database, stats)? {
+                        return Ok(false);
+                    }
                     match embedder.embed(&[document(row)], options.timeout) {
                         Ok(vectors) => {
                             if store_vector(
@@ -723,9 +734,11 @@ fn release_batch(database: &Connection, batch: &str, status: &str) -> Result<(),
 
 /// One process at a time moves the queue: the holder of this `memory_meta`
 /// row, whose value is `<expiry ms>:<pid>`. The holder renews it before each
-/// provider call; a crashed holder's lease simply expires.
+/// provider call and stops when it finds the lease gone; a crashed holder's
+/// lease simply expires. It outlasts the longest single call (a pool of keys
+/// that each time out).
 const LEASE_KEY: &str = "advance_lease";
-const LEASE_MS: i64 = 15 * 60 * 1000;
+const LEASE_MS: i64 = 30 * 60 * 1000;
 const LEASE_HELD: &str = "another dejavu process is embedding memory; skipped";
 const LEASE_LOST: &str = "another dejavu process took over embedding; stopped";
 
@@ -750,6 +763,16 @@ fn take_lease(database: &Connection) -> Result<bool, String> {
         )
         .map(|changed| changed == 1)
         .map_err(sql)
+}
+
+/// Renews the lease before a provider call. False, with a note, when another
+/// process took it over: the caller makes no further calls.
+fn keep_lease(database: &Connection, stats: &mut AdvanceStats) -> Result<bool, String> {
+    let held = take_lease(database)?;
+    if !held {
+        stats.notes.push(LEASE_LOST.into());
+    }
+    Ok(held)
 }
 
 fn release_lease(database: &Connection) -> Result<(), String> {
@@ -843,6 +866,9 @@ fn advance_leased(
         }
     }
     for (batch, submitted_at) in batches {
+        if !keep_lease(database, &mut stats)? {
+            return Ok(stats);
+        }
         let late = options.now_ms - submitted_at > BATCH_PATIENCE_MS;
         match embedder.poll_batch(&batch) {
             // Still running, or unreadable for now: wait, but not past a day.
@@ -942,8 +968,7 @@ fn advance_leased(
             .iter()
             .map(|row| embed::format_document(model, &row.title, &row.text))
             .collect();
-        if !take_lease(database)? {
-            stats.notes.push(LEASE_LOST.into());
+        if !keep_lease(database, &mut stats)? {
             break;
         }
         match embedder.submit_batch(&texts) {
@@ -1804,6 +1829,8 @@ mod tests {
             "description: >\n  Do not read unless the vendor is named\n",
             "name: |\n  DO NOT READ UNLESS asked\n",
             "description: Vendor notes,\n  do not read unless asked\n",
+            "description: >\n  DO NOT READ\n  UNLESS asked\n",
+            "description: Vendor notes, do not\n    read   unless asked\n",
         ] {
             let text = format!("---\n{field}metadata:\n  type: project\n---\n\nvendor notes");
             assert_eq!(chunk_file("-proj", "v.md", &text), Err("gated"), "{field}");

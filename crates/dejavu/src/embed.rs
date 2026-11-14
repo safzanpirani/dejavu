@@ -280,37 +280,35 @@ impl HttpEmbedder {
             .map_err(|error| EmbedError::fatal(format!("embedding response is not JSON: {error}")))
     }
 
-    /// A standard request with the current pool key. A rate-limited key
-    /// (HTTP 429) hands over to the next one; a key the provider refuses
-    /// (401, 403) leaves the pool for this run. The last error is returned
-    /// once every usable key has been tried.
+    /// A standard request, starting at the current pool key and skipping the
+    /// keys the provider refused (401, 403) earlier in this run. A
+    /// rate-limited key (HTTP 429) hands over to the next one. When no key
+    /// answers, a rate limit is reported in preference to a refusal, so the
+    /// caller waits and retries while a usable key remains.
     fn send_pooled(&self, url: &str, body: &Value, timeout: Duration) -> Result<Value, EmbedError> {
         let keys = &self.config.keys;
-        let mut tries = self
-            .refused
-            .borrow()
-            .iter()
-            .filter(|refused| !**refused)
-            .count();
-        loop {
-            let index = self.current.get();
-            let outcome = self.send("POST", url, Some(body), timeout, &keys[index]);
-            let status = outcome.as_ref().err().and_then(|error| error.status);
-            if matches!(status, Some(401 | 403)) && keys.len() > 1 {
-                self.refused.borrow_mut()[index] = true;
-            } else if status != Some(429) {
-                return outcome;
+        let start = self.current.get();
+        let (mut limited, mut refused) = (None, None);
+        for index in (0..keys.len()).map(|step| (start + step) % keys.len()) {
+            if self.refused.borrow()[index] {
+                continue;
             }
-            tries = tries.saturating_sub(1);
-            let refused = self.refused.borrow();
-            let next = (1..keys.len())
-                .map(|step| (index + step) % keys.len())
-                .find(|candidate| !refused[*candidate]);
-            match next {
-                Some(next) if tries > 0 => self.current.set(next),
-                _ => return outcome,
+            let outcome = self.send("POST", url, Some(body), timeout, &keys[index]);
+            match outcome.as_ref().err().and_then(|error| error.status) {
+                Some(401 | 403) if keys.len() > 1 => {
+                    self.refused.borrow_mut()[index] = true;
+                    refused = outcome.err();
+                }
+                Some(429) => limited = outcome.err(),
+                _ => {
+                    self.current.set(index);
+                    return outcome;
+                }
             }
         }
+        Err(limited
+            .or(refused)
+            .unwrap_or_else(|| EmbedError::fatal("the provider refused every embedding key")))
     }
 
     /// Batch jobs belong to the key that created them: always the first.
@@ -594,6 +592,8 @@ mod tests {
         let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let log = seen.clone();
+        let recovered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = recovered.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
@@ -614,8 +614,10 @@ mod tests {
                 }
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
+                let limited = key == "limited"
+                    || (key == "recovers" && !flag.load(std::sync::atomic::Ordering::SeqCst));
                 let (status, reply) = match key.as_str() {
-                    "limited" => ("429 Too Many Requests", r#"{"error":"slow down"}"#),
+                    _ if limited => ("429 Too Many Requests", r#"{"error":"slow down"}"#),
                     "refused" => ("403 Forbidden", r#"{"error":"no"}"#),
                     _ => ("200 OK", r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#),
                 };
@@ -642,5 +644,24 @@ mod tests {
         // The working key stays current for the next request.
         embedder.embed(&texts, timeout).unwrap();
         assert_eq!(seen.lock().unwrap()[3..], ["good"]);
+
+        // With the only usable key rate-limited, the refused one is not sent
+        // again and the error stays a retryable 429; the key then recovers.
+        let embedder = HttpEmbedder::new(EmbedConfig {
+            base_url: embedder.config.base_url.clone(),
+            keys: vec!["recovers".into(), "refused".into()],
+            ..embedder.config.clone()
+        });
+        let from = seen.lock().unwrap().len();
+        let error = embedder.embed(&texts, timeout).unwrap_err();
+        assert_eq!((error.status, error.retryable), (Some(429), true));
+        let error = embedder.embed(&texts, timeout).unwrap_err();
+        assert_eq!(error.status, Some(429));
+        recovered.store(true, std::sync::atomic::Ordering::SeqCst);
+        embedder.embed(&texts, timeout).unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[from..],
+            ["recovers", "refused", "recovers", "recovers"]
+        );
     }
 }
