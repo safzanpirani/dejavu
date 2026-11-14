@@ -2558,6 +2558,52 @@ mod tests {
     }
 
     #[test]
+    fn a_page_gated_after_the_sync_does_not_push_valid_hits_out() {
+        let files = std::rc::Rc::new(Files::default());
+        let open_page = page("Disk", "s", "", "The disk filled up.");
+        files.put_wiki("pages/disk.md", &open_page);
+        files.put(
+            "mixed.md",
+            &note("Deploy notes", "The disk filled up before the deploy."),
+        );
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let index = dir.path().join("index.sqlite");
+        let index = index.to_str().unwrap();
+        let one = with_wiki(SearchOptions {
+            limit: 1,
+            snippets: 2,
+            ..SearchOptions::default()
+        });
+        let (found, _) = semantic_search(
+            "storage",
+            "/mem",
+            &one,
+            &*files,
+            index,
+            &Fake::new(false),
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(found[0].0.name, "disk.md");
+
+        // The page is gated after this search synced and before it ranks:
+        // its stored vector is the closest, yet the memory file still shows.
+        let mut fake = Fake::new(false);
+        let shared = files.clone();
+        fake.on_embed = Some(Box::new(move || {
+            shared.put_wiki(
+                "pages/disk.md",
+                &page("Disk", "s", "gated: TOPIC\n", "The disk filled up."),
+            );
+        }));
+        let (found, _) =
+            semantic_search("storage", "/mem", &one, &*files, index, &fake, 2, 1).unwrap();
+        let names: Vec<&str> = found.iter().map(|(found, _)| found.name.as_str()).collect();
+        assert_eq!(names, ["mixed.md"]);
+    }
+
+    #[test]
     fn wiki_batches_count_only_batches_holding_wiki_chunks() {
         let files = wiki_corpus();
         let dir = TempDir::new("dejavu-embed-").unwrap();
