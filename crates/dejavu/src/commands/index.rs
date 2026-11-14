@@ -68,10 +68,12 @@ fn advance_memory_embeddings(path: &str, common: Common) {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis() as i64);
         let mut database = crate::memory_embed::open_store(path)?;
+        let root = crate::memory::default_memory_root();
+        let wiki = crate::memory::default_wiki_pages();
         crate::memory_embed::sync(
             &mut database,
-            &crate::memory::default_memory_root(),
-            Some(&crate::memory::default_wiki_pages()),
+            &root,
+            Some(&wiki),
             &crate::memory::Disk,
             now_ms,
         )?;
@@ -86,6 +88,7 @@ fn advance_memory_embeddings(path: &str, common: Common) {
                 max_standard: None,
                 rate_limit_wait: None,
                 progress: None,
+                roots: &[root.as_str(), wiki.as_str()],
             },
         )?;
         Ok(advanced.notes)

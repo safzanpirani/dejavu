@@ -133,6 +133,7 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
                 max_standard: None,
                 rate_limit_wait: Some(Duration::from_secs(62)),
                 progress: Some(&progress),
+                roots: &[root, wiki.as_str()],
             },
         )?)
     };

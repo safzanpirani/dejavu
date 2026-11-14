@@ -382,13 +382,11 @@ pub(crate) struct Frontmatter {
     pub(crate) name: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) kind: Option<String>,
-    /// Wiki fields: `title`, `summary`, `kind`, `scope` paths, and whether
-    /// `gated` holds a trigger.
+    /// Wiki fields: `title`, `summary`, `kind`, and `scope` paths.
     pub(crate) title: Option<String>,
     pub(crate) summary: Option<String>,
     pub(crate) page_kind: Option<String>,
     pub(crate) scope: Vec<String>,
-    pub(crate) gated: bool,
     pub(crate) body_start: usize,
 }
 
@@ -439,17 +437,6 @@ pub(crate) fn frontmatter(lines: &[&str]) -> Frontmatter {
         let top_level = trimmed.len() == line.len();
         let rest = &block[index + 1..];
         match key.trim() {
-            // Unset only when empty with nothing below it, or plainly false.
-            "gated" if top_level => {
-                front.gated = if value.is_empty() {
-                    continuation(rest).any(|line| !line.trim().is_empty())
-                } else {
-                    !matches!(
-                        value.to_ascii_lowercase().as_str(),
-                        "false" | "no" | "off" | "null" | "~" | "0"
-                    )
-                }
-            }
             "scope" if top_level => {
                 front.scope = if value.is_empty() {
                     continuation(rest)
@@ -516,27 +503,81 @@ pub(crate) fn marker_in_fields(lines: &[&str], fields: &[&str]) -> bool {
     text.contains(GATE_MARKER)
 }
 
-/// Why a wiki page is never searched or sent: a `gated:` trigger or the gate
-/// phrase in its name, title, or summary (`gated`), or a frontmatter block
-/// with no closing fence, which could hide a trigger in the body (`malformed`).
-pub(crate) fn wiki_skip_reason(
-    file_name: &str,
-    lines: &[&str],
-    front: &Frontmatter,
-) -> Option<&'static str> {
+/// Why a wiki page is never searched or sent. Fails closed, without a YAML
+/// parser: the page is `gated` when its file name or frontmatter block holds
+/// the gate phrase, or the block has a `gated` key in any spelling and with
+/// any value (`gated:`, `"gated":`, `{gated: no}`). It is `malformed` when the
+/// frontmatter is missing, never closes, or has a line that is not
+/// `key: value`, a list item, an indented continuation, a comment, or blank.
+pub(crate) fn wiki_skip_reason(file_name: &str, lines: &[&str]) -> Option<&'static str> {
     if !is_wiki_page_name(file_name) {
         return Some("index");
     }
-    if front.gated
-        || file_name.to_lowercase().contains(GATE_MARKER)
-        || marker_in_fields(lines, &["title", "summary", "description", "name"])
-    {
+    if fold(file_name).contains(GATE_MARKER) {
         return Some("gated");
     }
-    if lines.first().map(|line| line.trim()) == Some("---") && front.body_start == 0 {
+    if lines.first().map(|line| line.trim()) != Some("---") {
+        return Some("malformed");
+    }
+    let Some(end) = lines.iter().skip(1).position(|line| line.trim() == "---") else {
+        return Some("malformed");
+    };
+    let block = &lines[1..=end];
+    let text = block.join("\n").to_lowercase();
+    if fold(&text).contains(GATE_MARKER) || has_gated_key(&text) {
+        return Some("gated");
+    }
+    if !block.iter().all(|line| plain_frontmatter_line(line)) {
         return Some("malformed");
     }
     None
+}
+
+/// Lowercase words joined by single spaces, so a phrase split over folded
+/// YAML lines or doubled spaces still matches.
+fn fold(text: &str) -> String {
+    text.split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// True when lowercase frontmatter text has `gated` as a whole word, quoted
+/// or not, followed by a colon: a `gated` key at any depth or in a flow mapping.
+fn has_gated_key(text: &str) -> bool {
+    text.match_indices("gated").any(|(at, word)| {
+        let boundary = text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_' || ch == '-'));
+        let rest = text[at + word.len()..]
+            .trim_start_matches(['"', '\''])
+            .trim_start();
+        boundary && rest.starts_with(':')
+    })
+}
+
+/// A frontmatter line of the shapes wiki pages use: blank, a comment, an
+/// indented continuation, a list item, or a plain `key: value`.
+fn plain_frontmatter_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || line.starts_with([' ', '\t'])
+        || trimmed == "-"
+        || trimmed.starts_with("- ")
+    {
+        return true;
+    }
+    let Some((key, value)) = line.split_once(':') else {
+        return false;
+    };
+    let key = unquote(key.trim_end());
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | ' '))
+        && (value.is_empty() || value.starts_with([' ', '\t']))
 }
 
 /// Whether a file passes the `--project` and `--type` filters. A wiki page
@@ -627,7 +668,7 @@ pub fn search_memories(
         }
         let lines = lines_of(&text);
         let front = frontmatter(&lines);
-        if file.source == Source::Wiki && wiki_skip_reason(&file.name, &lines, &front).is_some() {
+        if file.source == Source::Wiki && wiki_skip_reason(&file.name, &lines).is_some() {
             continue;
         }
         if !passes_filters(&file, &front, options) {
@@ -715,7 +756,7 @@ pub fn semantic_match(
     let lines = lines_of(&text);
     let file = MemoryFile::at(path, source);
     let front = frontmatter(&lines);
-    if source == Source::Wiki && wiki_skip_reason(&file.name, &lines, &front).is_some() {
+    if source == Source::Wiki && wiki_skip_reason(&file.name, &lines).is_some() {
         return None;
     }
     if !passes_filters(&file, &front, options) {

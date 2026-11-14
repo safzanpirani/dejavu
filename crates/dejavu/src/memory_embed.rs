@@ -184,7 +184,7 @@ pub fn chunk_file(project: &str, file_name: &str, text: &str) -> Result<Vec<Chun
 pub fn chunk_page(file_name: &str, text: &str) -> Result<Vec<Chunk>, &'static str> {
     let lines = memory::lines_of(text);
     let front = memory::frontmatter(&lines);
-    if let Some(reason) = memory::wiki_skip_reason(file_name, &lines, &front) {
+    if let Some(reason) = memory::wiki_skip_reason(file_name, &lines) {
         return Err(reason);
     }
     let slug = file_name.strip_suffix(".md").unwrap_or(file_name);
@@ -399,17 +399,20 @@ fn sync_root(
     store: &dyn MemoryStore,
     now_ms: i64,
 ) -> Result<SyncStats, String> {
-    let mut known: HashMap<String, (i64, i64)> = HashMap::new();
+    // path -> (size, mtime, skip reason)
+    let mut known: HashMap<String, (i64, i64, Option<String>)> = HashMap::new();
     {
         let mut statement = database
-            .prepare("SELECT path, size, mtime_ns FROM memory_files WHERE root = ?")
+            .prepare("SELECT path, size, mtime_ns, skipped FROM memory_files WHERE root = ?")
             .map_err(sql)?;
         let rows = statement
-            .query_map([root], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+            .query_map([root], |row| {
+                Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
+            })
             .map_err(sql)?;
         for row in rows {
-            let (path, stat): (String, (i64, i64)) = row.map_err(sql)?;
-            known.insert(path, stat);
+            let (path, known_file): (String, (i64, i64, Option<String>)) = row.map_err(sql)?;
+            known.insert(path, known_file);
         }
     }
     let mut stats = SyncStats {
@@ -423,16 +426,43 @@ fn sync_root(
         let stat = store
             .stat(&file.path)
             .map(|(size, mtime)| (i64::try_from(size).unwrap_or(i64::MAX), mtime));
-        if stat.is_some() && stat == known.get(&file.path).copied() {
-            continue;
-        }
-        // An unreadable file keeps its rows until it reads again or disappears.
-        let Ok(text) = store.read(&file.path) else {
-            continue;
-        };
+        let known_file = known.get(&file.path);
+        let unchanged =
+            stat.is_some() && known_file.map(|(size, mtime, _)| (*size, *mtime)) == stat;
         let chunks = match file.source {
-            Source::Memory => chunk_file(&file.project, &file.name, &text),
-            Source::Wiki => chunk_page(&file.name, &text),
+            Source::Memory => {
+                if unchanged {
+                    continue;
+                }
+                // An unreadable file keeps its rows until it reads again or disappears.
+                let Ok(text) = store.read(&file.path) else {
+                    continue;
+                };
+                chunk_file(&file.project, &file.name, &text)
+            }
+            // Every page is read and its gate checked on each sync, whatever
+            // its size and mtime say; a page that is gated, malformed, or
+            // unreadable loses its rows.
+            Source::Wiki => {
+                let chunks = match store.read(&file.path) {
+                    Ok(text) => {
+                        match memory::wiki_skip_reason(&file.name, &memory::lines_of(&text)) {
+                            None if unchanged => continue,
+                            None => chunk_page(&file.name, &text),
+                            Some(reason) => Err(reason),
+                        }
+                    }
+                    Err(_) => Err("unreadable"),
+                };
+                // Already recorded as skipped for this reason: no rows left.
+                if let Err(reason) = chunks
+                    && unchanged
+                    && known_file.is_some_and(|(_, _, skipped)| skipped.as_deref() == Some(reason))
+                {
+                    continue;
+                }
+                chunks
+            }
         };
         changes.push((file, stat, chunks));
     }
@@ -584,6 +614,10 @@ pub struct AdvanceOptions<'a> {
     pub rate_limit_wait: Option<Duration>,
     /// Called with (embedded so far, total) during standard-endpoint work.
     pub progress: Option<&'a dyn Fn(usize, usize)>,
+    /// Only queued rows under these roots are sent: the memory root and wiki
+    /// page directory this invocation synced. Finished batches are collected
+    /// whatever their roots.
+    pub roots: &'a [&'a str],
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -615,26 +649,35 @@ struct Row {
     text: String,
 }
 
-fn rows_with_status(database: &Connection, statuses: &[&str]) -> Result<Vec<Row>, String> {
-    let marks = vec!["?"; statuses.len()].join(", ");
+fn rows_with_status(
+    database: &Connection,
+    statuses: &[&str],
+    roots: &[&str],
+) -> Result<Vec<Row>, String> {
+    let marks = |n: usize| vec!["?"; n].join(", ");
     let mut statement = database
         .prepare(&format!(
             "SELECT id, content_sha, status, title, text FROM memory_chunks
-             WHERE status IN ({marks}) ORDER BY id"
+             WHERE status IN ({}) AND root IN ({}) ORDER BY id",
+            marks(statuses.len()),
+            marks(roots.len())
         ))
         .map_err(sql)?;
     let rows = statement
-        .query_map(rusqlite::params_from_iter(statuses), |row| {
-            Ok(Row {
-                key: RowKey {
-                    id: row.get(0)?,
-                    sha: row.get(1)?,
-                    status: row.get(2)?,
-                },
-                title: row.get(3)?,
-                text: row.get(4)?,
-            })
-        })
+        .query_map(
+            rusqlite::params_from_iter(statuses.iter().chain(roots)),
+            |row| {
+                Ok(Row {
+                    key: RowKey {
+                        id: row.get(0)?,
+                        sha: row.get(1)?,
+                        status: row.get(2)?,
+                    },
+                    title: row.get(3)?,
+                    text: row.get(4)?,
+                })
+            },
+        )
         .map_err(sql)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(sql)
 }
@@ -1002,12 +1045,13 @@ fn advance_leased(
         } else {
             &["retry", "pending"]
         },
+        options.roots,
     )?;
     if !embed_rows(database, embedder, &standard, options, &mut stats)? || !batching {
         return Ok(stats);
     }
 
-    let pending = rows_with_status(database, &["pending"])?;
+    let pending = rows_with_status(database, &["pending"], options.roots)?;
     let mut start = 0;
     while start < pending.len() {
         let mut end = start;
@@ -1097,17 +1141,24 @@ pub struct EmbedStatus {
     pub failed: usize,
     /// Chunks that look like they hold a credential; never sent.
     pub withheld: usize,
+    /// Batches out with the provider that hold chunks under these roots.
     pub batches: usize,
 }
 
 /// The queue for the files under `roots` (a memory root, a wiki page
 /// directory, or both), summed.
 pub fn status(database: &Connection, roots: &[&str]) -> Result<EmbedStatus, String> {
+    let marks = vec!["?"; roots.len()].join(", ");
     let mut status = EmbedStatus {
         batches: database
-            .query_row("SELECT count(*) FROM memory_embed_batches", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                &format!(
+                    "SELECT count(DISTINCT batch_id) FROM memory_chunks
+                     WHERE status = 'submitted' AND batch_id IS NOT NULL AND root IN ({marks})"
+                ),
+                rusqlite::params_from_iter(roots),
+                |row| row.get::<_, i64>(0),
+            )
             .map_err(sql)? as usize,
         ..EmbedStatus::default()
     };
@@ -1371,6 +1422,7 @@ pub fn semantic_search(
                 max_standard: Some(SEARCH_STANDARD_CHUNKS),
                 rate_limit_wait: None,
                 progress: None,
+                roots: &roots,
             },
         )?;
         info.notes = advanced.notes;
@@ -1383,8 +1435,9 @@ pub fn semantic_search(
         .map_err(|error| error.message)?
         .pop()
         .ok_or("the embedding provider returned no query vector")?;
-    // Both filters run before `nearest` applies its cut-off and limit. A wiki
-    // page's project is its scope, so its frontmatter decides both.
+    // The filters, and for a wiki page its gate, run before `nearest`
+    // applies its cut-off and limit. Each wiki page is read once per search:
+    // it must still read and be ungated, and its scope is its project.
     let project = options.project.as_deref().map(str::to_lowercase);
     let decided: std::cell::RefCell<HashMap<String, bool>> = Default::default();
     let keep = |path: &str, source: Source| {
@@ -1399,16 +1452,17 @@ pub fn semantic_search(
             if options.kind.is_none() {
                 return true;
             }
-        } else if options.project.is_none() && options.kind.is_none() {
-            return true;
         }
         *decided
             .borrow_mut()
             .entry(path.to_string())
             .or_insert_with(|| {
                 store.read(path).is_ok_and(|text| {
-                    let front = memory::frontmatter(&memory::lines_of(&text));
-                    memory::passes_filters(&MemoryFile::at(path, source), &front, options)
+                    let lines = memory::lines_of(&text);
+                    let file = MemoryFile::at(path, source);
+                    (source == Source::Memory
+                        || memory::wiki_skip_reason(&file.name, &lines).is_none())
+                        && memory::passes_filters(&file, &memory::frontmatter(&lines), options)
                 })
             })
     };
@@ -1633,6 +1687,7 @@ mod tests {
             max_standard: None,
             rate_limit_wait: Some(Duration::ZERO),
             progress: None,
+            roots: &["/mem", "/wiki/pages"],
         }
     }
 
@@ -2368,24 +2423,162 @@ mod tests {
     }
 
     #[test]
-    fn gated_frontmatter_values_are_read_safely() {
-        let gated = |extra: &str| {
+    fn any_gated_key_marker_or_odd_frontmatter_skips_a_page() {
+        let reason = |extra: &str| {
             let text = page("t", "s", extra, "body");
-            memory::frontmatter(&memory::lines_of(&text)).gated
+            chunk_page("p.md", &text).err()
         };
-        assert!(gated("gated: TRIGGER\n"));
-        assert!(gated("gated: \"TRIGGER\"\n"));
-        assert!(gated("gated: |\n  multi\n  line\n"));
-        assert!(gated("gated:\n  - TRIGGER\n"));
-        assert!(!gated(""));
-        assert!(!gated("gated: false\n"));
-        assert!(!gated("gated:\n"));
-        // A frontmatter block that never closes could hide a trigger: skipped.
+        assert_eq!(reason(""), None);
+        assert_eq!(reason("tags: [gated, wiki]\n"), None);
+        assert_eq!(reason("notes: delegated: soon\n"), None);
+        for gated in [
+            "gated: TRIGGER\n",
+            "gated: \"no\"\n",
+            "gated: false\n",
+            "gated:\n",
+            "Gated: |\n  multi\n  line\n",
+            "gated:\n  - TRIGGER\n",
+            "\"gated\": TRIGGER\n",
+            "'gated' : TRIGGER\n",
+            "meta: {gated: no}\n",
+            "meta: {\"gated\": \"x\"}\n",
+            "notes: >\n  please do not\n  read unless asked\n",
+        ] {
+            assert_eq!(reason(gated), Some("gated"), "{gated}");
+        }
+        // A quoted title carrying the marker gates the page.
         assert_eq!(
-            chunk_page("open.md", "---\ntitle: t\ngated: X\n\nbody"),
-            Err("malformed")
+            chunk_page(
+                "p.md",
+                "---\ntitle: \"Gated: DO NOT READ UNLESS X\"\nsummary: s\n---\n\nbody"
+            )
+            .err(),
+            Some("gated")
         );
-        assert_eq!(chunk_page("index.md", "anything"), Err("index"));
-        assert_eq!(chunk_page("SCHEMA.md", "anything"), Err("index"));
+        assert_eq!(
+            chunk_page("Do Not Read Unless X.md", &page("t", "s", "", "body")).err(),
+            Some("gated")
+        );
+        // Frontmatter that is missing, never closes, or has a line of another
+        // shape could hide a trigger: the page is skipped.
+        for malformed in [
+            "plain body, no frontmatter",
+            "---\ntitle: t\nsummary: s\n\nbody",
+            "---\ntitle: t\n{weird: yes}\n---\n\nbody",
+            "---\ntitle: t\njust words\n---\n\nbody",
+            "---\ntitle:t\n---\n\nbody",
+        ] {
+            assert_eq!(
+                chunk_page("p.md", malformed).err(),
+                Some("malformed"),
+                "{malformed}"
+            );
+        }
+        assert_eq!(chunk_page("index.md", "anything").err(), Some("index"));
+        assert_eq!(chunk_page("SCHEMA.md", "anything").err(), Some("index"));
+    }
+
+    #[test]
+    fn a_page_gated_without_a_size_or_mtime_change_loses_its_rows_unsent() {
+        let files = Files::default();
+        let open_page = page("Disk", "s", "notes: TOPIC\n", "The disk filled up.");
+        let gated_page = page("Disk", "s", "gated: TOPIC\n", "The disk filled up.");
+        assert_eq!(open_page.len(), gated_page.len());
+        files.put_wiki("pages/disk.md", &open_page);
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 1).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().pending, 1);
+
+        // Same length and the same version: the stat shortcut would skip it.
+        files
+            .0
+            .borrow_mut()
+            .get_mut("/wiki/pages/disk.md")
+            .unwrap()
+            .0 = gated_page;
+        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 2).unwrap();
+        let state = status(&database, &["/wiki/pages"]).unwrap();
+        assert_eq!((state.chunks, state.skipped_files), (0, 1));
+        let fake = Fake::new(false);
+        let advanced = advance(&database, &fake, &options(3, true)).unwrap();
+        assert_eq!(advanced.embedded, 0);
+        assert!(fake.sent.borrow().is_empty());
+
+        // An unreadable page loses its rows too.
+        files.put_wiki("pages/disk.md", &open_page);
+        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 4).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().pending, 1);
+        struct Unreadable<'a>(&'a Files);
+        impl MemoryStore for Unreadable<'_> {
+            fn glob(&self, root: &str) -> Result<Vec<String>, String> {
+                self.0.glob(root)
+            }
+            fn glob_wiki(&self, pages: &str) -> Vec<String> {
+                self.0.glob_wiki(pages)
+            }
+            fn read(&self, _: &str) -> Result<String, String> {
+                Err("EACCES".into())
+            }
+            fn stat(&self, path: &str) -> Option<(u64, i64)> {
+                self.0.stat(path)
+            }
+        }
+        sync(
+            &mut database,
+            "/mem",
+            Some("/wiki/pages"),
+            &Unreadable(&files),
+            5,
+        )
+        .unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 0);
+    }
+
+    #[test]
+    fn a_run_sends_only_rows_under_the_roots_it_synced() {
+        let files = Files::default();
+        files.put("disk.md", &note("Disk", "The disk filled up."));
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        let fake = Fake::new(false);
+        let elsewhere = AdvanceOptions {
+            roots: &["/other"],
+            ..options(2, true)
+        };
+        assert_eq!(advance(&database, &fake, &elsewhere).unwrap().embedded, 0);
+        assert!(fake.sent.borrow().is_empty());
+        assert_eq!(
+            advance(&database, &fake, &options(3, true))
+                .unwrap()
+                .embedded,
+            1
+        );
+    }
+
+    #[test]
+    fn wiki_batches_count_only_batches_holding_wiki_chunks() {
+        let files = wiki_corpus();
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 1).unwrap();
+        let fake = Fake::new(true);
+        let memory_only = AdvanceOptions {
+            roots: &["/mem"],
+            ..options(2, false)
+        };
+        assert_eq!(
+            advance(&database, &fake, &memory_only).unwrap().submitted,
+            1
+        );
+        assert_eq!(status(&database, &["/mem"]).unwrap().batches, 1);
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().batches, 0);
+        advance(&database, &fake, &options(3, false)).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().batches, 1);
+        assert_eq!(
+            status(&database, &["/mem", "/wiki/pages"]).unwrap().batches,
+            2
+        );
     }
 }
