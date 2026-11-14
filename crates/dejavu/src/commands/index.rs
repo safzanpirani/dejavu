@@ -71,6 +71,7 @@ fn advance_memory_embeddings(path: &str, common: Common) {
         crate::memory_embed::sync(
             &mut database,
             &crate::memory::default_memory_root(),
+            Some(&crate::memory::default_wiki_pages()),
             &crate::memory::Disk,
             now_ms,
         )?;

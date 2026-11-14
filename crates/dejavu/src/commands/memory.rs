@@ -103,7 +103,8 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
     }
     let mut database = memory_embed::open_store(&default_index_path())?;
     let now = now_ms();
-    let synced = memory_embed::sync(&mut database, root, &Disk, now)?;
+    let wiki = memory::default_wiki_pages();
+    let synced = memory_embed::sync(&mut database, root, Some(&wiki), &Disk, now)?;
     let advanced = if status_only {
         None
     } else {
@@ -135,13 +136,15 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
             },
         )?)
     };
-    let status = memory_embed::status(&database, root)?;
+    let status = memory_embed::status(&database, &[root, &wiki])?;
+    let pages = memory_embed::status(&database, &[&wiki])?;
     if common.json {
         let mut value = serde_json::json!({"sync": synced});
         if let Some(advanced) = &advanced {
             value["advance"] = serde_json::to_value(advanced).map_err(|e| e.to_string())?;
         }
         value["status"] = serde_json::to_value(&status).map_err(|e| e.to_string())?;
+        value["wiki"] = serde_json::to_value(&pages).map_err(|e| e.to_string())?;
         println!("{}", js::pretty(&value));
     } else {
         if let Some(advanced) = &advanced {
@@ -164,6 +167,15 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
             status.retry,
             status.failed,
             status.withheld
+        );
+        println!(
+            "wiki ({wiki}): {} pages ({} never sent) · {} chunks: {} embedded, {} pending, {} withheld",
+            pages.files,
+            pages.skipped_files,
+            pages.chunks,
+            pages.done,
+            pages.pending,
+            pages.withheld
         );
     }
     Ok(0)
@@ -217,6 +229,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
                 snippets: args.integer(&["--snippets"], "--snippets", 3),
                 project: args.value(&["-p", "--project"]),
                 kind: args.value(&["--type"]),
+                wiki: Some(memory::default_wiki_pages()),
             };
             let semantic = !args.flag(&["--no-semantic"]);
             args.reject_unknown_flags();
@@ -225,7 +238,8 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             if query.is_empty() {
                 die("memory search needs at least one term");
             }
-            let result = search(query, &root, &options, semantic, common)?;
+            let result =
+                memory_embed::wiki_first(search(query, &root, &options, semantic, common)?);
             if common.json {
                 println!("{}", js::pretty(&result));
             } else {
@@ -233,10 +247,8 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
                     .iter()
                     .map(|ranked| {
                         let found = &ranked.found;
-                        let mut block = format!(
-                            "{}\t{}/{}\t{}",
-                            found.count, found.project, found.name, found.path
-                        );
+                        let mut block =
+                            format!("{}\t{}\t{}", found.count, found.label(), found.path);
                         if let Some(similarity) = ranked.similarity {
                             block.push_str(&format!("\t~{similarity:.2}"));
                         }

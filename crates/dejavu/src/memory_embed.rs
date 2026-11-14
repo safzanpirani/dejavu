@@ -1,5 +1,6 @@
-//! Semantic search over Claude memory: chunks of each memory file, their
-//! embedding vectors, and the queue that keeps the two in step.
+//! Semantic search over Claude memory and the agent wiki: chunks of each
+//! memory file and wiki page, their embedding vectors, and the queue that
+//! keeps the two in step.
 //!
 //! The chunk table is the queue. Freshness is decided by content hash: an
 //! edited passage becomes a new `pending` row and its old row (with the old
@@ -15,7 +16,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::embed::{self, BatchPoll, EmbedError, Embedder};
-use crate::memory::{self, MemoryMatch, MemoryStore, SearchOptions};
+use crate::memory::{self, MemoryFile, MemoryMatch, MemoryStore, SearchOptions, Source};
 
 /// A chunk grows to about this many characters before the next one starts.
 const TARGET_CHARS: usize = 1600;
@@ -68,36 +69,15 @@ pub struct Chunk {
 /// description). The frontmatter is scanned line by line, so a marker in a
 /// YAML block scalar (`description: >`) or a continuation line still counts.
 fn skip_reason(file_name: &str, lines: &[&str]) -> Option<&'static str> {
-    const MARKER: &str = "do not read unless";
     if file_name == "MEMORY.md" {
         return Some("index");
     }
-    if file_name.to_lowercase().contains(MARKER) {
+    if file_name.to_lowercase().contains(memory::GATE_MARKER)
+        || memory::marker_in_fields(lines, &["name", "description"])
+    {
         return Some("gated");
     }
-    if lines.first().map(|line| line.trim()) != Some("---") {
-        return None;
-    }
-    let end = lines.iter().skip(1).position(|line| line.trim() == "---")?;
-    // A top-level `key:` line starts a field; indented lines continue it.
-    // YAML folds those lines into one value, so the marker may span them.
-    let mut in_field = false;
-    let mut fields = String::new();
-    for line in &lines[1..=end] {
-        if !line.starts_with([' ', '\t'])
-            && let Some((key, _)) = line.split_once(':')
-        {
-            in_field = matches!(key.trim(), "name" | "description");
-            fields.push('\n');
-        }
-        if in_field {
-            for word in line.split_whitespace() {
-                fields.push_str(&word.to_lowercase());
-                fields.push(' ');
-            }
-        }
-    }
-    fields.contains(MARKER).then_some("gated")
+    None
 }
 
 /// True when text holds something shaped like a credential: a private-key
@@ -195,12 +175,41 @@ pub fn chunk_file(project: &str, file_name: &str, text: &str) -> Result<Vec<Chun
         title.push_str(": ");
         title.push_str(description);
     }
+    let body = &lines[front.body_start.min(lines.len())..];
+    Ok(chunk_body(title, body, front.description.is_some()))
+}
 
+/// The chunks of one wiki page, or why it is never sent: gated pages, the
+/// wiki's own index files, and pages whose frontmatter does not close.
+pub fn chunk_page(file_name: &str, text: &str) -> Result<Vec<Chunk>, &'static str> {
+    let lines = memory::lines_of(text);
+    let front = memory::frontmatter(&lines);
+    if let Some(reason) = memory::wiki_skip_reason(file_name, &lines, &front) {
+        return Err(reason);
+    }
+    let slug = file_name.strip_suffix(".md").unwrap_or(file_name);
+    let mut title = match &front.title {
+        Some(name) => format!("{name} [wiki:{slug}]"),
+        None => format!("{slug} [wiki]"),
+    };
+    if let Some(summary) = &front.summary {
+        title.push_str(": ");
+        title.push_str(summary);
+    }
+    let body = &lines[front.body_start.min(lines.len())..];
+    let described = front.title.is_some() || front.summary.is_some();
+    Ok(chunk_body(title, body, described))
+}
+
+/// Splits a body (the lines after the frontmatter) into chunks that all carry
+/// `title`. A file with no body still gets one chunk when its frontmatter
+/// describes it.
+fn chunk_body(title: String, body: &[&str], described: bool) -> Vec<Chunk> {
     // Sections: a heading line (or none, before the first) and its blocks.
     let mut sections: Vec<(Option<&str>, Vec<String>)> = vec![(None, Vec::new())];
     let mut block: Vec<&str> = Vec::new();
     let mut fenced = false;
-    for line in lines[front.body_start.min(lines.len())..].iter().copied() {
+    for line in body.iter().copied() {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
             block.push(line);
@@ -240,7 +249,7 @@ pub fn chunk_file(project: &str, file_name: &str, text: &str) -> Result<Vec<Chun
         }
         emit(&mut current);
     }
-    if texts.is_empty() && front.description.is_some() {
+    if texts.is_empty() && described {
         texts.push(String::new());
     }
 
@@ -258,7 +267,7 @@ pub fn chunk_file(project: &str, file_name: &str, text: &str) -> Result<Vec<Chun
             });
         }
     }
-    Ok(chunks)
+    chunks
 }
 
 /// Opens the index file for the memory tables without touching the transcript
@@ -348,15 +357,48 @@ pub struct SyncStats {
     pub chunks_removed: usize,
 }
 
-/// Brings the chunk table in line with the memory files under `root`. Local
-/// only: nothing is sent. Unchanged files (same size and mtime) are not read.
+/// Brings the chunk table in line with the memory files under `root` and,
+/// given the wiki's page directory, its pages. Local only: nothing is sent.
+/// Unchanged files (same size and mtime) are not read.
 pub fn sync(
     database: &mut Connection,
     root: &str,
+    wiki: Option<&str>,
     store: &dyn MemoryStore,
     now_ms: i64,
 ) -> Result<SyncStats, String> {
-    let files = memory::memory_files(root, store)?;
+    let mut stats = sync_root(
+        database,
+        root,
+        &memory::memory_files(root, store)?,
+        store,
+        now_ms,
+    )?;
+    if let Some(pages) = wiki {
+        let pages = sync_root(
+            database,
+            pages,
+            &memory::wiki_pages(pages, store),
+            store,
+            now_ms,
+        )?;
+        stats.files += pages.files;
+        stats.changed_files += pages.changed_files;
+        stats.removed_files += pages.removed_files;
+        stats.chunks_added += pages.chunks_added;
+        stats.chunks_removed += pages.chunks_removed;
+    }
+    Ok(stats)
+}
+
+/// Syncs the files listed under one root: memory files or wiki pages.
+fn sync_root(
+    database: &mut Connection,
+    root: &str,
+    files: &[MemoryFile],
+    store: &dyn MemoryStore,
+    now_ms: i64,
+) -> Result<SyncStats, String> {
     let mut known: HashMap<String, (i64, i64)> = HashMap::new();
     {
         let mut statement = database
@@ -376,7 +418,7 @@ pub fn sync(
     };
     let mut seen = HashSet::new();
     let mut changes = Vec::new();
-    for file in &files {
+    for file in files {
         seen.insert(file.path.as_str());
         let stat = store
             .stat(&file.path)
@@ -388,7 +430,11 @@ pub fn sync(
         let Ok(text) = store.read(&file.path) else {
             continue;
         };
-        changes.push((file, stat, chunk_file(&file.project, &file.name, &text)));
+        let chunks = match file.source {
+            Source::Memory => chunk_file(&file.project, &file.name, &text),
+            Source::Wiki => chunk_page(&file.name, &text),
+        };
+        changes.push((file, stat, chunks));
     }
     let removed: Vec<&String> = known
         .keys()
@@ -1041,7 +1087,7 @@ pub fn requeue_failed(database: &Connection) -> Result<usize, String> {
 #[serde(rename_all = "camelCase")]
 pub struct EmbedStatus {
     pub files: usize,
-    /// Gated files and `MEMORY.md` indexes, which are never sent.
+    /// Gated files and pages, `MEMORY.md` and wiki indexes, which are never sent.
     pub skipped_files: usize,
     pub chunks: usize,
     pub done: usize,
@@ -1054,18 +1100,10 @@ pub struct EmbedStatus {
     pub batches: usize,
 }
 
-pub fn status(database: &Connection, root: &str) -> Result<EmbedStatus, String> {
-    let count = |query: &str| -> Result<usize, String> {
-        database
-            .query_row(query, [root], |row| row.get::<_, i64>(0))
-            .map(|n| n as usize)
-            .map_err(sql)
-    };
+/// The queue for the files under `roots` (a memory root, a wiki page
+/// directory, or both), summed.
+pub fn status(database: &Connection, roots: &[&str]) -> Result<EmbedStatus, String> {
     let mut status = EmbedStatus {
-        files: count("SELECT count(*) FROM memory_files WHERE root = ?")?,
-        skipped_files: count(
-            "SELECT count(*) FROM memory_files WHERE root = ? AND skipped IS NOT NULL",
-        )?,
         batches: database
             .query_row("SELECT count(*) FROM memory_embed_batches", [], |row| {
                 row.get::<_, i64>(0)
@@ -1073,26 +1111,37 @@ pub fn status(database: &Connection, root: &str) -> Result<EmbedStatus, String> 
             .map_err(sql)? as usize,
         ..EmbedStatus::default()
     };
-    let mut statement = database
-        .prepare("SELECT status, count(*) FROM memory_chunks WHERE root = ? GROUP BY status")
-        .map_err(sql)?;
-    let rows = statement
-        .query_map([root], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
-        .map_err(sql)?;
-    for row in rows {
-        let (name, n) = row.map_err(sql)?;
-        let n = n as usize;
-        status.chunks += n;
-        match name.as_str() {
-            "done" => status.done = n,
-            "pending" => status.pending = n,
-            "submitted" => status.submitted = n,
-            "retry" => status.retry = n,
-            "failed" => status.failed = n,
-            "withheld" => status.withheld = n,
-            _ => {}
+    for root in roots {
+        let count = |query: &str| -> Result<usize, String> {
+            database
+                .query_row(query, [root], |row| row.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .map_err(sql)
+        };
+        status.files += count("SELECT count(*) FROM memory_files WHERE root = ?")?;
+        status.skipped_files +=
+            count("SELECT count(*) FROM memory_files WHERE root = ? AND skipped IS NOT NULL")?;
+        let mut statement = database
+            .prepare("SELECT status, count(*) FROM memory_chunks WHERE root = ? GROUP BY status")
+            .map_err(sql)?;
+        let rows = statement
+            .query_map([root], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(sql)?;
+        for row in rows {
+            let (name, n) = row.map_err(sql)?;
+            let n = n as usize;
+            status.chunks += n;
+            match name.as_str() {
+                "done" => status.done += n,
+                "pending" => status.pending += n,
+                "submitted" => status.submitted += n,
+                "retry" => status.retry += n,
+                "failed" => status.failed += n,
+                "withheld" => status.withheld += n,
+                _ => {}
+            }
         }
     }
     Ok(status)
@@ -1101,31 +1150,40 @@ pub fn status(database: &Connection, root: &str) -> Result<EmbedStatus, String> 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticHit {
     pub path: String,
+    pub source: Source,
     pub similarity: f32,
     /// The text of the file's closest chunk.
     pub passage: String,
 }
 
 /// The files whose best chunk is close enough to the query vector: exact
-/// cosine over every stored vector of this model, best chunk per file.
+/// cosine over every stored vector of this model under the memory root and
+/// the wiki's page directory, best chunk per file.
+#[allow(clippy::too_many_arguments)]
 pub fn nearest(
     database: &Connection,
     root: &str,
+    wiki: Option<&str>,
     embedder: &dyn Embedder,
     query: &[f32],
     limit: usize,
-    keep: &dyn Fn(&str) -> bool,
+    keep: &dyn Fn(&str, Source) -> bool,
 ) -> Result<Vec<SemanticHit>, String> {
-    let mut best: HashMap<String, (f32, i64)> = HashMap::new();
+    let mut best: HashMap<String, (f32, i64, Source)> = HashMap::new();
     {
         let mut statement = database
             .prepare(
-                "SELECT id, path, vec FROM memory_chunks
-                 WHERE root = ? AND status = 'done' AND model = ? AND dims = ?",
+                "SELECT id, path, vec, root FROM memory_chunks
+                 WHERE root IN (?, ?) AND status = 'done' AND model = ? AND dims = ?",
             )
             .map_err(sql)?;
         let mut rows = statement
-            .query(params![root, embedder.model(), embedder.dims() as i64])
+            .query(params![
+                root,
+                wiki.unwrap_or(root),
+                embedder.model(),
+                embedder.dims() as i64
+            ])
             .map_err(sql)?;
         while let Some(row) = rows.next().map_err(sql)? {
             let path = row
@@ -1133,7 +1191,12 @@ pub fn nearest(
                 .map_err(sql)?
                 .as_str()
                 .map_err(|e| e.to_string())?;
-            if !keep(path) {
+            let source = if row.get_ref(3).map_err(sql)?.as_str().ok() == Some(root) {
+                Source::Memory
+            } else {
+                Source::Wiki
+            };
+            if !keep(path, source) {
                 continue;
             }
             let bytes = row
@@ -1154,16 +1217,16 @@ pub fn nearest(
             let id: i64 = row.get(0).map_err(sql)?;
             match best.get_mut(path) {
                 Some(entry) if entry.0 >= similarity => {}
-                Some(entry) => *entry = (similarity, id),
+                Some(entry) => *entry = (similarity, id, source),
                 None => {
-                    best.insert(path.to_string(), (similarity, id));
+                    best.insert(path.to_string(), (similarity, id, source));
                 }
             }
         }
     }
-    let mut ranked: Vec<(String, f32, i64)> = best
+    let mut ranked: Vec<(String, f32, i64, Source)> = best
         .into_iter()
-        .map(|(path, (similarity, id))| (path, similarity, id))
+        .map(|(path, (similarity, id, source))| (path, similarity, id, source))
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let floor = ranked.first().map_or(MIN_SIMILARITY, |best| {
@@ -1173,7 +1236,7 @@ pub fn nearest(
     ranked.truncate(limit);
     ranked
         .into_iter()
-        .map(|(path, similarity, id)| {
+        .map(|(path, similarity, id, source)| {
             let passage: String = database
                 .query_row("SELECT text FROM memory_chunks WHERE id = ?", [id], |row| {
                     row.get(0)
@@ -1181,6 +1244,7 @@ pub fn nearest(
                 .map_err(sql)?;
             Ok(SemanticHit {
                 path,
+                source,
                 similarity,
                 passage,
             })
@@ -1254,6 +1318,13 @@ pub fn fuse(
         .collect()
 }
 
+/// When results hold both wiki pages and memory files, the wiki pages come
+/// first; each group keeps its order.
+pub fn wiki_first(mut results: Vec<RankedMatch>) -> Vec<RankedMatch> {
+    results.sort_by_key(|ranked| ranked.found.source != Source::Wiki);
+    results
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SemanticInfo {
     /// Chunks with a vector, and chunks still waiting for one.
@@ -1262,8 +1333,9 @@ pub struct SemanticInfo {
     pub notes: Vec<String>,
 }
 
-/// The semantic leg of `memory search`: sync the chunk table, move the queue
-/// when it is due, embed the query, and rank files by their closest chunk.
+/// The semantic leg of `memory search`: sync the chunk table (memory files
+/// and, with `options.wiki`, wiki pages), move the queue when it is due,
+/// embed the query, and rank files by their closest chunk.
 #[allow(clippy::too_many_arguments)]
 pub fn semantic_search(
     query: &str,
@@ -1276,12 +1348,14 @@ pub fn semantic_search(
     limit: usize,
 ) -> Result<(Vec<(MemoryMatch, f32)>, SemanticInfo), String> {
     let mut database = open_store(index_path)?;
-    sync(&mut database, root, store, now_ms)?;
+    let wiki = options.wiki.as_deref();
+    sync(&mut database, root, wiki, store, now_ms)?;
+    let roots: Vec<&str> = std::iter::once(root).chain(wiki).collect();
     // Before the pending-work gate: a model or size change with nothing
     // queued must still requeue the old vectors.
     invalidate(&database, embedder)?;
     let mut info = SemanticInfo::default();
-    let before = status(&database, root)?;
+    let before = status(&database, &roots)?;
     let due = meta_get(&database, "last_advance_ms")?
         .and_then(|value| value.parse::<i64>().ok())
         .is_none_or(|last| now_ms - last >= ADVANCE_INTERVAL_MS);
@@ -1309,35 +1383,43 @@ pub fn semantic_search(
         .map_err(|error| error.message)?
         .pop()
         .ok_or("the embedding provider returned no query vector")?;
-    // Both filters run before `nearest` applies its cut-off and limit.
+    // Both filters run before `nearest` applies its cut-off and limit. A wiki
+    // page's project is its scope, so its frontmatter decides both.
     let project = options.project.as_deref().map(str::to_lowercase);
-    let kinds: std::cell::RefCell<HashMap<String, bool>> = Default::default();
-    let keep = |path: &str| {
-        project.as_deref().is_none_or(|wanted| {
-            memory::project_from_path(path)
-                .to_lowercase()
-                .contains(wanted)
-        }) && options.kind.as_deref().is_none_or(|wanted| {
-            *kinds
-                .borrow_mut()
-                .entry(path.to_string())
-                .or_insert_with(|| {
-                    store.read(path).is_ok_and(|text| {
-                        memory::frontmatter(&memory::lines_of(&text))
-                            .kind
-                            .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
-                    })
+    let decided: std::cell::RefCell<HashMap<String, bool>> = Default::default();
+    let keep = |path: &str, source: Source| {
+        if source == Source::Memory {
+            if project.as_deref().is_some_and(|wanted| {
+                !memory::project_from_path(path)
+                    .to_lowercase()
+                    .contains(wanted)
+            }) {
+                return false;
+            }
+            if options.kind.is_none() {
+                return true;
+            }
+        } else if options.project.is_none() && options.kind.is_none() {
+            return true;
+        }
+        *decided
+            .borrow_mut()
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                store.read(path).is_ok_and(|text| {
+                    let front = memory::frontmatter(&memory::lines_of(&text));
+                    memory::passes_filters(&MemoryFile::at(path, source), &front, options)
                 })
-        })
+            })
     };
-    let hits = nearest(&database, root, embedder, &vector, limit, &keep)?;
-    let after = status(&database, root)?;
+    let hits = nearest(&database, root, wiki, embedder, &vector, limit, &keep)?;
+    let after = status(&database, &roots)?;
     info.vectors = after.done;
     info.waiting = after.pending + after.retry + after.submitted;
     Ok((
         hits.into_iter()
             .filter_map(|hit| {
-                memory::semantic_match(&hit.path, &hit.passage, options, store)
+                memory::semantic_match(&hit.path, hit.source, &hit.passage, options, store)
                     .map(|found| (found, hit.similarity))
             })
             .collect(),
@@ -1352,13 +1434,20 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    /// Files in memory, with a version counter standing in for mtime.
+    /// Files in memory, with a version counter standing in for mtime. Memory
+    /// files live under `/mem`, wiki files under `/wiki`.
     #[derive(Default)]
     struct Files(RefCell<BTreeMap<String, (String, i64)>>);
 
     impl Files {
         fn put(&self, name: &str, text: &str) {
-            let path = format!("/mem/-proj/memory/{name}");
+            self.put_at(format!("/mem/-proj/memory/{name}"), text);
+        }
+        /// A file at `relative` inside the wiki home (`pages/x.md`, `inbox/y.md`).
+        fn put_wiki(&self, relative: &str, text: &str) {
+            self.put_at(format!("/wiki/{relative}"), text);
+        }
+        fn put_at(&self, path: String, text: &str) {
             let mut files = self.0.borrow_mut();
             let version = files.get(&path).map_or(1, |(_, v)| v + 1);
             files.insert(path, (text.to_string(), version));
@@ -1372,7 +1461,23 @@ mod tests {
 
     impl MemoryStore for Files {
         fn glob(&self, _root: &str) -> Result<Vec<String>, String> {
-            Ok(self.0.borrow().keys().cloned().collect())
+            Ok(self
+                .0
+                .borrow()
+                .keys()
+                .filter(|path| path.starts_with("/mem/"))
+                .cloned()
+                .collect())
+        }
+        /// Every wiki file, inbox and index files included: the listing must
+        /// drop what is not a page.
+        fn glob_wiki(&self, _pages: &str) -> Vec<String> {
+            self.0
+                .borrow()
+                .keys()
+                .filter(|path| path.starts_with("/wiki/"))
+                .cloned()
+                .collect()
         }
         fn read(&self, path: &str) -> Result<String, String> {
             self.0
@@ -1532,11 +1637,19 @@ mod tests {
     }
 
     fn paths(database: &Connection, fake: &Fake, query: &str) -> Vec<String> {
-        nearest(database, "/mem", fake, &Fake::vector(query), 10, &|_| true)
-            .unwrap()
-            .into_iter()
-            .map(|hit| hit.path.rsplit('/').next().unwrap().to_string())
-            .collect()
+        nearest(
+            database,
+            "/mem",
+            None,
+            fake,
+            &Fake::vector(query),
+            10,
+            &|_, _| true,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.path.rsplit('/').next().unwrap().to_string())
+        .collect()
     }
 
     #[test]
@@ -1610,7 +1723,7 @@ mod tests {
         );
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         let fake = Fake::new(false);
         advance(&database, &fake, &options(1, true)).unwrap();
         let sent = fake.sent.borrow().join("\n");
@@ -1626,7 +1739,7 @@ mod tests {
             )
             .unwrap();
         assert!(!stored.contains("sk-abc"));
-        let state = status(&database, "/mem").unwrap();
+        let state = status(&database, &["/mem"]).unwrap();
         assert_eq!((state.skipped_files, state.withheld, state.done), (3, 1, 1));
     }
 
@@ -1636,7 +1749,7 @@ mod tests {
         files.put("a.md", "The disk filled up.\n\n## Deploy\nShip on Friday.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         let fake = Fake::new(true);
         let first = advance(&database, &fake, &options(1, false)).unwrap();
         assert_eq!((first.submitted, first.embedded), (2, 0));
@@ -1648,7 +1761,7 @@ mod tests {
             "a.md",
             "Pancakes for breakfast.\n\n## Deploy\nShip on Friday.",
         );
-        let synced = sync(&mut database, "/mem", &files, 2).unwrap();
+        let synced = sync(&mut database, "/mem", None, &files, 2).unwrap();
         assert_eq!((synced.chunks_added, synced.chunks_removed), (1, 1));
 
         fake.finish_batches();
@@ -1666,9 +1779,9 @@ mod tests {
         assert_eq!(paths(&database, &fake, "breakfast"), ["a.md"]);
 
         files.remove("a.md");
-        sync(&mut database, "/mem", &files, 4).unwrap();
+        sync(&mut database, "/mem", None, &files, 4).unwrap();
         assert!(paths(&database, &fake, "breakfast").is_empty());
-        assert_eq!(status(&database, "/mem").unwrap().chunks, 0);
+        assert_eq!(status(&database, &["/mem"]).unwrap().chunks, 0);
     }
 
     #[test]
@@ -1680,7 +1793,7 @@ mod tests {
         let mut database = open(&dir);
         let mut fake = Fake::new(false);
         for round in 1..=2 {
-            sync(&mut database, "/mem", &files, round).unwrap();
+            sync(&mut database, "/mem", None, &files, round).unwrap();
             advance(&database, &fake, &options(round, false)).unwrap();
         }
         assert_eq!(fake.sent.borrow().len(), 2);
@@ -1700,7 +1813,7 @@ mod tests {
         files.put("b.md", "POISON deploy text.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 0).unwrap();
+        sync(&mut database, "/mem", None, &files, 0).unwrap();
         let mut fake = Fake::new(true);
         fake.reject = Some("POISON");
         assert_eq!(
@@ -1713,7 +1826,7 @@ mod tests {
         let late = advance(&database, &fake, &options(BATCH_PATIENCE_MS + 1, false)).unwrap();
         assert_eq!((late.embedded, late.failed), (1, 1));
         assert_eq!(paths(&database, &fake, "storage"), ["a.md"]);
-        let state = status(&database, "/mem").unwrap();
+        let state = status(&database, &["/mem"]).unwrap();
         assert_eq!((state.done, state.failed, state.batches), (1, 1, 0));
         // The rejected chunk is not retried on every run.
         let again = advance(&database, &fake, &options(BATCH_PATIENCE_MS + 2, false)).unwrap();
@@ -1726,7 +1839,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         let fake = Fake::new(false);
         fake.limited.set(1);
         let impatient = AdvanceOptions {
@@ -1735,7 +1848,7 @@ mod tests {
         };
         let stopped = advance(&database, &fake, &impatient).unwrap();
         assert_eq!((stopped.embedded, stopped.notes.len()), (0, 1));
-        assert_eq!(status(&database, "/mem").unwrap().pending, 1);
+        assert_eq!(status(&database, &["/mem"]).unwrap().pending, 1);
 
         fake.limited.set(2);
         let waited = advance(&database, &fake, &options(2, false)).unwrap();
@@ -1751,6 +1864,7 @@ mod tests {
             snippets: vec![],
             description: None,
             kind: None,
+            source: Source::Memory,
         }
     }
 
@@ -1857,7 +1971,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         let path = dir
             .path()
             .join("index.sqlite")
@@ -1877,7 +1991,7 @@ mod tests {
         }));
         let stats = advance(&database, &fake, &options(1, false)).unwrap();
         assert_eq!((stats.embedded, stats.discarded), (0, 1));
-        let state = status(&database, "/mem").unwrap();
+        let state = status(&database, &["/mem"]).unwrap();
         assert_eq!((state.done, state.pending), (0, 1));
     }
 
@@ -1894,9 +2008,9 @@ mod tests {
         let mut fake = Fake::new(false);
         {
             let mut database = open_store(index).unwrap();
-            sync(&mut database, "/mem", &files, 1).unwrap();
+            sync(&mut database, "/mem", None, &files, 1).unwrap();
             advance(&database, &fake, &options(1, false)).unwrap();
-            assert_eq!(status(&database, "/mem").unwrap().pending, 0);
+            assert_eq!(status(&database, &["/mem"]).unwrap().pending, 0);
         }
         fake.model = "fake-2".into();
         let all = SearchOptions {
@@ -1915,7 +2029,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 0).unwrap();
+        sync(&mut database, "/mem", None, &files, 0).unwrap();
         let mut fake = Fake::new(true);
         assert_eq!(
             advance(&database, &fake, &options(0, false))
@@ -1931,14 +2045,14 @@ mod tests {
             message: "busy".into(),
         });
         advance(&database, &fake, &options(1, false)).unwrap();
-        assert_eq!(status(&database, "/mem").unwrap().submitted, 1);
+        assert_eq!(status(&database, &["/mem"]).unwrap().submitted, 1);
         advance(&database, &fake, &options(BATCH_PATIENCE_MS + 1, false)).unwrap();
-        let state = status(&database, "/mem").unwrap();
+        let state = status(&database, &["/mem"]).unwrap();
         assert_eq!((state.done, state.submitted, state.batches), (1, 0, 0));
 
         // A batch that is gone (HTTP 404) is released at once.
         files.put("b.md", "Deploy on Friday.");
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         fake.poll_error = None;
         let later = BATCH_PATIENCE_MS + 2;
         assert_eq!(
@@ -1953,7 +2067,7 @@ mod tests {
             message: "not found".into(),
         });
         advance(&database, &fake, &options(later + 1, false)).unwrap();
-        let state = status(&database, "/mem").unwrap();
+        let state = status(&database, &["/mem"]).unwrap();
         assert_eq!((state.done, state.submitted, state.batches), (2, 0, 0));
     }
 
@@ -1963,7 +2077,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         let fake = Fake::new(false);
         meta_set(
             &database,
@@ -2044,7 +2158,7 @@ mod tests {
         }
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &files, 1).unwrap();
         let mut fake = Fake::new(true);
         fake.submit_error = Some(EmbedError {
             retryable: false,
@@ -2059,5 +2173,219 @@ mod tests {
             stats.notes,
             ["batch API unavailable (HTTP 400); used the standard endpoint"]
         );
+    }
+
+    fn page(title: &str, summary: &str, extra: &str, body: &str) -> String {
+        format!(
+            "---\ntitle: {title}\nsummary: {summary}\nkind: topic\nscope:\n  - /Users/me/Development/api\n{extra}updated: 2026-11-14\n---\n\n{body}"
+        )
+    }
+
+    /// The wiki home holds pages, two gated pages (one with a folded trigger),
+    /// the wiki's own index, and an inbox note that is not a page yet.
+    fn wiki_corpus() -> Files {
+        let files = Files::default();
+        files.put(
+            "space.md",
+            &note("Root partition", "The root partition ran out of room."),
+        );
+        files.put_wiki(
+            "pages/disk-cleanup.md",
+            &page(
+                "Disk cleanup",
+                "Clearing caches on the Mac",
+                "tags: [disk]\n",
+                "The partition filled; clear the build caches.",
+            ),
+        );
+        files.put_wiki(
+            "pages/gated-vault.md",
+            &page(
+                "\"Gated: VAULT\"",
+                "DO NOT READ UNLESS VAULT",
+                "gated: VAULT MENTIONED\n",
+                "secret partition plan, storage of the vault",
+            ),
+        );
+        files.put_wiki(
+            "pages/folded.md",
+            &page(
+                "Folded",
+                "plain",
+                "gated: >\n  PANCAKE TALK\n",
+                "hidden partition pancake storage",
+            ),
+        );
+        files.put_wiki("pages/index.md", "partition index of the wiki");
+        files.put_wiki("pages/inbox/raw.md", "inbox partition storage draft");
+        files.put_wiki("inbox/raw.md", "inbox partition storage note");
+        files
+    }
+
+    fn with_wiki(options: SearchOptions) -> SearchOptions {
+        SearchOptions {
+            wiki: Some("/wiki/pages".into()),
+            ..options
+        }
+    }
+
+    #[test]
+    fn wiki_pages_are_embedded_and_found_but_gated_pages_never_leave() {
+        let files = wiki_corpus();
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let index = dir.path().join("index.sqlite");
+        let index = index.to_str().unwrap();
+        let fake = Fake::new(false);
+        let all = with_wiki(SearchOptions {
+            limit: 10,
+            snippets: 2,
+            ..SearchOptions::default()
+        });
+
+        // Meaning: "storage" is in neither readable file.
+        let (found, _) =
+            semantic_search("storage is full", "/mem", &all, &files, index, &fake, 1, 10).unwrap();
+        let mut names: Vec<(&str, Source)> = found
+            .iter()
+            .map(|(found, _)| (found.name.as_str(), found.source))
+            .collect();
+        names.sort_by_key(|(name, _)| *name);
+        assert_eq!(
+            names,
+            [
+                ("disk-cleanup.md", Source::Wiki),
+                ("space.md", Source::Memory)
+            ]
+        );
+        let wiki = found
+            .iter()
+            .find(|(found, _)| found.source == Source::Wiki)
+            .unwrap();
+        assert_eq!(wiki.0.label(), "wiki:disk-cleanup");
+        assert_eq!(
+            wiki.0.description.as_deref(),
+            Some("Clearing caches on the Mac")
+        );
+        assert_eq!(wiki.0.kind.as_deref(), Some("topic"));
+
+        // Nothing gated, indexed, or outside pages/ was sent.
+        let sent = fake.sent.borrow().join("\n");
+        assert!(sent.contains("clear the build caches") && sent.contains("Disk cleanup"));
+        for withheld in [
+            "VAULT",
+            "vault",
+            "PANCAKE",
+            "pancake",
+            "index of the wiki",
+            "inbox",
+        ] {
+            assert!(!sent.contains(withheld), "{withheld} was sent");
+        }
+        let database = open(&dir);
+        let pages = status(&database, &["/wiki/pages"]).unwrap();
+        assert_eq!((pages.files, pages.skipped_files), (3, 2));
+        let stored: i64 = database
+            .query_row(
+                "SELECT count(*) FROM memory_chunks WHERE path LIKE '%gated%' OR path LIKE '%folded%' OR text LIKE '%vault%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 0);
+
+        // Keywords: gated pages never match, even on their own words.
+        let keyword = |query: &str, options: &SearchOptions| {
+            memory::search_memories(query, "/mem", options, &files)
+                .unwrap()
+                .into_iter()
+                .map(|found| found.label())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keyword("partition", &all),
+            ["-proj/space.md", "wiki:disk-cleanup"]
+        );
+        assert!(keyword("vault", &all).is_empty());
+        assert!(keyword("pancake", &all).is_empty());
+        assert!(keyword("inbox", &all).is_empty());
+
+        // A page's scope places it in a project; its kind is its type.
+        let api = SearchOptions {
+            project: Some("development-api".into()),
+            ..all.clone()
+        };
+        assert_eq!(keyword("partition", &api), ["wiki:disk-cleanup"]);
+        let (found, _) =
+            semantic_search("storage is full", "/mem", &api, &files, index, &fake, 2, 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.name, "disk-cleanup.md");
+        let topics = SearchOptions {
+            kind: Some("Topic".into()),
+            ..all.clone()
+        };
+        assert_eq!(keyword("partition", &topics), ["wiki:disk-cleanup"]);
+
+        // Gating a page later deletes its stored passages.
+        files.put_wiki(
+            "pages/disk-cleanup.md",
+            &page(
+                "Disk cleanup",
+                "Clearing caches on the Mac",
+                "gated: SOMETHING\n",
+                "The partition filled; clear the build caches.",
+            ),
+        );
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 3).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 0);
+        let (found, _) =
+            semantic_search("storage is full", "/mem", &all, &files, index, &fake, 4, 10).unwrap();
+        assert!(
+            found
+                .iter()
+                .all(|(found, _)| found.source == Source::Memory)
+        );
+    }
+
+    #[test]
+    fn wiki_hits_list_first_and_each_group_keeps_its_order() {
+        let wiki = |name: &str| MemoryMatch {
+            project: "wiki".into(),
+            path: format!("/wiki/pages/{name}"),
+            source: Source::Wiki,
+            ..found(name)
+        };
+        let ranked = fuse(
+            vec![found("m1.md"), wiki("w1.md"), found("m2.md"), wiki("w2.md")],
+            vec![],
+            10,
+        );
+        let names: Vec<String> = wiki_first(ranked)
+            .into_iter()
+            .map(|ranked| ranked.found.name)
+            .collect();
+        assert_eq!(names, ["w1.md", "w2.md", "m1.md", "m2.md"]);
+    }
+
+    #[test]
+    fn gated_frontmatter_values_are_read_safely() {
+        let gated = |extra: &str| {
+            let text = page("t", "s", extra, "body");
+            memory::frontmatter(&memory::lines_of(&text)).gated
+        };
+        assert!(gated("gated: TRIGGER\n"));
+        assert!(gated("gated: \"TRIGGER\"\n"));
+        assert!(gated("gated: |\n  multi\n  line\n"));
+        assert!(gated("gated:\n  - TRIGGER\n"));
+        assert!(!gated(""));
+        assert!(!gated("gated: false\n"));
+        assert!(!gated("gated:\n"));
+        // A frontmatter block that never closes could hide a trigger: skipped.
+        assert_eq!(
+            chunk_page("open.md", "---\ntitle: t\ngated: X\n\nbody"),
+            Err("malformed")
+        );
+        assert_eq!(chunk_page("index.md", "anything"), Err("index"));
+        assert_eq!(chunk_page("SCHEMA.md", "anything"), Err("index"));
     }
 }

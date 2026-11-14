@@ -1,16 +1,43 @@
-//! Claude's cross-project Markdown memory corpus: `<root>/<project>/memory/*.md`.
-//! A port of `memory.ts`.
+//! Claude's cross-project Markdown memory corpus: `<root>/<project>/memory/*.md`,
+//! plus the agent wiki's pages (`$WIKI_HOME/pages/*.md`). A port of `memory.ts`.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+/// Where a searchable file comes from: a Claude memory file or an agent wiki page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    #[default]
+    Memory,
+    Wiki,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemoryFile {
+    /// The Claude project key, or `wiki` for a wiki page.
     pub project: String,
     pub name: String,
     pub path: String,
+    #[serde(skip)]
+    pub source: Source,
+}
+
+impl MemoryFile {
+    /// The file at `path`, named as a listing of `source` names it.
+    pub fn at(path: &str, source: Source) -> MemoryFile {
+        MemoryFile {
+            project: match source {
+                Source::Memory => project_from_path(path),
+                Source::Wiki => "wiki".into(),
+            },
+            name: basename(path),
+            path: path.to_string(),
+            source,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,6 +59,20 @@ pub struct MemoryMatch {
     /// The frontmatter `type` (top level or under `metadata`), when present.
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    pub source: Source,
+}
+
+impl MemoryMatch {
+    /// How text output names the file: `project/name`, or `wiki:<slug>`.
+    pub fn label(&self) -> String {
+        match self.source {
+            Source::Memory => format!("{}/{}", self.project, self.name),
+            Source::Wiki => format!(
+                "wiki:{}",
+                self.name.strip_suffix(".md").unwrap_or(&self.name)
+            ),
+        }
+    }
 }
 
 /// Which memory files a search reads and how many results it returns.
@@ -43,6 +84,9 @@ pub struct SearchOptions {
     pub project: Option<String>,
     /// Exact frontmatter type, compared without case.
     pub kind: Option<String>,
+    /// The wiki's page directory to search beside the memory root; `None`
+    /// searches memory files only.
+    pub wiki: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,6 +99,11 @@ pub struct ShownMemory {
 pub trait MemoryStore {
     /// Every `*/memory/*.md` file below `root`, as full paths.
     fn glob(&self, root: &str) -> Result<Vec<String>, String>;
+    /// Every `*.md` file directly in the wiki's page directory, as full paths.
+    /// A missing or unreadable directory has no pages.
+    fn glob_wiki(&self, _pages: &str) -> Vec<String> {
+        Vec::new()
+    }
     fn read(&self, path: &str) -> Result<String, String>;
     /// A file's size and modification time in nanoseconds, to skip unchanged
     /// files. `None` means unknown, and the caller reads the file.
@@ -107,6 +156,21 @@ impl MemoryStore for Disk {
         }
         paths.sort_by(|a, b| utf16_cmp(a, b));
         Ok(paths)
+    }
+
+    fn glob_wiki(&self, pages: &str) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(pages) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<String> = entries
+            .flatten()
+            .filter(|file| file.file_type().is_ok_and(|kind| kind.is_file()))
+            .map(|file| file.file_name().to_string_lossy().into_owned())
+            .filter(|name| is_wiki_page_name(name))
+            .map(|name| join(pages, &name))
+            .collect();
+        paths.sort_by(|a, b| utf16_cmp(a, b));
+        paths
     }
 
     fn read(&self, path: &str) -> Result<String, String> {
@@ -175,6 +239,24 @@ fn claude_projects_root(config_dir: Option<PathBuf>, home: PathBuf) -> String {
     base.join("projects").to_string_lossy().into_owned()
 }
 
+/// The agent wiki's page directory: `$WIKI_HOME/pages`, else
+/// `~/.local/share/agent-wiki/pages`.
+pub fn default_wiki_pages() -> String {
+    let home = std::env::var_os("WIKI_HOME")
+        .filter(|value| !value.is_empty())
+        .map(|dir| absolute(Path::new(&dir)))
+        .unwrap_or_else(|| home_dir().join(".local/share/agent-wiki"));
+    home.join("pages").to_string_lossy().into_owned()
+}
+
+/// A wiki file that is a page: Markdown, not hidden, and not one of the
+/// wiki's own index, log, or schema files.
+fn is_wiki_page_name(name: &str) -> bool {
+    !name.starts_with('.')
+        && name.ends_with(".md")
+        && !matches!(name, "index.md" | "log.md" | "SCHEMA.md")
+}
+
 fn absolute(path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
@@ -225,8 +307,47 @@ pub fn memory_files(root: &str, store: &dyn MemoryStore) -> Result<Vec<MemoryFil
             project: project_from_path(&path),
             name: basename(&path),
             path,
+            source: Source::Memory,
         })
         .collect())
+}
+
+/// The pages directly in the wiki's page directory. Anything in a
+/// subdirectory (an `inbox/` of notes not yet compiled) is not a page.
+pub fn wiki_pages(pages: &str, store: &dyn MemoryStore) -> Vec<MemoryFile> {
+    let base = join(pages, "");
+    let mut paths: Vec<String> = store
+        .glob_wiki(pages)
+        .into_iter()
+        .filter(|path| {
+            path.strip_prefix(base.as_str())
+                .and_then(|rest| rest.strip_prefix(['/', '\\']))
+                .is_some_and(|name| !name.contains(['/', '\\']) && is_wiki_page_name(name))
+        })
+        .collect();
+    paths.sort_by(|a, b| utf16_cmp(a, b));
+    paths
+        .into_iter()
+        .map(|path| MemoryFile {
+            project: "wiki".into(),
+            name: basename(&path),
+            path,
+            source: Source::Wiki,
+        })
+        .collect()
+}
+
+/// Every file a memory search reads: the memory files, then the wiki pages.
+pub fn corpus(
+    root: &str,
+    wiki: Option<&str>,
+    store: &dyn MemoryStore,
+) -> Result<Vec<MemoryFile>, String> {
+    let mut files = memory_files(root, store)?;
+    if let Some(pages) = wiki {
+        files.extend(wiki_pages(pages, store));
+    }
+    Ok(files)
 }
 
 pub fn list_memories(root: &str, store: &dyn MemoryStore) -> Result<Vec<MemoryProject>, String> {
@@ -255,17 +376,51 @@ pub fn list_memories(root: &str, store: &dyn MemoryStore) -> Result<Vec<MemoryPr
     Ok(grouped)
 }
 
-/// The fields Claude's memory frontmatter carries, plus the line where the body starts.
+/// The fields memory and wiki frontmatter carry, plus the line where the body starts.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Frontmatter {
     pub(crate) name: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) kind: Option<String>,
+    /// Wiki fields: `title`, `summary`, `kind`, `scope` paths, and whether
+    /// `gated` holds a trigger.
+    pub(crate) title: Option<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) page_kind: Option<String>,
+    pub(crate) scope: Vec<String>,
+    pub(crate) gated: bool,
     pub(crate) body_start: usize,
 }
 
-/// Reads a leading `---` block line by line: `name` and `description` at the
-/// top level, `type` at any depth (Claude nests it under `metadata`).
+impl Frontmatter {
+    /// The name, description, and type a search reports for a file of `source`.
+    pub(crate) fn described(&self, source: Source) -> (Option<&str>, Option<&str>, Option<&str>) {
+        match source {
+            Source::Memory => (
+                self.name.as_deref(),
+                self.description.as_deref(),
+                self.kind.as_deref(),
+            ),
+            Source::Wiki => (
+                self.title.as_deref(),
+                self.summary.as_deref().or(self.description.as_deref()),
+                self.page_kind.as_deref(),
+            ),
+        }
+    }
+}
+
+/// The lines after a top-level key that belong to its value: indented lines
+/// and `- ` list items.
+fn continuation<'a>(rest: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
+    rest.iter()
+        .take_while(|line| line.starts_with([' ', '\t']) || line.starts_with("- "))
+        .copied()
+}
+
+/// Reads a leading `---` block line by line: `name`, `description`, and the
+/// wiki fields at the top level, `type` at any depth (Claude nests it under
+/// `metadata`).
 pub(crate) fn frontmatter(lines: &[&str]) -> Frontmatter {
     let mut front = Frontmatter::default();
     if lines.first().map(|line| line.trim()) != Some("---") {
@@ -274,25 +429,146 @@ pub(crate) fn frontmatter(lines: &[&str]) -> Frontmatter {
     let Some(end) = lines.iter().skip(1).position(|line| line.trim() == "---") else {
         return front;
     };
-    for line in &lines[1..=end] {
+    let block = &lines[1..=end];
+    for (index, line) in block.iter().enumerate() {
         let trimmed = line.trim_start();
         let Some((key, value)) = trimmed.split_once(':') else {
             continue;
         };
         let value = unquote(value.trim());
-        if value.is_empty() {
-            continue;
-        }
         let top_level = trimmed.len() == line.len();
+        let rest = &block[index + 1..];
         match key.trim() {
+            // Unset only when empty with nothing below it, or plainly false.
+            "gated" if top_level => {
+                front.gated = if value.is_empty() {
+                    continuation(rest).any(|line| !line.trim().is_empty())
+                } else {
+                    !matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "false" | "no" | "off" | "null" | "~" | "0"
+                    )
+                }
+            }
+            "scope" if top_level => {
+                front.scope = if value.is_empty() {
+                    continuation(rest)
+                        .filter_map(|line| line.trim().strip_prefix('-'))
+                        .map(|item| unquote(item.trim()).to_string())
+                        .filter(|item| !item.is_empty())
+                        .collect()
+                } else {
+                    value
+                        .strip_prefix('[')
+                        .and_then(|inner| inner.strip_suffix(']'))
+                        .unwrap_or(value)
+                        .split(',')
+                        .map(|item| unquote(item.trim()).to_string())
+                        .filter(|item| !item.is_empty())
+                        .collect()
+                }
+            }
+            _ if value.is_empty() => {}
             "name" if top_level => front.name = Some(value.into()),
             "description" if top_level => front.description = Some(value.into()),
+            "title" if top_level => front.title = Some(value.into()),
+            "summary" if top_level => front.summary = Some(value.into()),
+            "kind" if top_level => front.page_kind = Some(value.into()),
             "type" if front.kind.is_none() => front.kind = Some(value.into()),
             _ => {}
         }
     }
     front.body_start = end + 2;
     front
+}
+
+/// The phrase that gates a memory file: it is read only on that trigger.
+pub(crate) const GATE_MARKER: &str = "do not read unless";
+
+/// True when the gate phrase appears in one of the named top-level
+/// frontmatter fields. The block is scanned line by line, so a marker in a
+/// YAML block scalar (`description: >`) or a continuation line still counts.
+pub(crate) fn marker_in_fields(lines: &[&str], fields: &[&str]) -> bool {
+    if lines.first().map(|line| line.trim()) != Some("---") {
+        return false;
+    }
+    let Some(end) = lines.iter().skip(1).position(|line| line.trim() == "---") else {
+        return false;
+    };
+    // A top-level `key:` line starts a field; indented lines continue it.
+    // YAML folds those lines into one value, so the marker may span them.
+    let mut in_field = false;
+    let mut text = String::new();
+    for line in &lines[1..=end] {
+        if !line.starts_with([' ', '\t'])
+            && let Some((key, _)) = line.split_once(':')
+        {
+            in_field = fields.contains(&key.trim());
+            text.push('\n');
+        }
+        if in_field {
+            for word in line.split_whitespace() {
+                text.push_str(&word.to_lowercase());
+                text.push(' ');
+            }
+        }
+    }
+    text.contains(GATE_MARKER)
+}
+
+/// Why a wiki page is never searched or sent: a `gated:` trigger or the gate
+/// phrase in its name, title, or summary (`gated`), or a frontmatter block
+/// with no closing fence, which could hide a trigger in the body (`malformed`).
+pub(crate) fn wiki_skip_reason(
+    file_name: &str,
+    lines: &[&str],
+    front: &Frontmatter,
+) -> Option<&'static str> {
+    if !is_wiki_page_name(file_name) {
+        return Some("index");
+    }
+    if front.gated
+        || file_name.to_lowercase().contains(GATE_MARKER)
+        || marker_in_fields(lines, &["title", "summary", "description", "name"])
+    {
+        return Some("gated");
+    }
+    if lines.first().map(|line| line.trim()) == Some("---") && front.body_start == 0 {
+        return Some("malformed");
+    }
+    None
+}
+
+/// Whether a file passes the `--project` and `--type` filters. A wiki page
+/// is in a project when `wiki` or one of its scope paths, as written or as a
+/// Claude project key (`/a/b.c` is `-a-b-c`), contains the wanted text.
+pub(crate) fn passes_filters(
+    file: &MemoryFile,
+    front: &Frontmatter,
+    options: &SearchOptions,
+) -> bool {
+    let project = options.project.as_deref().map(str::to_lowercase);
+    let in_project = project.as_deref().is_none_or(|wanted| match file.source {
+        Source::Memory => file.project.to_lowercase().contains(wanted),
+        Source::Wiki => {
+            "wiki".contains(wanted)
+                || front.scope.iter().any(|path| {
+                    let path = path.to_lowercase();
+                    let key: String = path
+                        .chars()
+                        .map(|ch| if ch.is_alphanumeric() { ch } else { '-' })
+                        .collect();
+                    path.contains(wanted) || key.contains(wanted)
+                })
+        }
+    });
+    in_project
+        && options.kind.as_deref().is_none_or(|wanted| {
+            front
+                .described(file.source)
+                .2
+                .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
+        })
 }
 
 fn unquote(value: &str) -> &str {
@@ -308,9 +584,10 @@ fn unquote(value: &str) -> &str {
 }
 
 /// Every whitespace-separated term must occur in a file, case-insensitively.
-/// Files rank by terms found in the file name, frontmatter `name`, and
-/// `description`, then the exact phrase, then occurrences (capped per term).
-/// Snippets come from body lines, most distinct terms first.
+/// Files rank by terms found in the file name, frontmatter `name` (a wiki
+/// page's `title`), and `description` (`summary`), then the exact phrase,
+/// then occurrences (capped per term). Snippets come from body lines, most
+/// distinct terms first. Gated wiki pages are never read.
 pub fn search_memories(
     query: &str,
     root: &str,
@@ -329,10 +606,11 @@ pub fn search_memories(
     let phrase = (terms.len() > 1).then(|| terms.join(" "));
     let project = options.project.as_deref().map(str::to_lowercase);
     let mut ranked = Vec::new();
-    for file in memory_files(root, store)? {
-        if project
-            .as_deref()
-            .is_some_and(|wanted| !file.project.to_lowercase().contains(wanted))
+    for file in corpus(root, options.wiki.as_deref(), store)? {
+        if file.source == Source::Memory
+            && project
+                .as_deref()
+                .is_some_and(|wanted| !file.project.to_lowercase().contains(wanted))
         {
             continue;
         }
@@ -347,27 +625,23 @@ pub fn search_memories(
         if counts.contains(&0) {
             continue;
         }
-        let lines: Vec<&str> = text
-            .split('\n')
-            .map(|line| line.strip_suffix('\r').unwrap_or(line))
-            .collect();
+        let lines = lines_of(&text);
         let front = frontmatter(&lines);
-        if let Some(wanted) = options.kind.as_deref()
-            && !front
-                .kind
-                .as_deref()
-                .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
-        {
+        if file.source == Source::Wiki && wiki_skip_reason(&file.name, &lines, &front).is_some() {
             continue;
         }
-        let label = format!("{} {}", file.name, front.name.as_deref().unwrap_or("")).to_lowercase();
-        let description = front.description.as_deref().unwrap_or("").to_lowercase();
+        if !passes_filters(&file, &front, options) {
+            continue;
+        }
+        let (name, description, kind) = front.described(file.source);
+        let label = format!("{} {}", file.name, name.unwrap_or("")).to_lowercase();
+        let description_lower = description.unwrap_or("").to_lowercase();
         let mut score: usize = terms
             .iter()
             .zip(&counts)
             .map(|(term, count)| {
                 4 * usize::from(label.contains(term))
-                    + 2 * usize::from(description.contains(term))
+                    + 2 * usize::from(description_lower.contains(term))
                     + count.min(&5)
             })
             .sum();
@@ -401,8 +675,9 @@ pub fn search_memories(
                     .take(options.snippets)
                     .map(|(_, line)| line.to_string())
                     .collect(),
-                description: front.description,
-                kind: front.kind,
+                description: description.map(str::to_string),
+                kind: kind.map(str::to_string),
+                source: file.source,
             },
         ));
     }
@@ -428,27 +703,31 @@ pub(crate) fn lines_of(text: &str) -> Vec<&str> {
 
 /// A result row for a file that matched by meaning: no term counts, and the
 /// given passage lines as snippets. `None` when the file can no longer be
-/// read or fails the frontmatter type filter.
+/// read, fails the frontmatter type filter, or is a wiki page that is now gated.
 pub fn semantic_match(
     path: &str,
+    source: Source,
     passage: &str,
     options: &SearchOptions,
     store: &dyn MemoryStore,
 ) -> Option<MemoryMatch> {
     let text = store.read(path).ok()?;
-    let front = frontmatter(&lines_of(&text));
-    if let Some(wanted) = options.kind.as_deref()
-        && !front
-            .kind
-            .as_deref()
-            .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
-    {
+    let lines = lines_of(&text);
+    let file = MemoryFile::at(path, source);
+    let front = frontmatter(&lines);
+    if source == Source::Wiki && wiki_skip_reason(&file.name, &lines, &front).is_some() {
         return None;
     }
+    if !passes_filters(&file, &front, options) {
+        return None;
+    }
+    let (_, description, kind) = front.described(source);
     Some(MemoryMatch {
-        project: project_from_path(path),
-        name: basename(path),
-        path: path.to_string(),
+        description: description.map(str::to_string),
+        kind: kind.map(str::to_string),
+        project: file.project,
+        name: file.name,
+        path: file.path,
         count: 0,
         snippets: passage
             .lines()
@@ -457,8 +736,7 @@ pub fn semantic_match(
             .take(options.snippets)
             .map(str::to_string)
             .collect(),
-        description: front.description,
-        kind: front.kind,
+        source,
     })
 }
 

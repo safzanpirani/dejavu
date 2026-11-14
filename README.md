@@ -220,6 +220,8 @@ dejavu memory show '<project or file selector>'
 
 Memory search stays separate from transcript search. Memory files contain curated facts instead of conversation turns. `memory search` reads every project's memory under the Claude projects root in one pass. Each word is a term, and a file must contain all of them. Files whose name, frontmatter `name`, or `description` contain the terms rank first. Each result carries the frontmatter `description` and `type`, so you can pick the right fact without opening the file. `-p` limits the search to projects whose key contains a substring, and `--type` keeps one frontmatter type (`user`, `feedback`, `project`, or `reference`).
 
+`memory search` and `memory embed` also read the agent wiki: every `*.md` page directly in `$WIKI_HOME/pages` (default `~/.local/share/agent-wiki/pages`). A wiki result has `source` `wiki` and project `wiki`, its `title` and `summary` stand in for `name` and `description`, and its `kind` is its type; text output names it `wiki:<slug>`. `-p` matches a page whose `scope` path (as written or as a Claude project key) contains the substring. When wiki pages and memory files both match, the wiki pages list first. Pages with a `gated:` frontmatter trigger are never read, searched, or sent, nor are the wiki's `index.md`, `log.md`, `SCHEMA.md`, or anything outside `pages/` (such as `inbox/`).
+
 #### Search memory by meaning
 
 Keyword search misses a note that uses other words than the query. With an embeddings API key stored, `memory search` also matches by meaning, so `storage is full` finds a note that only says "the root partition ran out of room".
@@ -249,7 +251,7 @@ The default provider is Gemini with `gemini-embedding-2` at 768 dimensions. Any 
 
 Each passage is tracked by a hash of its text. An unchanged passage is never sent twice. An edited or deleted passage loses its vector in the same update, so a search cannot return old wording. A batch result for a passage that changed while the batch was out is discarded. Changing the model or the dimensions re-embeds everything.
 
-Three kinds of text are never sent: `MEMORY.md` index files, gated files (`DO NOT READ UNLESS` in the file name, frontmatter `name`, or `description`), and passages that look like they hold a credential.
+These are never sent: `MEMORY.md` index files, gated files (`DO NOT READ UNLESS` in the file name, frontmatter `name`, or `description`), gated wiki pages (a `gated:` trigger, or `DO NOT READ UNLESS` in the title or summary), files outside the wiki's `pages/` directory, and passages that look like they hold a credential. `memory embed` reports wiki pages on their own line (`wiki` in JSON); `status` counts memory files and wiki pages together.
 
 Vectors are stored in the index database and compared by exact cosine similarity on each search; there is no vector database to run. They survive `index rebuild`. A search embeds the query, ranks files by their closest passage, and merges that ranking with the keyword ranking by reciprocal rank. Each JSON result says how it matched in `match` (`keyword`, `semantic`, or `both`) and carries the `similarity` of its closest passage. A semantic-only result has `count` 0 and that passage as its snippets. If the provider cannot be reached, the keyword results print with a note on stderr. The query is not the only text a search sends: at most every 10 minutes it also collects finished batches and embeds up to 200 passages still waiting, so new notes become searchable without `memory embed`.
 

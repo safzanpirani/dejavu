@@ -24,7 +24,7 @@ memory. The table below covers what agents need; you should rarely need `--help`
 | Read one session's conversation | `dejavu show <locator> --no-tools [--around TERM]` |
 | See what an agent ran and got back | `dejavu transcript <locator> --tool-chars 400 --budget-chars 8000` |
 | Ask a question about one session (model cost) | `dejavu query <locator> 'question'` |
-| Search Claude memory across all projects, before saying you don't know a fact, preference, or past decision | `dejavu memory search words describing it [-p project-substr] [--type feedback]` (also matches by meaning when embeddings are set up; `~0.74` marks a semantic hit) · `memory list --files` · `memory show <selector>` |
+| Search Claude memory across all projects, before saying you don't know a fact, preference, or past decision | `dejavu memory search words describing it [-p project-substr] [--type feedback]` (also searches agent wiki pages, shown as `wiki:<slug>` and listed first; also matches by meaning when embeddings are set up; `~0.74` marks a semantic hit) · `memory list --files` · `memory show <selector>` |
 | Measure tool activity in a session | `dejavu profile <locator> --json` |
 
 Add `-s claude|codex|pi|omp|opencode|droid|openclaw|hermes|agy` to limit a search to
