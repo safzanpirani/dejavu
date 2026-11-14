@@ -765,10 +765,22 @@ fn take_lease(database: &Connection) -> Result<bool, String> {
         .map_err(sql)
 }
 
-/// Renews the lease before a provider call. False, with a note, when another
-/// process took it over: the caller makes no further calls.
+/// Renews the lease before a provider call. Only a lease this process still
+/// holds and that has not expired is renewed: once it lapsed, another process
+/// may have done the work this one has in hand. False, with a note, then; the
+/// caller makes no further calls and drops what it read.
 fn keep_lease(database: &Connection, stats: &mut AdvanceStats) -> Result<bool, String> {
-    let held = take_lease(database)?;
+    let now = wall_ms();
+    let owner = std::process::id().to_string();
+    let held = database
+        .execute(
+            "UPDATE memory_meta SET value = ?2
+             WHERE key = ?1 AND CAST(value AS INTEGER) >= ?3
+               AND substr(value, instr(value, ':') + 1) = ?4",
+            params![LEASE_KEY, format!("{}:{owner}", now + LEASE_MS), now, owner],
+        )
+        .map(|changed| changed == 1)
+        .map_err(sql)?;
     if !held {
         stats.notes.push(LEASE_LOST.into());
     }
@@ -1972,6 +1984,26 @@ mod tests {
             1
         );
         assert_eq!(meta_get(&database, LEASE_KEY).unwrap(), None);
+    }
+
+    #[test]
+    fn a_lapsed_lease_is_not_renewed_after_another_process_used_it() {
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let database = open(&dir);
+        let mut stats = AdvanceStats::default();
+        assert!(take_lease(&database).unwrap());
+        assert!(keep_lease(&database, &mut stats).unwrap());
+        // It expired while this process was paused, then another took it,
+        // finished and released it: renewing must not bring it back.
+        let owner = std::process::id();
+        meta_set(&database, LEASE_KEY, &format!("{}:{owner}", wall_ms() - 1)).unwrap();
+        assert!(!keep_lease(&database, &mut stats).unwrap());
+        database
+            .execute("DELETE FROM memory_meta WHERE key = ?", [LEASE_KEY])
+            .unwrap();
+        assert!(!keep_lease(&database, &mut stats).unwrap());
+        assert_eq!(meta_get(&database, LEASE_KEY).unwrap(), None);
+        assert_eq!(stats.notes, [LEASE_LOST, LEASE_LOST]);
     }
 
     #[test]
