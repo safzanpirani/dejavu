@@ -64,7 +64,7 @@ dejavu query '<locator from search results>' 'What did we decide?'
 
 `show`, `transcript`, `query`, and `profile` also accept a bare session ID in place of a locator; it resolves through the index to that session's own transcript (never a Claude subagent transcript stored under it).
 
-The default `dejavu query` harness requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Select `--harness ruddr` to use an installed Ruddr and its provider authentication. Plain search, `find`, `show`, and memory commands do not invoke a model. Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
+The default `dejavu query` harness requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Select `--harness ruddr` to use an installed Ruddr and its provider authentication. Plain search, `find`, `show`, and memory commands do not invoke a model. `memory search` calls an embeddings API only after you store a key for it (see [Search memory by meaning](#search-memory-by-meaning)). Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
 
 ## What it reads
 
@@ -219,6 +219,39 @@ dejavu memory show '<project or file selector>'
 ```
 
 Memory search stays separate from transcript search. Memory files contain curated facts instead of conversation turns. `memory search` reads every project's memory under the Claude projects root in one pass. Each word is a term, and a file must contain all of them. Files whose name, frontmatter `name`, or `description` contain the terms rank first. Each result carries the frontmatter `description` and `type`, so you can pick the right fact without opening the file. `-p` limits the search to projects whose key contains a substring, and `--type` keeps one frontmatter type (`user`, `feedback`, `project`, or `reference`).
+
+#### Search memory by meaning
+
+Keyword search misses a note that uses other words than the query. With an embeddings API key stored, `memory search` also matches by meaning, so `storage is full` finds a note that only says "the root partition ran out of room".
+
+```bash
+mkdir -p ~/.config/dejavu && (umask 077; cat > ~/.config/dejavu/embed-key)   # paste the key, then Ctrl-D
+dejavu memory embed            # embed new and edited passages
+dejavu memory embed --status   # queue counts, nothing sent
+dejavu memory search storage is full
+dejavu memory search storage is full --no-semantic   # keywords only, no network
+```
+
+The feature is off until that key file exists or `DEJAVU_EMBED_KEY` is set. The file may hold several keys, one per line: a rate-limited key (HTTP 429) hands over to the next, and a key the provider refuses (401, 403) is skipped for that run. Batch jobs always use the first key. Dejavu never uses a key from another variable such as `GEMINI_API_KEY`, so memory text leaves the machine only after this setup step.
+
+The default provider is Gemini with `gemini-embedding-2` at 768 dimensions. Any OpenAI-compatible `/embeddings` endpoint works too:
+
+| Variable | Default |
+|---|---|
+| `DEJAVU_EMBED_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `DEJAVU_EMBED_MODEL` | `gemini-embedding-2` |
+| `DEJAVU_EMBED_DIMS` | `768` |
+| `DEJAVU_EMBED_API` | `gemini` for the Google host, else `openai` |
+| `DEJAVU_EMBED_BATCH` | on; `0` always uses the standard endpoint |
+| `DEJAVU_EMBED_KEY_FILE` | `~/.config/dejavu/embed-key` |
+
+`memory embed` splits each memory file into passages at headings and paragraphs and sends the new or edited ones. On a paid Gemini key they go through the Batch API at half the standard price. Google returns batch results within 24 hours, and a later `memory embed`, `index update`, or `memory search` collects them. Until then the passage is found by keyword only. A key without batch access (Gemini's free tier, other providers) and `--now` use the standard endpoint, and `memory embed` waits out rate limits. Google may use free-tier content to improve its products, so use a paid key for private notes.
+
+Each passage is tracked by a hash of its text. An unchanged passage is never sent twice. An edited or deleted passage loses its vector in the same update, so a search cannot return old wording. A batch result for a passage that changed while the batch was out is discarded. Changing the model or the dimensions re-embeds everything.
+
+Three kinds of text are never sent: `MEMORY.md` index files, gated files (`DO NOT READ UNLESS` in the file name, frontmatter `name`, or `description`), and passages that look like they hold a credential.
+
+Vectors are stored in the index database and compared by exact cosine similarity on each search; there is no vector database to run. They survive `index rebuild`. A search embeds the query, ranks files by their closest passage, and merges that ranking with the keyword ranking by reciprocal rank. Each JSON result says how it matched in `match` (`keyword`, `semantic`, or `both`) and carries the `similarity` of its closest passage. A semantic-only result has `count` 0 and that passage as its snippets. If the provider cannot be reached, the keyword results print with a note on stderr. The query is not the only text a search sends: at most every 10 minutes it also collects finished batches and embeds up to 200 passages still waiting, so new notes become searchable without `memory embed`.
 
 ### Query one session
 

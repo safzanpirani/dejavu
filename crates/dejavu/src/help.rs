@@ -75,7 +75,7 @@ Commands:
   scrub <locator>                  redact events or patterns; creates a backup
   query <locator|id> <question>    ask a model about one session (model usage)
   profile <locator|id>...          measure tool activity (--explain uses a model)
-  memory [list | search | show]    read Claude project Markdown memory
+  memory [list | search | show | embed] read Claude project Markdown memory
   index [status | update | rebuild] manage the local transcript index
   self-update [--check]            check or install a release
   help [command]                  command flags, JSON shapes, jq, exit codes
@@ -235,12 +235,14 @@ Memory commands read Claude's cross-project Markdown memory corpus.
 Memory selectors accept exact listed project keys, unique project substrings, or file paths.
 Memory search --snippets also requires an integer >= 1.
 Every word of a memory search must appear in a file, without case sensitivity.
-It is literal term search, not semantic search."#;
+It is literal term search; with an embedding key stored it also matches by meaning
+(dejavu memory embed --help)."#;
 
 const MEMORY_LIST: &str = "JSON array item keys: project, path, files\njq: jq '.[].project'\nWith --files, JSON array item keys: project, name, path\njq (--files): jq '.[].path'";
-const MEMORY_SEARCH: &str = "JSON array item keys: project, name, path, count, snippets, description, type\njq: jq '.[].path'\nThe top level is a bare array, with no results or hits wrapper.\ndescription and type come from the file's frontmatter; they are null when it has none.";
+const MEMORY_SEARCH: &str = "JSON array item keys: project, name, path, count, snippets, description, type, match, similarity?\njq: jq '.[].path'\nThe top level is a bare array, with no results or hits wrapper.\ndescription and type come from the file's frontmatter; they are null when it has none.\nmatch is keyword, semantic, or both; similarity (0-1) is the closest passage's cosine similarity.";
 const MEMORY_SHOW: &str =
     "JSON object keys: file, content\njq: jq '.content'\nfile contains project, name, path.";
+const MEMORY_EMBED: &str = "JSON object keys: sync, advance?, status\njq: jq '.status'\nsync: files, changedFiles, removedFiles, chunksAdded, chunksRemoved.\nadvance (absent with --status): collected, embedded, submitted, discarded, failed, notes.\nstatus: files, skippedFiles, chunks, done, pending, submitted, retry, failed, withheld, batches.";
 const INDEX_STATUS: &str =
     "JSON object keys: path, exists, schemaVersion, files, messages, bytes\njq: jq '.exists'";
 const INDEX_REFRESH: &str = "JSON object keys: path, files, messages, indexed, removed, skipped, elapsedMs\njq: jq '.indexed'";
@@ -308,9 +310,9 @@ pub fn command(topic: &str) -> Result<String, String> {
             "0: completed without diagnostics; 1: diagnostics, explanation failure, or other error.",
         ),
         "memory" => (
-            "memory [list|search|show] [flags]", "      --root DIR        Claude projects root (default $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)\n      list --files      list individual memory files\n      search <terms> [-n N|--limit N] [--snippets N] [-p SUBSTR] [--type TYPE]\n                        limit defaults to 20; snippets defaults to 3; both >= 1\n      show <selector>   project key, unique project substring, or file path".into(),
+            "memory [list|search|show|embed] [flags]", "      --root DIR        Claude projects root (default $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects)\n      list --files      list individual memory files\n      search <terms> [-n N|--limit N] [--snippets N] [-p SUBSTR] [--type TYPE] [--no-semantic]\n                        limit defaults to 20; snippets defaults to 3; both >= 1\n      show <selector>   project key, unique project substring, or file path\n      embed [--now] [--status] [--retry-failed]\n                        embed memory for search by meaning (needs an embeddings API key)".into(),
             "JSON: list and search return bare arrays; show returns {file, content}.",
-            format!("Default command: list.\n\nmemory list:\n{MEMORY_LIST}\n\nmemory search:\n{MEMORY_SEARCH}\n\nmemory show:\n{MEMORY_SHOW}"),
+            format!("Default command: list.\n\nmemory list:\n{MEMORY_LIST}\n\nmemory search:\n{MEMORY_SEARCH}\n\nmemory show:\n{MEMORY_SHOW}\n\nmemory embed:\n{MEMORY_EMBED}"),
             "0: completed, including empty lists/searches; 1: usage, selection, or read error.",
         ),
         "memory list" => (
@@ -319,9 +321,14 @@ pub fn command(topic: &str) -> Result<String, String> {
             "0: completed, including an empty list; 1: usage or read error.",
         ),
         "memory search" => (
-            "memory search <terms> [flags]", "  -n, --limit N         maximum files (default 20; >= 1)\n      --snippets N      snippets per file (default 3; >= 1)\n  -p, --project SUBSTR  only projects whose key contains SUBSTR\n      --type TYPE       only files whose frontmatter type is TYPE (user, feedback, project, reference)\n      --root DIR        override the Claude projects root".into(), MEMORY_SEARCH,
-            "Search reads every project's memory. Each word is a term, and a file must contain every term\nwithout case sensitivity. Terms in the file name, frontmatter name, or description rank first,\nthen the exact phrase, then occurrence counts. Snippets skip the frontmatter.".into(),
+            "memory search <terms> [flags]", "  -n, --limit N         maximum files (default 20; >= 1)\n      --snippets N      snippets per file (default 3; >= 1)\n  -p, --project SUBSTR  only projects whose key contains SUBSTR\n      --type TYPE       only files whose frontmatter type is TYPE (user, feedback, project, reference)\n      --no-semantic     keyword matching only, with no network request\n      --root DIR        override the Claude projects root".into(), MEMORY_SEARCH,
+            "Search reads every project's memory. Each word is a term, and a file must contain every term\nwithout case sensitivity. Terms in the file name, frontmatter name, or description rank first,\nthen the exact phrase, then occurrence counts. Snippets skip the frontmatter.\n\nWith an embedding key stored (dejavu memory embed --help), search also matches by meaning:\nthe query is embedded and files whose closest passage is similar enough join the results,\nso a note worded differently from the query is still found. A search also sends passages\nstill waiting to be embedded (up to 200, at most every 10 minutes) and polls batches. Both rankings merge by reciprocal rank; a semantic-only hit has count 0\nand its closest passage as snippets, and text output ends its first line with ~similarity.\nOffline or on a provider error, the keyword results print with a note on stderr.".into(),
             "0: completed, including zero matches; 1: usage or read error.",
+        ),
+        "memory embed" => (
+            "memory embed [--now] [--status] [--retry-failed] [flags]", "      --now             embed through the standard endpoint now instead of the batch API\n      --status          sync and report the queue without sending anything\n      --retry-failed    queue chunks the provider rejected once more\n      --root DIR        override the Claude projects root".into(), MEMORY_EMBED,
+            "Semantic memory search is off until an embeddings API key is stored: put it in\n~/.config/dejavu/embed-key (mode 600; DEJAVU_EMBED_KEY_FILE moves it) or set DEJAVU_EMBED_KEY.\nKeys in other variables such as GEMINI_API_KEY are never used. The file may hold several keys,\none per line; a rate-limited key hands over to the next. The default provider is Gemini\n(gemini-embedding-2, 768 dimensions). Any OpenAI-compatible /embeddings endpoint works:\nDEJAVU_EMBED_BASE_URL, DEJAVU_EMBED_MODEL, DEJAVU_EMBED_DIMS, DEJAVU_EMBED_API=openai|gemini.\n\nembed splits each memory file into passages at headings and paragraphs and sends new or\nedited passages to the provider. On Gemini they go through the Batch API (half price, results\nwithin 24 h); a later embed, index update, or memory search collects them. --now, a provider\nwithout a batch API, or DEJAVU_EMBED_BATCH=0 uses the standard endpoint. Passages are tracked\nby content hash: an unchanged passage is never sent twice, an edited or deleted one loses its\nvector at once, and a model or dimension change re-embeds everything.\n\nNever sent: MEMORY.md indexes, gated files (DO NOT READ UNLESS in the file name, frontmatter\nname, or description), and passages that look like they hold a credential (withheld).\nVectors are stored in the index database (DEJAVU_INDEX_PATH) and survive index rebuilds.".into(),
+            "0: completed, including provider errors reported as notes; 1: usage error, no key, or index error.",
         ),
         "memory show" => (
             "memory show <project-or-file> [flags]", "      --root DIR        override the Claude projects root".into(), MEMORY_SHOW,
@@ -342,7 +349,7 @@ pub fn command(topic: &str) -> Result<String, String> {
         "index update" | "index rebuild" => (
             if topic == "index update" { "index update [flags]" } else { "index rebuild [flags]" },
             "No command-specific flags.".into(), INDEX_REFRESH,
-            "DEJAVU_INDEX_PATH overrides the index database path. rebuild discards the old index.\nskipped reports unreadable stores.".into(),
+            "DEJAVU_INDEX_PATH overrides the index database path. rebuild discards the old index.\nskipped reports unreadable stores.\nWith an embedding key stored, update also embeds new memory passages (dejavu memory embed --help).".into(),
             "0: completed, including skipped stores; 1: usage or refresh error.",
         ),
         "self-update" => (

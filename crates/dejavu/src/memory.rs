@@ -56,6 +56,11 @@ pub trait MemoryStore {
     /// Every `*/memory/*.md` file below `root`, as full paths.
     fn glob(&self, root: &str) -> Result<Vec<String>, String>;
     fn read(&self, path: &str) -> Result<String, String>;
+    /// A file's size and modification time in nanoseconds, to skip unchanged
+    /// files. `None` means unknown, and the caller reads the file.
+    fn stat(&self, _path: &str) -> Option<(u64, i64)> {
+        None
+    }
 }
 
 /// The real filesystem, matching `Bun.Glob("*/memory/*.md")`: no dot entries
@@ -63,6 +68,16 @@ pub trait MemoryStore {
 pub struct Disk;
 
 impl MemoryStore for Disk {
+    fn stat(&self, path: &str) -> Option<(u64, i64)> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some((metadata.len(), i64::try_from(modified.as_nanos()).ok()?))
+    }
+
     fn glob(&self, root: &str) -> Result<Vec<String>, String> {
         let entries = std::fs::read_dir(root).map_err(|error| fs_error(&error, root))?;
         let mut paths = Vec::new();
@@ -188,7 +203,7 @@ fn memory_dir_parent(path: &str) -> &str {
     }
 }
 
-fn project_from_path(path: &str) -> String {
+pub(crate) fn project_from_path(path: &str) -> String {
     let parent = memory_dir_parent(path);
     parent
         .rsplit(['/', '\\'])
@@ -242,16 +257,16 @@ pub fn list_memories(root: &str, store: &dyn MemoryStore) -> Result<Vec<MemoryPr
 
 /// The fields Claude's memory frontmatter carries, plus the line where the body starts.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Frontmatter {
-    name: Option<String>,
-    description: Option<String>,
-    kind: Option<String>,
-    body_start: usize,
+pub(crate) struct Frontmatter {
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) kind: Option<String>,
+    pub(crate) body_start: usize,
 }
 
 /// Reads a leading `---` block line by line: `name` and `description` at the
 /// top level, `type` at any depth (Claude nests it under `metadata`).
-fn frontmatter(lines: &[&str]) -> Frontmatter {
+pub(crate) fn frontmatter(lines: &[&str]) -> Frontmatter {
     let mut front = Frontmatter::default();
     if lines.first().map(|line| line.trim()) != Some("---") {
         return front;
@@ -402,6 +417,49 @@ pub fn search_memories(
         .take(options.limit)
         .map(|(_, found)| found)
         .collect())
+}
+
+/// The lines of a memory file, as search and chunking split them.
+pub(crate) fn lines_of(text: &str) -> Vec<&str> {
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect()
+}
+
+/// A result row for a file that matched by meaning: no term counts, and the
+/// given passage lines as snippets. `None` when the file can no longer be
+/// read or fails the frontmatter type filter.
+pub fn semantic_match(
+    path: &str,
+    passage: &str,
+    options: &SearchOptions,
+    store: &dyn MemoryStore,
+) -> Option<MemoryMatch> {
+    let text = store.read(path).ok()?;
+    let front = frontmatter(&lines_of(&text));
+    if let Some(wanted) = options.kind.as_deref()
+        && !front
+            .kind
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
+    {
+        return None;
+    }
+    Some(MemoryMatch {
+        project: project_from_path(path),
+        name: basename(path),
+        path: path.to_string(),
+        count: 0,
+        snippets: passage
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.trim().is_empty())
+            .take(options.snippets)
+            .map(str::to_string)
+            .collect(),
+        description: front.description,
+        kind: front.kind,
+    })
 }
 
 pub fn show_memory(

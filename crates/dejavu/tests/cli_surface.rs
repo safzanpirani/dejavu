@@ -45,6 +45,7 @@ impl Fixture {
             .env("OPENCODE_DB", self.0.join("absent.db"))
             .env("FACTORY_HOME_OVERRIDE", self.0.join("factory"))
             .env("DEJAVU_INDEX_PATH", self.0.join("index.sqlite"))
+            .env_remove("DEJAVU_EMBED_KEY")
             // agy reads no variable for its store, so isolate it through HOME.
             .env("HOME", &self.0)
             .env_remove("NO_COLOR")
@@ -137,6 +138,7 @@ fn help_routes_each_command_and_nested_topic_without_ansi_in_pipes() {
         vec!["memory", "list"],
         vec!["memory", "search"],
         vec!["memory", "show"],
+        vec!["memory", "embed"],
         vec!["index", "status"],
         vec!["index", "update"],
         vec!["index", "rebuild"],
@@ -227,6 +229,11 @@ fn documented_json_keys_match_real_fixture_commands() {
             0,
         ),
         (
+            vec!["memory", "embed"],
+            vec!["memory", "embed", "--status", "--json"],
+            0,
+        ),
+        (
             vec!["index", "status"],
             vec!["index", "status", "--json"],
             0,
@@ -249,6 +256,7 @@ fn documented_json_keys_match_real_fixture_commands() {
                 ["memory", "list"] => variant,
                 ["memory", "search"] => 2,
                 ["memory", "show"] => 3,
+                ["memory", "embed"] => 4,
                 ["index", "status"] => 0,
                 _ => 1,
             };

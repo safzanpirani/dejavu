@@ -48,10 +48,54 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
                 );
             }
             report_skipped_stores(&result.skipped, common.quiet || common.json);
+            advance_memory_embeddings(&path, common);
             Ok(0)
         }
         _ => die(&format!(
             "unknown index command '{verb}' (status|update|rebuild)"
         )),
+    }
+}
+
+/// With an embedding key stored, an index update also moves the memory
+/// embedding queue. Its failures are notes: the transcript index is done.
+fn advance_memory_embeddings(path: &str, common: Common) {
+    let outcome = (|| -> Result<Vec<String>, String> {
+        let Some(config) = crate::embed::config_from_env()? else {
+            return Ok(Vec::new());
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64);
+        let mut database = crate::memory_embed::open_store(path)?;
+        crate::memory_embed::sync(
+            &mut database,
+            &crate::memory::default_memory_root(),
+            &crate::memory::Disk,
+            now_ms,
+        )?;
+        let embedder = crate::embed::HttpEmbedder::new(config);
+        let advanced = crate::memory_embed::advance(
+            &database,
+            &embedder,
+            &crate::memory_embed::AdvanceOptions {
+                now_ms,
+                immediate: false,
+                timeout: std::time::Duration::from_secs(120),
+                max_standard: None,
+                rate_limit_wait: None,
+                progress: None,
+            },
+        )?;
+        Ok(advanced.notes)
+    })();
+    if common.quiet || common.json {
+        return;
+    }
+    match outcome {
+        Ok(notes) => notes
+            .iter()
+            .for_each(|text| eprintln!("memory embeddings: {text}")),
+        Err(error) => eprintln!("memory embeddings: {error}"),
     }
 }
