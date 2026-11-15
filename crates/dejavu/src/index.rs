@@ -395,6 +395,38 @@ pub fn path_for_session_id(
         .map_err(sql_error)
 }
 
+/// The indexed transcript stored directly under session `id` as `<part>.jsonl`
+/// (a subagent's transcript), newest first.
+pub fn path_for_session_part(
+    id: &str,
+    part: &str,
+    stores: &[TranscriptStore],
+    path: &str,
+) -> Result<Option<String>, String> {
+    if stores.is_empty() || id.is_empty() || part.is_empty() {
+        return Ok(None);
+    }
+    let database = open_index_readonly(path)?;
+    let sql = format!(
+        "SELECT path FROM message_rows
+      WHERE substr(replace(lower(path), char(92), '/'), -length(?)) = ?
+        AND store IN ({})
+      GROUP BY path
+      ORDER BY MAX(date) DESC, MAX(time_ms) DESC
+      LIMIT 1",
+        placeholders(stores.len())
+    );
+    // The session's file or folder name ends with the id, so `<id>/<part>.jsonl`
+    // ends the path. SQLite's lower() folds ASCII only, so fold the same way here.
+    let tail = format!("{id}/{part}.jsonl").to_ascii_lowercase();
+    let mut values = vec![SqlValue::Text(tail.clone()), SqlValue::Text(tail)];
+    values.extend(stores.iter().map(|s| SqlValue::Text(s.path.clone())));
+    database
+        .query_row(&sql, params_from_iter(values), |row| row.get(0))
+        .optional()
+        .map_err(sql_error)
+}
+
 /// One indexed assistant message, from [`assistant_rows_containing`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssistantRow {
@@ -1690,6 +1722,14 @@ mod tests {
         assert_eq!(
             path_for_session_id(id, &stores, &index).unwrap(),
             Some(main.clone())
+        );
+        assert_eq!(
+            path_for_session_part(id, "subagents/agent-1", &stores, &index).unwrap(),
+            Some(subagent.clone())
+        );
+        assert_eq!(
+            path_for_session_part(id, "subagents/agent-2", &stores, &index).unwrap(),
+            None
         );
         let recent = recent_sessions(&ProjectFilter::Any, None, &stores, &index).unwrap();
         assert_eq!(

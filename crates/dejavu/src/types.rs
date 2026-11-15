@@ -167,8 +167,9 @@ pub struct TranscriptSnippet {
     pub text: String,
 }
 
-/// One transcript's search result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One transcript's search result. It serializes with an `address` after
+/// `path` (`session://<harness>/<id>`) when the path holds a session id.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSearchMatch {
     pub source: TranscriptSource,
     pub path: String,
@@ -176,6 +177,25 @@ pub struct StoreSearchMatch {
     pub date: String,
     pub project: String,
     pub snippets: Vec<TranscriptSnippet>,
+}
+
+impl Serialize for StoreSearchMatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let address = crate::address::address_of(self.source, &self.path);
+        let mut out =
+            serializer.serialize_struct("StoreSearchMatch", 6 + usize::from(address.is_some()))?;
+        out.serialize_field("source", &self.source)?;
+        out.serialize_field("path", &self.path)?;
+        if let Some(address) = &address {
+            out.serialize_field("address", address)?;
+        }
+        out.serialize_field("count", &self.count)?;
+        out.serialize_field("date", &self.date)?;
+        out.serialize_field("project", &self.project)?;
+        out.serialize_field("snippets", &self.snippets)?;
+        out.end()
+    }
 }
 
 #[cfg(test)]

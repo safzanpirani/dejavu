@@ -86,7 +86,7 @@ pub fn render_search(result: &Value, color: bool) -> String {
                     &display(field(item, "project")),
                     &paint.dim(&tally),
                 ),
-                paint.labeled("Transcript", &paint.dim(&display(field(item, "path")))),
+                paint.located(item),
                 snippets.join("\n")
             )
         })
@@ -188,7 +188,7 @@ pub fn render_find(result: &Value, color: bool) -> String {
                     &words,
                 ));
             }
-            lines.push(paint.labeled("Transcript", &paint.dim(&display(field(hit, "path")))));
+            lines.push(paint.located(hit));
             if let Some(resume) = truthy_text(field(hit, "resume")) {
                 lines.push(paint.labeled("Resume", &paint.command(&resume)));
             }
@@ -271,7 +271,7 @@ pub fn render_recall(result: &Value, color: bool) -> String {
                     &words,
                 ));
             }
-            lines.push(paint.labeled("Transcript", &paint.dim(&display(field(hit, "path")))));
+            lines.push(paint.located(hit));
             if let Some(resume) = truthy_text(field(hit, "resume")) {
                 lines.push(paint.labeled("Resume", &paint.command(&resume)));
             }
@@ -399,6 +399,14 @@ impl Paint {
     }
     fn labeled(self, label: &str, value: &str) -> String {
         format!("{} {value}", self.dim(&format!("{label}:")))
+    }
+    /// A result's `Transcript:` line, then its `Address:` line when it has one.
+    fn located(self, item: &Value) -> String {
+        let transcript = self.labeled("Transcript", &self.dim(&display(field(item, "path"))));
+        match truthy_text(field(item, "address")) {
+            Some(address) => format!("{transcript}\n{}", self.labeled("Address", &address)),
+            None => transcript,
+        }
     }
     /// The plain `---` between results, or a dim rule in color.
     fn separator(self) -> String {

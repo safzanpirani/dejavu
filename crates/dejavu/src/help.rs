@@ -90,6 +90,8 @@ Common forms:
 
 A locator is a path (or opencode://, openclaw://, hermes:// locator) printed by search,
 find, or last. A bare session id also works for show, transcript, query, and profile.
+Results also carry an address, session://<harness>/<id>, which works wherever a
+locator does and does not change when the transcript file moves.
 
 {COMMON}
 
@@ -413,6 +415,7 @@ mod tests {
             opening_prompt: "set up the broker".into(),
             matches: Vec::new(),
             resume: None,
+            address: None,
         };
         let retrieve = |_: &str| {
             Ok(crate::find::FindResult {

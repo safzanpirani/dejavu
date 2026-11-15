@@ -93,9 +93,10 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     Ok(if result.sessions.is_empty() { 1 } else { 0 })
 }
 
-/// A transcript path, an OpenCode locator, or a bare session id.
+/// A transcript path, an OpenCode locator, a session address, or a bare session id.
 fn is_locator(value: &str) -> bool {
     value.starts_with("opencode://")
+        || crate::address::is_address(value)
         || crate::pack::is_uuid(value)
         || (value.contains('/') && std::path::Path::new(value).is_file())
 }

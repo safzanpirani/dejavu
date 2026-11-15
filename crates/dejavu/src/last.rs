@@ -18,13 +18,17 @@ use crate::window::{WindowOptions, WindowedTranscript, render_window, window_tra
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// The transcript a command argument names. A bare session id (a UUID, as printed in
-/// resume commands and session cards) resolves through the index to that session's
-/// own transcript, and so does a unique prefix of one (8+ characters, like a short
+/// The transcript a command argument names. A session address
+/// (`session://<harness>/<id>`) and a bare session id (a UUID, as printed in
+/// resume commands and session cards) resolve through the index to that session's
+/// own transcript, and so does a unique prefix of an id (8+ characters, like a short
 /// git hash); an ambiguous prefix is an error that lists the matches. Anything else,
 /// including an existing file with an id-like name, is already a locator and passes
 /// through unchanged.
 pub fn resolve_locator(arg: &str) -> Result<String, String> {
+    if crate::address::is_address(arg) {
+        return crate::address::resolve(arg);
+    }
     let full = is_uuid(arg);
     if !full && (!is_session_id_prefix(arg) || std::path::Path::new(arg).exists()) {
         return Ok(arg.to_string());
@@ -145,6 +149,9 @@ impl Default for LastOptions {
 #[serde(rename_all = "camelCase")]
 pub struct SessionCard {
     pub path: String,
+    /// `session://<harness>/<id>`, when the path holds a session id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     pub source: TranscriptSource,
     pub project: String,
     /// The newest visible message's date.
@@ -497,6 +504,7 @@ pub fn last_session_excluding(
             ),
             last_request: None,
             resume: resume_command(candidate.source, &candidate.path),
+            address: crate::address::address_of(candidate.source, &candidate.path),
             path: candidate.path,
             source: candidate.source,
             date: candidate.date,
@@ -646,7 +654,9 @@ fn select(
             Ok((candidates, found.skipped_stores, None))
         }
         Selector::Locator(value) => {
-            let path = if is_uuid(value) && !std::path::Path::new(value).exists() {
+            let path = if crate::address::is_address(value) {
+                crate::address::resolve(value)?
+            } else if is_uuid(value) && !std::path::Path::new(value).exists() {
                 deps.path_for_id(value)?
                     .ok_or_else(|| format!("no indexed session has id {value}"))?
             } else {
@@ -755,6 +765,9 @@ fn render_card(card: &SessionCard, color: bool) -> String {
         ));
     }
     lines.push(format!("Transcript: {}", card.path));
+    if let Some(address) = &card.address {
+        lines.push(format!("Address: {address}"));
+    }
     if let Some(resume) = &card.resume {
         lines.push(format!("Resume: {resume}"));
     }
@@ -821,6 +834,7 @@ mod tests {
                     opening_prompt: String::new(),
                     matches: Vec::new(),
                     resume: None,
+                    address: None,
                 }],
             };
             Ok(FindResult {

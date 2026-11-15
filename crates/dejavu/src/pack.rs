@@ -478,6 +478,7 @@ mod tests {
             opening_prompt: String::new(),
             matches: Vec::new(),
             resume: None,
+            address: None,
         }
     }
 

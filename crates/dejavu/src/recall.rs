@@ -82,6 +82,9 @@ pub struct RecallHit {
     pub relevance: f64,
     pub source: TranscriptSource,
     pub path: String,
+    /// `session://<harness>/<id>`, when the path holds a session id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
     pub project: String,
     pub date: String,
     /// Retrieval terms this session matched.
@@ -359,6 +362,7 @@ pub fn recall_with(
                 opening_prompt: hit.opening_prompt.clone(),
                 matches: hit.matches.clone(),
                 resume: hit.resume.clone(),
+                address: hit.address.clone(),
             });
         }
     }
@@ -502,6 +506,7 @@ mod tests {
                 text: excerpt.into(),
             }],
             resume: None,
+            address: None,
         }
     }
 

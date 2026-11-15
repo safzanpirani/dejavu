@@ -64,6 +64,8 @@ dejavu query '<locator from search results>' 'What did we decide?'
 
 `show`, `transcript`, `query`, and `profile` also accept a bare session ID in place of a locator; it resolves through the index to that session's own transcript (never a Claude subagent transcript stored under it).
 
+Each `search`, `find`, `recall`, and `last` result also carries an `address`: `session://<harness>/<id>`, for example `session://claude/2d695265-2734-49cd-be54-3ac3d6480ce9`. An address works wherever a locator does and stays the same when the transcript file moves, so cite it in notes and commit messages. `<harness>` is the source name. A transcript stored under a session, such as a subagent's, adds its path without `.jsonl` (`session://claude/<id>/subagents/agent-1`). `transcript` starts at event N for an address that ends in `#event-N`. A result whose path holds no session id has no address.
+
 The default `dejavu query` harness requires an installed, authenticated `codex` binary with access to `gpt-6-luna`. Select `--harness ruddr` to use an installed Ruddr and its provider authentication. Plain search, `find`, `show`, and memory commands do not invoke a model. `memory search` calls an embeddings API only after you store a key for it (see [Search memory by meaning](#search-memory-by-meaning)). Explicit `--model provider/id` overrides retain the legacy HTTP/Pi transports.
 
 ## What it reads

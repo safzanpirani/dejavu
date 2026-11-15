@@ -47,6 +47,8 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             "transcript accepts one transcript locator (unexpected argument: '{extra}')"
         ));
     }
+    // `session://…#event-<n>` starts there unless --from-event says otherwise.
+    let from_event = from_event.or_else(|| crate::address::event_of(&locator));
     let locator = crate::last::resolve_locator(&locator)?;
     let view = view_transcript(&locator, TranscriptViewOptions { thinking, tools })?;
     let counts = view.counts;
