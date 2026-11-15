@@ -1,4 +1,4 @@
-//! Results carry a `session://<harness>/<id>` address, and commands that take a
+//! Results carry a `dejavu://<harness>/<id>` address, and commands that take a
 //! locator open it.
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -66,7 +66,7 @@ fn a_found_session_is_opened_by_the_address_its_result_carries() {
     let found = fixture.run(&["find", "walrus", "--json"]);
     assert!(found.status.success(), "{}", stderr(&found));
     let value: Value = serde_json::from_slice(&found.stdout).unwrap();
-    let address = format!("session://claude/{id}");
+    let address = format!("dejavu://claude/{id}");
     assert_eq!(value["hits"][0]["address"], json!(address));
 
     let shown = fixture.run(&["show", &address, "--json"]);
@@ -99,7 +99,7 @@ fn a_found_session_is_opened_by_the_address_its_result_carries() {
     assert!(String::from_utf8_lossy(&last.stdout).contains(&format!("Address: {address}")));
 
     // The harness is part of the address: the same id under another one is not found.
-    let other = fixture.run(&["show", &format!("session://codex/{id}")]);
+    let other = fixture.run(&["show", &format!("dejavu://codex/{id}")]);
     assert!(!other.status.success());
     assert!(
         stderr(&other).contains("no codex transcript found"),
@@ -107,7 +107,7 @@ fn a_found_session_is_opened_by_the_address_its_result_carries() {
         stderr(&other)
     );
 
-    let malformed = fixture.run(&["show", "session://cursor/abc"]);
+    let malformed = fixture.run(&["show", "dejavu://cursor/abc"]);
     assert!(!malformed.status.success());
     assert!(
         stderr(&malformed).contains("unknown harness cursor"),

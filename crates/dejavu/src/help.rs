@@ -90,7 +90,7 @@ Common forms:
 
 A locator is a path (or opencode://, openclaw://, hermes:// locator) printed by search,
 find, or last. A bare session id also works for show, transcript, query, and profile.
-Results also carry an address, session://<harness>/<id>, which works wherever a
+Results also carry an address, dejavu://<harness>/<id>, which works wherever a
 locator does and does not change when the transcript file moves.
 
 {COMMON}

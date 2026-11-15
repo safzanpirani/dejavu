@@ -168,7 +168,7 @@ pub struct TranscriptSnippet {
 }
 
 /// One transcript's search result. It serializes with an `address` after
-/// `path` (`session://<harness>/<id>`) when the path holds a session id.
+/// `path` (`dejavu://<harness>/<id>`) when the path holds a session id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSearchMatch {
     pub source: TranscriptSource,

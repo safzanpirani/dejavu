@@ -19,7 +19,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 /// The transcript a command argument names. A session address
-/// (`session://<harness>/<id>`) and a bare session id (a UUID, as printed in
+/// (`dejavu://<harness>/<id>`) and a bare session id (a UUID, as printed in
 /// resume commands and session cards) resolve through the index to that session's
 /// own transcript, and so does a unique prefix of an id (8+ characters, like a short
 /// git hash); an ambiguous prefix is an error that lists the matches. Anything else,
@@ -149,7 +149,7 @@ impl Default for LastOptions {
 #[serde(rename_all = "camelCase")]
 pub struct SessionCard {
     pub path: String,
-    /// `session://<harness>/<id>`, when the path holds a session id.
+    /// `dejavu://<harness>/<id>`, when the path holds a session id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     pub source: TranscriptSource,

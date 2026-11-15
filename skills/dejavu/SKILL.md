@@ -36,7 +36,7 @@ one agent.
 `opencode://`/`openclaw://`/`hermes://` locator printed by `find`, `search`, or `last`)
 or a bare session id, which resolves to that session's own transcript. A unique prefix of
 8 or more characters works too (`dejavu show 358a49ad`); an ambiguous one lists the
-matching ids. Results also print an address, `session://<harness>/<id>`, which every one
+matching ids. Results also print an address, `dejavu://<harness>/<id>`, which every one
 of these commands accepts; cite it in notes instead of a path. Get locators
 cheaply with `dejavu find <terms> --paths`. Older builds (before 0.6.4) accept a session
 id only in `last`; there, other commands fail with "cannot determine transcript source".

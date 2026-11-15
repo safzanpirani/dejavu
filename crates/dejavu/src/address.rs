@@ -1,4 +1,4 @@
-//! Session addresses: `session://<harness>/<id>[/<part>][#event-<n>]`, one
+//! Session addresses: `dejavu://<harness>/<id>[/<part>][#event-<n>]`, one
 //! short name for a session that does not depend on where its transcript is
 //! stored. `<harness>` is a source name (`claude`, `codex`, `omp`, ...), `<id>`
 //! the session id, `<part>` a transcript stored under the session (a subagent),
@@ -11,7 +11,7 @@
 use crate::pack::is_uuid;
 use crate::types::{SourceSelector, TranscriptSource};
 
-const SCHEME: &str = "session://";
+const SCHEME: &str = "dejavu://";
 const EVENT: &str = "event-";
 
 /// A parsed session address.
@@ -34,12 +34,12 @@ pub fn is_address(value: &str) -> bool {
 pub fn parse(address: &str) -> Result<SessionAddress, String> {
     let invalid = |why: &str| {
         format!(
-            "invalid session address {address}: {why} (session://<harness>/<id>[/<part>][#event-<n>])"
+            "invalid session address {address}: {why} (dejavu://<harness>/<id>[/<part>][#event-<n>])"
         )
     };
     let rest = address
         .strip_prefix(SCHEME)
-        .ok_or_else(|| invalid("it does not start with session://"))?;
+        .ok_or_else(|| invalid("it does not start with dejavu://"))?;
     let (rest, fragment) = match rest.split_once('#') {
         Some((rest, fragment)) => (rest, Some(fragment)),
         None => (rest, None),
@@ -147,44 +147,44 @@ mod tests {
             (
                 TranscriptSource::Claude,
                 format!("/h/.claude/projects/-Users-x-app/{ID}.jsonl"),
-                format!("session://claude/{ID}"),
+                format!("dejavu://claude/{ID}"),
             ),
             (
                 TranscriptSource::Claude,
                 format!("/h/.claude/projects/-Users-x-app/{ID}/subagents/agent-a1b2.jsonl"),
-                format!("session://claude/{ID}/subagents/agent-a1b2"),
+                format!("dejavu://claude/{ID}/subagents/agent-a1b2"),
             ),
             (
                 TranscriptSource::Codex,
                 format!("/h/.codex/sessions/2026/08/29/rollout-2026-08-29T10-00-00-{ID}.jsonl"),
-                format!("session://codex/{ID}"),
+                format!("dejavu://codex/{ID}"),
             ),
             (
                 TranscriptSource::Omp,
                 format!("/h/.omp/agent/sessions/-Dev-x/2026-10-13T12-21-48-748Z_{ID}.jsonl"),
-                format!("session://omp/{ID}"),
+                format!("dejavu://omp/{ID}"),
             ),
             (
                 TranscriptSource::Omp,
                 format!(
                     r"C:\h\.omp\agent\sessions\-Dev-x\2026-10-13T12-21-48-748Z_{ID}\Lock Screen.jsonl"
                 ),
-                format!("session://omp/{ID}/Lock Screen"),
+                format!("dejavu://omp/{ID}/Lock Screen"),
             ),
             (
                 TranscriptSource::Droid,
                 format!("/h/.factory/sessions/-Users-x/{ID}.jsonl"),
-                format!("session://droid/{ID}"),
+                format!("dejavu://droid/{ID}"),
             ),
             (
                 TranscriptSource::Opencode,
                 "opencode:///h/opencode.db#ses_0863bbc96ffebFvBM1w03zML4V".to_string(),
-                "session://opencode/ses_0863bbc96ffebFvBM1w03zML4V".to_string(),
+                "dejavu://opencode/ses_0863bbc96ffebFvBM1w03zML4V".to_string(),
             ),
             (
                 TranscriptSource::Hermes,
                 "hermes:///h/state.db#a%20b".to_string(),
-                "session://hermes/a%20b".to_string(),
+                "dejavu://hermes/a%20b".to_string(),
             ),
         ];
         for (source, path, address) in cases {
@@ -203,7 +203,7 @@ mod tests {
                 TranscriptSource::Claude,
                 &format!("/h/.claude/projects/-private-tmp-{other}/{ID}.jsonl"),
             ),
-            Some(format!("session://claude/{ID}"))
+            Some(format!("dejavu://claude/{ID}"))
         );
         assert_eq!(
             address_of(TranscriptSource::Pi, "/h/.pi/agent/sessions/-x/notes.jsonl"),
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn parses_parts_and_events_and_rejects_malformed_addresses() {
         assert_eq!(
-            parse(&format!("session://omp/{ID}/Lock Screen#event-12")).unwrap(),
+            parse(&format!("dejavu://omp/{ID}/Lock Screen#event-12")).unwrap(),
             SessionAddress {
                 source: TranscriptSource::Omp,
                 id: ID.into(),
@@ -222,16 +222,16 @@ mod tests {
                 event: Some(12),
             }
         );
-        assert_eq!(event_of(&format!("session://omp/{ID}#event-0")), Some(0));
-        assert_eq!(event_of(&format!("session://omp/{ID}")), None);
+        assert_eq!(event_of(&format!("dejavu://omp/{ID}#event-0")), Some(0));
+        assert_eq!(event_of(&format!("dejavu://omp/{ID}")), None);
         assert_eq!(event_of("/a/path#event-3"), None);
         for bad in [
-            "session://omp",
-            "session://omp/",
-            "session://cursor/abc",
-            "session://omp/abc/",
-            "session://omp/abc#turn-3",
-            "session://omp/abc#event-x",
+            "dejavu://omp",
+            "dejavu://omp/",
+            "dejavu://cursor/abc",
+            "dejavu://omp/abc/",
+            "dejavu://omp/abc#turn-3",
+            "dejavu://omp/abc#event-x",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }

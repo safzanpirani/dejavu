@@ -82,7 +82,7 @@ pub struct RecallHit {
     pub relevance: f64,
     pub source: TranscriptSource,
     pub path: String,
-    /// `session://<harness>/<id>`, when the path holds a session id.
+    /// `dejavu://<harness>/<id>`, when the path holds a session id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     pub project: String,
