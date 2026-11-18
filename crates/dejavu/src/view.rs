@@ -387,16 +387,18 @@ fn line_ref(entry: &TreeEntry, block: Option<usize>) -> Option<EventRef> {
     })
 }
 
-/// One tool call from a single JSONL row, for `dejavu search --tools`.
+/// One tool call or tool result from a single JSONL row, for `dejavu search --tools`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineToolCall {
-    /// `name: ` and the input's string, number, and boolean leaves, joined by spaces.
+    /// A call: `name: ` and the input's string, number, and boolean leaves,
+    /// joined by spaces. A result: `name result: ` and its output.
     pub text: String,
     pub timestamp: Option<String>,
 }
 
-/// The tool calls one JSONL row records. OpenCode keeps tool calls in SQLite
-/// and has none here.
+/// The tool calls and tool results one JSONL row records, so a search can find
+/// an error message a command printed. OpenCode keeps tool calls in SQLite
+/// and has none here; agy rows carry calls only.
 pub fn line_tool_calls(line: &str, source: TranscriptSource) -> Vec<LineToolCall> {
     let Some(value) = parse_json_line::<Value>(line) else {
         return Vec::new();
@@ -430,6 +432,10 @@ pub fn line_tool_calls(line: &str, source: TranscriptSource) -> Vec<LineToolCall
         .filter_map(|event| match event.body {
             EventBody::ToolCall { name, input, .. } => Some(LineToolCall {
                 text: tool_call_text(&name, &input),
+                timestamp: event.timestamp,
+            }),
+            EventBody::ToolResult { name, output, .. } => Some(LineToolCall {
+                text: format!("{} result: {output}", name.as_deref().unwrap_or("tool")),
                 timestamp: event.timestamp,
             }),
             _ => None,

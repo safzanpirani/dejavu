@@ -102,7 +102,7 @@ Search uses case-insensitive fixed-string matching. Spaces form one exact phrase
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 
-`--since 2w` (or `YYYY-MM-DD`, `7d`, `3m`) keeps only messages dated on or after the cutoff; counts and snippets come from those messages. `--tools` also matches tool-call inputs, such as a URL passed to a skill or a shell command, and returns them as `tool` snippets. The index holds only visible messages, so `--tools` scans JSONL transcripts directly and takes seconds instead of milliseconds. OpenCode tool calls are not searched.
+`--since 2w` (or `YYYY-MM-DD`, `7d`, `3m`) keeps only messages dated on or after the cutoff; counts and snippets come from those messages. `--tools` also matches tool-call inputs, such as a URL passed to a skill or a shell command, and tool results, such as an error a command printed; it returns them as `tool` snippets (a result reads `<tool> result: <output>`). The index holds only visible messages, so `--tools` scans JSONL transcripts directly and takes seconds instead of milliseconds. OpenCode tool calls are not searched.
 
 Each result includes its source, date, project, match count, snippets, and locator. JSONL sources return file paths. OpenCode returns `opencode://...#session-id` locators, OpenClaw `openclaw://...#session-id`, and Hermes `hermes://...#session-id`. OpenClaw stores Pi-format entries and Hermes stores chat rows; Dejavu renders both as Pi transcripts, so every command reads them. `scrub` refuses them, because Dejavu opens those databases read-only. OpenClaw cards print `openclaw resume <session key>` and Hermes cards `hermes --resume <id>`.
 
@@ -349,6 +349,8 @@ The CLI is one Rust crate in `crates/dejavu`. It keeps JSONL search, SQLite acce
 `help.rs` holds each command's help, including the JSON keys it documents. `tests/cli_surface.rs` compares those keys with real `--json` output from fixtures. When you add a JSON field, document it in `help.rs`, or the contract test fails. For excerpts centered on a search term, use `window::centered_excerpt`.
 
 Windows CI runs every test. Compare paths as `PathBuf` values instead of strings with `/`, and gate shell-script fakes with `#[cfg(unix)]`.
+
+Claude and Droid transcripts are trees: `show` and `transcript` follow `parentUuid` links back from the newest leaf. In a test fixture, give every record a `uuid` and point its `parentUuid` at the record before it. A record without `parentUuid` starts a new chain, so the views drop everything written before it.
 
 ## License
 

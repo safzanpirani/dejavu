@@ -184,8 +184,8 @@ pub struct SearchOptions {
     pub no_index: bool,
     /// `YYYY-MM-DD` or `7d`/`2w`/`3m`: only messages dated on or after it match.
     pub since: Option<String>,
-    /// Also match tool-call inputs. The index holds only visible messages, so
-    /// this scans JSONL transcripts directly.
+    /// Also match tool-call inputs and tool results. The index holds only
+    /// visible messages, so this scans JSONL transcripts directly.
     pub tools: bool,
 }
 
@@ -991,6 +991,50 @@ mod tests {
             )
             .unwrap_err()
             .contains("--since")
+        );
+    }
+
+    #[test]
+    fn tools_matches_an_error_a_tool_printed() {
+        let tool_result = serde_json::json!({
+            "type": "user", "timestamp": "2026-11-18T00:00:00Z",
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1",
+                  "content": "ruddr: unexpected run arguments \"say hi\"" },
+            ] },
+        })
+        .to_string();
+        let fake = Fake {
+            stores: vec![jsonl(TranscriptSource::Claude, "/claude")],
+            counts: Box::new(|_, _| {
+                vec![FileMatchCount {
+                    path: "/claude/p/s.jsonl".into(),
+                    count: 1,
+                }]
+            }),
+            lines: Box::new(move |_, _| vec![tool_result.clone()]),
+            opencode: Box::new(|_| Ok(Vec::new())),
+        };
+        let run = |tools: bool| {
+            search_sessions(
+                "unexpected run arguments",
+                SearchOptions {
+                    tools,
+                    ..SearchOptions::default()
+                },
+                &fake,
+            )
+            .unwrap()
+            .matches
+        };
+        assert!(run(false).is_empty());
+        let found = run(true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].snippets[0].role, "tool");
+        assert!(
+            found[0].snippets[0]
+                .text
+                .contains("result: ruddr: unexpected run arguments")
         );
     }
 }

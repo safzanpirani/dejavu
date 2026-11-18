@@ -117,6 +117,20 @@ pub fn address_of(source: TranscriptSource, path: &str) -> Option<String> {
     })
 }
 
+/// `result` as JSON with the session's `address` appended, when its path holds
+/// a session id, so `show` and `transcript` print the address like search does.
+pub fn json_with_address<T: serde::Serialize>(
+    result: &T,
+    source: TranscriptSource,
+    path: &str,
+) -> serde_json::Value {
+    let mut value = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
+    if let (Some(object), Some(address)) = (value.as_object_mut(), address_of(source, path)) {
+        object.insert("address".into(), address.into());
+    }
+    value
+}
+
 /// The locator of the transcript an address names, through the index.
 pub fn resolve(address: &str) -> Result<String, String> {
     let parsed = parse(address)?;

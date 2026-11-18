@@ -28,17 +28,23 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     };
     let locator = crate::last::resolve_locator(&locator)?;
     let result = show_session(&locator, &options)?;
+    let address = crate::address::address_of(result.source, &result.path);
     print_stdout(&if common.json {
-        js::pretty(&result)
+        js::pretty(&crate::address::json_with_address(
+            &result,
+            result.source,
+            &result.path,
+        ))
     } else {
         render_show(&result)
     });
     if !common.quiet && !common.json {
         let count = result.message_count;
+        let address = address.map(|a| format!(" · {a}")).unwrap_or_default();
         eprintln!(
             "{}",
             dim_stderr(&format!(
-                "{} · {count} message{}",
+                "{} · {count} message{}{address}",
                 result.source,
                 if count == 1 { "" } else { "s" }
             ))

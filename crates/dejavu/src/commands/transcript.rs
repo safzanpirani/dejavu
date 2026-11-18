@@ -53,6 +53,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     let view = view_transcript(&locator, TranscriptViewOptions { thinking, tools })?;
     let counts = view.counts;
     let source = view.source;
+    let path = view.path.clone();
     let color = force_color
         || (!no_color
             && !common.json
@@ -77,7 +78,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             },
         )?;
         if common.json {
-            js::pretty(&windowed)
+            js::pretty(&crate::address::json_with_address(&windowed, source, &path))
         } else {
             format!(
                 "{}\n\n{}",
@@ -86,16 +87,19 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
             )
         }
     } else if common.json {
-        js::pretty(&view)
+        js::pretty(&crate::address::json_with_address(&view, source, &path))
     } else {
         render_transcript(&view, render)
     };
     print_stdout(&output);
     if !common.quiet && !common.json {
+        let address = crate::address::address_of(source, &path)
+            .map(|a| format!(" · {a}"))
+            .unwrap_or_default();
         eprintln!(
             "{}",
             dim_stderr(&format!(
-                "{source} · {} user · {} assistant · {} tool calls · {} results · {} thinking",
+                "{source} · {} user · {} assistant · {} tool calls · {} results · {} thinking{address}",
                 counts.user,
                 counts.assistant,
                 counts.tool_calls,

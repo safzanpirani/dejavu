@@ -106,7 +106,7 @@ const SEARCH: &str = r#"  -s, --source NAME      all, claude, codex, pi, omp, op
   -n, --limit N          transcripts to return (default 10)
       --snippets N       snippets per transcript (integer >= 1; default 3)
       --since WHEN       only messages on or after WHEN: YYYY-MM-DD or 7d / 2w / 3m
-      --tools            also match tool-call inputs (scans files directly; slower)
+      --tools            also match tool-call inputs and tool results (scans files directly; slower)
       --max-parallel N   local store/file workers (default 4)
       --no-index         bypass the transcript index and scan files directly
       --color / --no-color
@@ -284,14 +284,14 @@ pub fn command(topic: &str) -> Result<String, String> {
         ),
         "show" => (
             "show <transcript-locator> [flags]", SHOW.to_string(),
-            "JSON object keys: path, source, messageCount, messages\njq: jq '.messages[].text'",
-            "messages contain role and text. This command uses no model.".into(),
+            "JSON object keys: path, source, messageCount, messages, address?\njq: jq '.messages[].text'",
+            "messages contain role and text. address is the session's dejavu:// address when the path holds a session id.\nThis command uses no model.".into(),
             "0: completed; 1: usage or read error.",
         ),
         "transcript" | "view" => (
             "transcript <transcript-locator> [flags]", TRANSCRIPT.to_string(),
-            "JSON object keys: path, source, project, counts, events, window?\njq: jq '.events[]'",
-            "view is an alias. JSON contains an object with events, not a bare event array.\nwindow appears with pagination or character bounds. window.nextEvent is the next event ID.\n--full accepts pagination but cannot be combined with character limits.".into(),
+            "JSON object keys: path, source, project, counts, events, window?, address?\njq: jq '.events[]'",
+            "view is an alias. JSON contains an object with events, not a bare event array.\nwindow appears with pagination or character bounds. window.nextEvent is the next event ID.\naddress is the session's dejavu:// address when the path holds a session id.\n--full accepts pagination but cannot be combined with character limits.".into(),
             "0: completed; 1: usage or read error.",
         ),
         "scrub" => (
