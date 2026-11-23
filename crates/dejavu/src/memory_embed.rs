@@ -496,6 +496,11 @@ fn sync_root(
     let mut changes = Vec::new();
     let mut off = HashSet::new();
     for file in files {
+        // A path that looks like it holds a credential is never stored, not even as a
+        // skipped file; rows an older version stored for it go with the removed files.
+        if looks_secret(&file.path) {
+            continue;
+        }
         seen.insert(file.path.as_str());
         let stat = store
             .stat(&file.path)
@@ -506,20 +511,18 @@ fn sync_root(
         let recorded = |reason: &str| {
             known_file.is_some_and(|(_, _, skipped)| skipped.as_deref() == Some(reason))
         };
+        // Indexed with no skip reason: an unchanged file needs no read. A file last
+        // skipped (gated, unreadable, ignored) is read again, as it may read fine now.
+        let clean = known_file.is_some_and(|(_, _, skipped)| skipped.is_none());
         let action = rules.action_for(file);
         let chunks = match (action, file.source) {
             (Some(Action::Off), _) => {
                 off.insert(file.path.as_str());
                 continue;
             }
-            (Some(Action::Skip), _) => {
-                if unchanged && recorded(IGNORED) {
-                    continue;
-                }
-                Err(IGNORED)
-            }
+            (Some(Action::Skip), _) => Err(IGNORED),
             (_, Source::Memory) => {
-                if unchanged && !recorded(IGNORED) {
+                if unchanged && clean {
                     continue;
                 }
                 // An unreadable file keeps its rows until it reads again or disappears.
@@ -536,28 +539,23 @@ fn sync_root(
             // Every page is read and its gate checked on each sync, whatever
             // its size, mtime, or rule say; a page that is gated, malformed,
             // or unreadable loses its rows.
-            (_, Source::Wiki) => {
-                let chunks = match store.read(&file.path) {
-                    Ok(text) => {
-                        match memory::wiki_skip_reason(&file.name, &memory::lines_of(&text)) {
-                            None if action == Some(Action::Freeze) => continue,
-                            None if unchanged && !recorded(IGNORED) => continue,
-                            None => chunk_page(&file.name, &text),
-                            Some(reason) => Err(reason),
-                        }
-                    }
-                    Err(_) => Err("unreadable"),
-                };
-                // Already recorded as skipped for this reason: no rows left.
-                if let Err(reason) = chunks
-                    && unchanged
-                    && recorded(reason)
-                {
-                    continue;
-                }
-                chunks
-            }
+            (_, Source::Wiki) => match store.read(&file.path) {
+                Ok(text) => match memory::wiki_skip_reason(&file.name, &memory::lines_of(&text)) {
+                    None if action == Some(Action::Freeze) => continue,
+                    None if unchanged && clean => continue,
+                    None => chunk_page(&file.name, &text),
+                    Some(reason) => Err(reason),
+                },
+                Err(_) => Err("unreadable"),
+            },
         };
+        // Already recorded as skipped for this reason: no rows left.
+        if let Err(reason) = chunks
+            && unchanged
+            && recorded(reason)
+        {
+            continue;
+        }
         changes.push((file, stat, chunks));
     }
     let removed: Vec<&String> = known
@@ -588,7 +586,11 @@ fn sync_root(
         return Ok(stats);
     }
 
-    let transaction = database.transaction().map_err(sql)?;
+    // IMMEDIATE takes the write lock before any check below, so a sync in another
+    // process cannot commit between the re-stat and this one's writes.
+    let transaction = database
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql)?;
     for path in &unsent_off {
         stats.chunks_removed += transaction
             .execute(
@@ -614,6 +616,28 @@ fn sync_root(
         stats.removed_files += 1;
     }
     for (file, stat, chunks) in changes {
+        // The file changed again after this sync read it (another sync may already
+        // have stored the newer text). Its passages still waiting for a vector may hold
+        // text the edit took out (a gate, a credential), so they go, and the file is
+        // read again by the next sync.
+        let now = store
+            .stat(&file.path)
+            .map(|(size, mtime)| (i64::try_from(size).unwrap_or(i64::MAX), mtime));
+        if now != stat {
+            stats.chunks_removed += transaction
+                .execute(
+                    "DELETE FROM memory_chunks WHERE path = ? AND status IN ('pending', 'retry')",
+                    [&file.path],
+                )
+                .map_err(sql)?;
+            transaction
+                .execute(
+                    "UPDATE memory_files SET size = -1, mtime_ns = -1 WHERE path = ?",
+                    [&file.path],
+                )
+                .map_err(sql)?;
+            continue;
+        }
         let mut existing: HashMap<String, i64> = HashMap::new();
         {
             let mut statement = transaction
@@ -732,13 +756,14 @@ fn store_vector(
         .execute(
             "UPDATE memory_chunks SET status = 'done', vec = ?, model = ?, dims = ?,
              batch_id = NULL, batch_pos = NULL, updated_at = ?
-             WHERE id = ? AND content_sha = ? AND status = ?",
+             WHERE id = ? AND path = ? AND content_sha = ? AND status = ?",
             params![
                 blob(vector),
                 embedder.model(),
                 embedder.dims() as i64,
                 now_ms,
                 row.id,
+                row.path,
                 row.sha,
                 row.status
             ],
@@ -785,9 +810,12 @@ pub struct AdvanceStats {
     pub notes: Vec<String>,
 }
 
-/// What identifies a queued chunk's text: a write lands only while all three match.
+/// What identifies a queued chunk's text: a write lands only while all four
+/// match. The path guards against SQLite reusing a deleted row's id for
+/// another file's passage with the same text.
 struct RowKey {
     id: i64,
+    path: String,
     sha: String,
     status: String,
 }
@@ -838,6 +866,7 @@ fn rows_with_status(
         rows.push(Row {
             key: RowKey {
                 id: row.get(0).map_err(sql)?,
+                path,
                 sha: row.get(1).map_err(sql)?,
                 status: row.get(2).map_err(sql)?,
             },
@@ -852,11 +881,13 @@ fn mark_failed(database: &Connection, row: &RowKey, embedder: &dyn Embedder) -> 
     database
         .execute(
             "UPDATE memory_chunks SET status = 'failed', vec = NULL, model = ?, dims = ?,
-             batch_id = NULL, batch_pos = NULL WHERE id = ? AND content_sha = ? AND status = ?",
+             batch_id = NULL, batch_pos = NULL
+             WHERE id = ? AND path = ? AND content_sha = ? AND status = ?",
             params![
                 embedder.model(),
                 embedder.dims() as i64,
                 row.id,
+                row.path,
                 row.sha,
                 row.status
             ],
@@ -870,7 +901,7 @@ fn mark_failed(database: &Connection, row: &RowKey, embedder: &dyn Embedder) -> 
 fn embed_rows(
     database: &Connection,
     embedder: &dyn Embedder,
-    rows: &[Row],
+    rows: &[&Row],
     options: &AdvanceOptions,
     stats: &mut AdvanceStats,
 ) -> Result<bool, String> {
@@ -882,12 +913,17 @@ fn embed_rows(
     let rows = &rows[..room.min(rows.len())];
     let total = rows.len();
     let mut finished = 0;
-    for group in rows.chunks(STANDARD_GROUP) {
+    for chunk in rows.chunks(STANDARD_GROUP) {
         if !keep_lease(database, stats)? {
             return Ok(false);
         }
-        let texts: Vec<String> = group.iter().map(document).collect();
-        let mut outcome = embedder.embed(&texts, options.timeout);
+        let mut group = still_queued(database, chunk.iter().copied(), stats)?;
+        let mut texts: Vec<String> = group.iter().map(|row| document(row)).collect();
+        let mut outcome = if group.is_empty() {
+            Ok(Vec::new())
+        } else {
+            embedder.embed(&texts, options.timeout)
+        };
         for _ in 0..RATE_LIMIT_RETRIES {
             match (&outcome, options.rate_limit_wait) {
                 (Err(error), Some(wait)) if error.status == Some(429) => {
@@ -895,7 +931,14 @@ fn embed_rows(
                     if !keep_lease(database, stats)? {
                         return Ok(false);
                     }
-                    outcome = embedder.embed(&texts, options.timeout);
+                    // A sync during the wait may have edited, removed or withheld a row.
+                    group = still_queued(database, group, stats)?;
+                    texts = group.iter().map(|row| document(row)).collect();
+                    outcome = if group.is_empty() {
+                        Ok(Vec::new())
+                    } else {
+                        embedder.embed(&texts, options.timeout)
+                    };
                 }
                 _ => break,
             }
@@ -916,9 +959,12 @@ fn embed_rows(
                 status: Some(400),
                 ..
             }) if group.len() > 1 => {
-                for row in group {
+                for &row in &group {
                     if !keep_lease(database, stats)? {
                         return Ok(false);
+                    }
+                    if still_queued(database, [row], stats)?.is_empty() {
+                        continue;
                     }
                     match embedder.embed(&[document(row)], options.timeout) {
                         Ok(vectors) => {
@@ -962,12 +1008,45 @@ fn embed_rows(
                 return Ok(false);
             }
         }
-        finished += group.len();
+        finished += chunk.len();
         if let Some(progress) = options.progress {
             progress(finished, total);
         }
     }
     Ok(complete)
+}
+
+/// The rows still queued as they were read: same id, text hash and status.
+/// A sync in another process may have edited, removed or withheld a row since
+/// (a title that turned credential-like, a gate); its text is not sent.
+fn still_queued<'a>(
+    database: &Connection,
+    rows: impl IntoIterator<Item = &'a Row>,
+    stats: &mut AdvanceStats,
+) -> Result<Vec<&'a Row>, String> {
+    let mut statement = database
+        .prepare_cached(
+            "SELECT 1 FROM memory_chunks
+             WHERE id = ? AND path = ? AND content_sha = ? AND status = ?",
+        )
+        .map_err(sql)?;
+    let mut live = Vec::new();
+    for row in rows {
+        if statement
+            .exists(params![
+                row.key.id,
+                row.key.path,
+                row.key.sha,
+                row.key.status
+            ])
+            .map_err(sql)?
+        {
+            live.push(row);
+        } else {
+            stats.discarded += 1;
+        }
+    }
+    Ok(live)
 }
 
 fn release_batch(database: &Connection, batch: &str, status: &str) -> Result<(), String> {
@@ -1155,12 +1234,13 @@ fn advance_leased(
                     // The row is gone when its text changed while the batch was out.
                     let key: Option<RowKey> = database
                         .query_row(
-                            "SELECT id, content_sha FROM memory_chunks
+                            "SELECT id, content_sha, path FROM memory_chunks
                              WHERE batch_id = ? AND batch_pos = ? AND status = 'submitted'",
                             params![batch, position as i64],
                             |row| {
                                 Ok(RowKey {
                                     id: row.get(0)?,
+                                    path: row.get(2)?,
                                     sha: row.get(1)?,
                                     status: "submitted".into(),
                                 })
@@ -1213,6 +1293,7 @@ fn advance_leased(
         },
         options,
     )?;
+    let standard: Vec<&Row> = standard.iter().collect();
     if !embed_rows(database, embedder, &standard, options, &mut stats)? || !batching {
         return Ok(stats);
     }
@@ -1230,15 +1311,18 @@ fn advance_leased(
             end += 1;
         }
         let first = start;
-        let group = &pending[start..end];
         start = end;
+        if !keep_lease(database, &mut stats)? {
+            break;
+        }
+        let group = still_queued(database, &pending[first..end], &mut stats)?;
+        if group.is_empty() {
+            continue;
+        }
         let texts: Vec<String> = group
             .iter()
             .map(|row| embed::format_document(model, &row.title, &row.text))
             .collect();
-        if !keep_lease(database, &mut stats)? {
-            break;
-        }
         match embedder.submit_batch(&texts) {
             Ok(batch) => {
                 let transaction = database.unchecked_transaction().map_err(sql)?;
@@ -1253,8 +1337,8 @@ fn advance_leased(
                     transaction
                         .execute(
                             "UPDATE memory_chunks SET status = 'submitted', batch_id = ?, batch_pos = ?
-                             WHERE id = ? AND content_sha = ? AND status = 'pending'",
-                            params![batch, position as i64, row.key.id, row.key.sha],
+                             WHERE id = ? AND path = ? AND content_sha = ? AND status = 'pending'",
+                            params![batch, position as i64, row.key.id, row.key.path, row.key.sha],
                         )
                         .map_err(sql)?;
                 }
@@ -1274,7 +1358,9 @@ fn advance_leased(
                         .status
                         .map_or(error.message, |status| format!("HTTP {status}"))
                 ));
-                embed_rows(database, embedder, &pending[first..], options, &mut stats)?;
+                // The rows this batch dropped as no longer queued are not tried again.
+                let rest: Vec<&Row> = group.iter().copied().chain(&pending[end..]).collect();
+                embed_rows(database, embedder, &rest, options, &mut stats)?;
                 break;
             }
         }
@@ -3117,5 +3203,158 @@ mod tests {
         let synced = sync(&mut database, "/mem", None, &Rules::default(), &files, 2).unwrap();
         assert_eq!((synced.chunks_added, synced.chunks_removed), (0, 0));
         assert_eq!(status(&database, &["/mem"]).unwrap().done, 3);
+    }
+
+    #[test]
+    fn a_path_that_looks_like_a_credential_is_never_stored_and_old_rows_go() {
+        let files = Files::default();
+        files.put("a.md", "The disk filled up.");
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        // As an older dejavu stored it.
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        database
+            .execute(
+                "UPDATE memory_chunks SET path = '/mem/-proj/memory/' || ? || '.md'",
+                [token],
+            )
+            .unwrap();
+        database
+            .execute(
+                "UPDATE memory_files SET path = '/mem/-proj/memory/' || ? || '.md'",
+                [token],
+            )
+            .unwrap();
+        files.remove("a.md");
+        files.put(&format!("{token}.md"), "The disk filled up.");
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 2).unwrap();
+        let stored: i64 = database
+            .query_row(
+                "SELECT (SELECT count(*) FROM memory_chunks WHERE path LIKE '%ghp_%')
+                      + (SELECT count(*) FROM memory_files WHERE path LIKE '%ghp_%')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 0);
+    }
+
+    #[test]
+    fn a_sync_that_read_a_file_before_its_next_edit_leaves_it_for_the_next_sync() {
+        /// Reads a file, then sees it edited before the sync writes anything.
+        struct EditedAfterRead<'a>(&'a Files);
+        impl MemoryStore for EditedAfterRead<'_> {
+            fn glob(&self, root: &str) -> Result<Vec<String>, String> {
+                self.0.glob(root)
+            }
+            fn read(&self, path: &str) -> Result<String, String> {
+                let text = self.0.read(path)?;
+                self.0.put_at(path.to_string(), "Pancakes for breakfast.");
+                Ok(text)
+            }
+            fn stat(&self, path: &str) -> Option<(u64, i64)> {
+                self.0.stat(path)
+            }
+        }
+        let files = Files::default();
+        files.put("a.md", "The disk filled up.");
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        // The first version is queued; then a sync reads the second while a third lands.
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        files.put("a.md", "Ship on Friday.");
+        let raced = sync(
+            &mut database,
+            "/mem",
+            None,
+            &Rules::default(),
+            &EditedAfterRead(&files),
+            2,
+        )
+        .unwrap();
+        assert_eq!((raced.chunks_added, raced.chunks_removed), (0, 1));
+        assert!(texts_of(&database, "a.md").is_empty());
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 3).unwrap();
+        assert_eq!(texts_of(&database, "a.md"), ["Pancakes for breakfast."]);
+    }
+
+    #[test]
+    fn a_page_that_reads_again_after_failing_gets_its_rows_back() {
+        struct Unreadable<'a>(&'a Files);
+        impl MemoryStore for Unreadable<'_> {
+            fn glob(&self, root: &str) -> Result<Vec<String>, String> {
+                self.0.glob(root)
+            }
+            fn glob_wiki(&self, pages: &str) -> Vec<String> {
+                self.0.glob_wiki(pages)
+            }
+            fn read(&self, _: &str) -> Result<String, String> {
+                Err("EACCES".into())
+            }
+            fn stat(&self, path: &str) -> Option<(u64, i64)> {
+                self.0.stat(path)
+            }
+        }
+        let files = Files::default();
+        files.put_wiki(
+            "pages/disk.md",
+            &page("Disk", "Root", "", "The disk filled up."),
+        );
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        let wiki = Some("/wiki/pages");
+        sync(
+            &mut database,
+            "/mem",
+            wiki,
+            &Rules::default(),
+            &Unreadable(&files),
+            1,
+        )
+        .unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 0);
+        // Permissions restored: same size and mtime.
+        sync(&mut database, "/mem", wiki, &Rules::default(), &files, 2).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 1);
+    }
+
+    #[test]
+    fn a_passage_withheld_while_an_earlier_group_was_sent_is_not_sent() {
+        let files = Files::default();
+        for n in 0..STANDARD_GROUP {
+            files.put(&format!("n{n:03}.md"), &format!("Deploy note {n}."));
+        }
+        files.put("z.md", "Last disk note.");
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        let path = dir
+            .path()
+            .join("index.sqlite")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let mut fake = Fake::new(false);
+        // While the first group is out, another process withholds the last passage.
+        fake.on_embed = Some(Box::new(move || {
+            open_store(&path)
+                .unwrap()
+                .execute(
+                    "UPDATE memory_chunks SET status = 'withheld', text = '', title = ''
+                     WHERE path LIKE '%/z.md'",
+                    [],
+                )
+                .unwrap();
+        }));
+        let stats = advance(&database, &fake, &options(1, true)).unwrap();
+        assert_eq!((stats.embedded, stats.discarded), (STANDARD_GROUP, 1));
+        assert!(
+            !fake
+                .sent
+                .borrow()
+                .iter()
+                .any(|text| text.contains("Last disk note"))
+        );
     }
 }
