@@ -83,7 +83,8 @@ impl Rules {
         let home = slashes(home).trim_end_matches('/').to_string();
         let mut entries = Vec::new();
         for (number, line) in text.lines().enumerate() {
-            let line = line.split('#').next().unwrap_or("").trim();
+            // `#` starts a comment only at line start or after whitespace, so paths with `#` stay intact.
+            let line = strip_comment(line);
             if line.is_empty() {
                 continue;
             }
@@ -158,6 +159,16 @@ impl Rules {
     pub fn action_for(&self, file: &MemoryFile) -> Option<Action> {
         self.action(&file.path, file.source)
     }
+}
+/// Strips `#` comments starting at column 0 or after whitespace, keeping `#` inside a path.
+fn strip_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'#' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            return line[..i].trim();
+        }
+    }
+    line.trim()
 }
 
 /// `*` and `?` stay within a `/`-separated segment; `**` crosses segments,
@@ -266,5 +277,15 @@ mod tests {
                 .unwrap_err()
                 .contains("absolute")
         );
+    }
+
+    #[test]
+    fn a_hash_inside_a_path_is_not_a_comment() {
+        let rules = rules("skip /dev/c#/notes/*.md # trailing comment\n");
+        assert_eq!(
+            rules.action("/dev/c#/notes/a.md", Source::Memory),
+            Some(Action::Skip)
+        );
+        assert_eq!(rules.action("/dev/c", Source::Memory), None);
     }
 }

@@ -516,10 +516,21 @@ fn sync_root(
         let clean = known_file.is_some_and(|(_, _, skipped)| skipped.is_none());
         let action = rules.action_for(file);
         let chunks = match (action, file.source) {
-            (Some(Action::Off), _) => {
+            (Some(Action::Off), Source::Memory) => {
                 off.insert(file.path.as_str());
                 continue;
             }
+            // Even an `off` wiki page is still gate-checked so a newly gated page loses its rows at rest.
+            (Some(Action::Off), Source::Wiki) => match store.read(&file.path) {
+                Ok(text) => match memory::wiki_skip_reason(&file.name, &memory::lines_of(&text)) {
+                    None => {
+                        off.insert(file.path.as_str());
+                        continue;
+                    }
+                    Some(reason) => Err(reason),
+                },
+                Err(_) => Err("unreadable"),
+            },
             (Some(Action::Skip), _) => Err(IGNORED),
             (_, Source::Memory) => {
                 if unchanged && clean {
@@ -3356,5 +3367,32 @@ mod tests {
                 .iter()
                 .any(|text| text.contains("Last disk note"))
         );
+    }
+
+    #[test]
+    fn an_off_wiki_page_that_becomes_gated_still_loses_its_rows() {
+        let files = Files::default();
+        files.put_wiki(
+            "pages/disk.md",
+            &page("Disk", "Root partition", "", "The disk filled up."),
+        );
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        let wiki = Some("/wiki/pages");
+        sync(&mut database, "/mem", wiki, &Rules::default(), &files, 1).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 1);
+
+        let rules = Rules::parse("off wiki:disk", "/h").unwrap();
+        files.put_wiki(
+            "pages/disk.md",
+            &page(
+                "Disk",
+                "Root partition",
+                "gated: DISK SECRET\n",
+                "The disk filled up.",
+            ),
+        );
+        sync(&mut database, "/mem", wiki, &rules, &files, 2).unwrap();
+        assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 0);
     }
 }
