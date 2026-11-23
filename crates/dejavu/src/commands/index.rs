@@ -70,10 +70,12 @@ fn advance_memory_embeddings(path: &str, common: Common) {
         let mut database = crate::memory_embed::open_store(path)?;
         let root = crate::memory::default_memory_root();
         let wiki = crate::memory::default_wiki_pages();
+        let rules = crate::memory_rules::Rules::load()?;
         crate::memory_embed::sync(
             &mut database,
             &root,
             Some(&wiki),
+            &rules,
             &crate::memory::Disk,
             now_ms,
         )?;
@@ -89,6 +91,7 @@ fn advance_memory_embeddings(path: &str, common: Common) {
                 rate_limit_wait: None,
                 progress: None,
                 roots: &[root.as_str(), wiki.as_str()],
+                rules: &rules,
             },
         )?;
         Ok(advanced.notes)

@@ -19,6 +19,7 @@ pub mod last;
 mod markdown;
 mod memory;
 mod memory_embed;
+mod memory_rules;
 mod model_client;
 pub mod opencode;
 pub mod pack;

@@ -255,6 +255,20 @@ Each passage is tracked by a hash of its text. An unchanged passage is never sen
 
 These are never sent: `MEMORY.md` index files, gated files (`DO NOT READ UNLESS` in the file name, frontmatter `name`, or `description`), gated or malformed wiki pages (see above), files outside the wiki's `pages/` directory, and passages that look like they hold a credential. `memory embed` reports wiki pages on their own line (`wiki` in JSON); `status` counts memory files and wiki pages together.
 
+To stop searching or embedding some files, list them in `~/.config/dejavu/memory-rules` (`DEJAVU_MEMORY_RULES` moves it), one `<action> <pattern>` per line, `#` for comments. The last matching line wins.
+
+```
+off ~/.claude/projects/          # old Claude memory: not searched, vectors kept
+skip wiki:gta6-*                 # keyword search only; never sent
+freeze wiki:feedback-*           # keep current vectors; edits are not re-embedded
+```
+
+- `off`: the file is not searched or embedded. Its stored vectors stay, so removing the rule re-embeds only passages edited meanwhile.
+- `skip`: the file is searched by keyword only. Its vectors are dropped and its text is never sent.
+- `freeze`: the file keeps the vectors it has and is not re-embedded when edited. A frozen file that becomes gated still loses its vectors.
+
+A pattern is a path glob (`~/` for home, `*` within one path segment, `**` across segments, a trailing `/` for a whole directory) or `wiki:<slug glob>` for wiki pages; matching ignores case. A rule that holds a file back also applies when its passages are queued again, by a model change or `--retry-failed`. A malformed rules file stops `memory search` and `memory embed` with an error. `memory embed --status` prints how many files each action covers.
+
 Vectors are stored in the index database and compared by exact cosine similarity on each search; there is no vector database to run. They survive `index rebuild`. A search embeds the query, ranks files by their closest passage, and merges that ranking with the keyword ranking by reciprocal rank. Each JSON result says how it matched in `match` (`keyword`, `semantic`, or `both`) and carries the `similarity` of its closest passage. A semantic-only result has `count` 0 and that passage as its snippets. If the provider cannot be reached, the keyword results print with a note on stderr. The query is not the only text a search sends: at most every 10 minutes it also collects finished batches and embeds up to 200 passages still waiting, so new notes become searchable without `memory embed`.
 
 ### Query one session

@@ -87,6 +87,8 @@ pub struct SearchOptions {
     /// The wiki's page directory to search beside the memory root; `None`
     /// searches memory files only.
     pub wiki: Option<String>,
+    /// Files under an `off` rule are not searched.
+    pub rules: crate::memory_rules::Rules,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -257,7 +259,7 @@ fn is_wiki_page_name(name: &str) -> bool {
         && !matches!(name, "index.md" | "log.md" | "SCHEMA.md")
 }
 
-fn absolute(path: &Path) -> PathBuf {
+pub(crate) fn absolute(path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -655,6 +657,9 @@ pub fn search_memories(
         {
             continue;
         }
+        if options.rules.action_for(&file) == Some(crate::memory_rules::Action::Off) {
+            continue;
+        }
         let Ok(text) = store.read(&file.path) else {
             continue;
         };
@@ -1015,6 +1020,16 @@ mod tests {
             .map(|m| m.name)
             .collect();
         assert_eq!(names, ["staging-deploy.md"]);
+        let with_off = SearchOptions {
+            rules: crate::memory_rules::Rules::parse("off /mem/**/notes.md", "/h").unwrap(),
+            ..by_project
+        };
+        let names: Vec<String> = search_memories("deploy", "/mem", &with_off, &corpus())
+            .unwrap()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(names, ["deploy-only.md"]);
     }
 
     #[test]

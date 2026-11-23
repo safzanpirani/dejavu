@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `dejavu memory search` and `memory embed` follow rules in `~/.config/dejavu/memory-rules` (`DEJAVU_MEMORY_RULES` moves it): `off <pattern>` stops searching and embedding a file and keeps its vectors, `skip <pattern>` drops its vectors and keeps it in keyword search, and `freeze <pattern>` keeps its vectors without re-embedding its edits. Patterns are path globs or `wiki:<slug glob>`; the last matching line wins. `memory embed --status` prints how many files each action covers.
 - `search --tools` also matches tool results, so an error message or other output a command printed is found, not only the call that ran it. A result snippet reads `<tool> result: <output>`.
 - `show` and `transcript` JSON carry the session's `address`, and their stderr summary line ends with it, like the other commands.
 - Results carry a session address, `dejavu://<harness>/<id>`, in the `address` field of `search`, `find`, `recall`, and `last` JSON and on an `Address:` line in text output. `show`, `transcript`, `query`, `profile`, and `last` accept one wherever they take a locator. The address names the session by harness and id, so it stays valid when the transcript file moves. A subagent's transcript is `dejavu://<harness>/<id>/<path under the session>`, and `transcript` starts at event N for an address ending in `#event-N`.

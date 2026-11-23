@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::embed::{self, BatchPoll, EmbedError, Embedder};
 use crate::memory::{self, MemoryFile, MemoryMatch, MemoryStore, SearchOptions, Source};
+use crate::memory_rules::{Action, Rules};
 
 /// A chunk grows to about this many characters before the next one starts.
 const TARGET_CHARS: usize = 1600;
@@ -43,6 +44,8 @@ const RRF_K: f64 = 60.0;
 /// 0.05-0.10 under it.
 pub const MIN_SIMILARITY: f32 = 0.65;
 const SIMILARITY_MARGIN: f32 = 0.06;
+/// The skip reason recorded for a file under a `skip` rule.
+const IGNORED: &str = "ignored";
 
 fn sql(error: rusqlite::Error) -> String {
     error.to_string()
@@ -364,6 +367,7 @@ pub fn sync(
     database: &mut Connection,
     root: &str,
     wiki: Option<&str>,
+    rules: &Rules,
     store: &dyn MemoryStore,
     now_ms: i64,
 ) -> Result<SyncStats, String> {
@@ -371,6 +375,7 @@ pub fn sync(
         database,
         root,
         &memory::memory_files(root, store)?,
+        rules,
         store,
         now_ms,
     )?;
@@ -379,6 +384,7 @@ pub fn sync(
             database,
             pages,
             &memory::wiki_pages(pages, store),
+            rules,
             store,
             now_ms,
         )?;
@@ -392,10 +398,15 @@ pub fn sync(
 }
 
 /// Syncs the files listed under one root: memory files or wiki pages.
+/// `off` and `freeze` rules leave a file's rows alone and do not record its
+/// size and mtime, so the file syncs as changed once the rule is removed; a
+/// frozen file that becomes gated still loses its rows. A `skip` rule drops
+/// the rows and records the file as skipped for [`IGNORED`].
 fn sync_root(
     database: &mut Connection,
     root: &str,
     files: &[MemoryFile],
+    rules: &Rules,
     store: &dyn MemoryStore,
     now_ms: i64,
 ) -> Result<SyncStats, String> {
@@ -421,6 +432,7 @@ fn sync_root(
     };
     let mut seen = HashSet::new();
     let mut changes = Vec::new();
+    let mut off = HashSet::new();
     for file in files {
         seen.insert(file.path.as_str());
         let stat = store
@@ -429,25 +441,45 @@ fn sync_root(
         let known_file = known.get(&file.path);
         let unchanged =
             stat.is_some() && known_file.map(|(size, mtime, _)| (*size, *mtime)) == stat;
-        let chunks = match file.source {
-            Source::Memory => {
-                if unchanged {
+        let recorded = |reason: &str| {
+            known_file.is_some_and(|(_, _, skipped)| skipped.as_deref() == Some(reason))
+        };
+        let action = rules.action_for(file);
+        let chunks = match (action, file.source) {
+            (Some(Action::Off), _) => {
+                off.insert(file.path.as_str());
+                continue;
+            }
+            (Some(Action::Skip), _) => {
+                if unchanged && recorded(IGNORED) {
+                    continue;
+                }
+                Err(IGNORED)
+            }
+            (_, Source::Memory) => {
+                if unchanged && !recorded(IGNORED) {
                     continue;
                 }
                 // An unreadable file keeps its rows until it reads again or disappears.
                 let Ok(text) = store.read(&file.path) else {
                     continue;
                 };
+                if action == Some(Action::Freeze)
+                    && skip_reason(&file.name, &memory::lines_of(&text)).is_none()
+                {
+                    continue;
+                }
                 chunk_file(&file.project, &file.name, &text)
             }
             // Every page is read and its gate checked on each sync, whatever
-            // its size and mtime say; a page that is gated, malformed, or
-            // unreadable loses its rows.
-            Source::Wiki => {
+            // its size, mtime, or rule say; a page that is gated, malformed,
+            // or unreadable loses its rows.
+            (_, Source::Wiki) => {
                 let chunks = match store.read(&file.path) {
                     Ok(text) => {
                         match memory::wiki_skip_reason(&file.name, &memory::lines_of(&text)) {
-                            None if unchanged => continue,
+                            None if action == Some(Action::Freeze) => continue,
+                            None if unchanged && !recorded(IGNORED) => continue,
                             None => chunk_page(&file.name, &text),
                             Some(reason) => Err(reason),
                         }
@@ -457,7 +489,7 @@ fn sync_root(
                 // Already recorded as skipped for this reason: no rows left.
                 if let Err(reason) = chunks
                     && unchanged
-                    && known_file.is_some_and(|(_, _, skipped)| skipped.as_deref() == Some(reason))
+                    && recorded(reason)
                 {
                     continue;
                 }
@@ -470,11 +502,46 @@ fn sync_root(
         .keys()
         .filter(|path| !seen.contains(path.as_str()))
         .collect();
-    if changes.is_empty() && removed.is_empty() {
+    // Passages of an `off` file still waiting for a vector are never sent.
+    let unsent_off: Vec<String> = if off.is_empty() {
+        Vec::new()
+    } else {
+        let mut statement = database
+            .prepare(
+                "SELECT DISTINCT path FROM memory_chunks
+                 WHERE root = ? AND status IN ('pending', 'retry')",
+            )
+            .map_err(sql)?;
+        let paths = statement
+            .query_map([root], |row| row.get::<_, String>(0))
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?;
+        paths
+            .into_iter()
+            .filter(|path| off.contains(path.as_str()))
+            .collect()
+    };
+    if changes.is_empty() && removed.is_empty() && unsent_off.is_empty() {
         return Ok(stats);
     }
 
     let transaction = database.transaction().map_err(sql)?;
+    for path in &unsent_off {
+        stats.chunks_removed += transaction
+            .execute(
+                "DELETE FROM memory_chunks WHERE path = ? AND status IN ('pending', 'retry')",
+                [path],
+            )
+            .map_err(sql)?;
+        // Forget its size and mtime, so the file is chunked again once the rule goes.
+        transaction
+            .execute(
+                "UPDATE memory_files SET size = -1, mtime_ns = -1 WHERE path = ?",
+                [path],
+            )
+            .map_err(sql)?;
+    }
     for path in removed {
         stats.chunks_removed += transaction
             .execute("DELETE FROM memory_chunks WHERE path = ?", [path])
@@ -618,6 +685,8 @@ pub struct AdvanceOptions<'a> {
     /// page directory this invocation synced. Finished batches are collected
     /// whatever their roots.
     pub roots: &'a [&'a str],
+    /// Rows of files an `off` or `skip` rule covers are never sent.
+    pub rules: &'a Rules,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -649,37 +718,54 @@ struct Row {
     text: String,
 }
 
+/// Queued rows under `options.roots`, minus those of files an `off` or
+/// `skip` rule covers: whatever requeued them (a model change, a failed
+/// batch, `--retry-failed`), their text is never sent. A wiki slug rule is
+/// checked against every row, so it also holds back a memory file of that name.
 fn rows_with_status(
     database: &Connection,
     statuses: &[&str],
-    roots: &[&str],
+    options: &AdvanceOptions,
 ) -> Result<Vec<Row>, String> {
     let marks = |n: usize| vec!["?"; n].join(", ");
     let mut statement = database
         .prepare(&format!(
-            "SELECT id, content_sha, status, title, text FROM memory_chunks
+            "SELECT id, content_sha, status, title, text, path FROM memory_chunks
              WHERE status IN ({}) AND root IN ({}) ORDER BY id",
             marks(statuses.len()),
-            marks(roots.len())
+            marks(options.roots.len())
         ))
         .map_err(sql)?;
-    let rows = statement
-        .query_map(
-            rusqlite::params_from_iter(statuses.iter().chain(roots)),
-            |row| {
-                Ok(Row {
-                    key: RowKey {
-                        id: row.get(0)?,
-                        sha: row.get(1)?,
-                        status: row.get(2)?,
-                    },
-                    title: row.get(3)?,
-                    text: row.get(4)?,
-                })
-            },
-        )
+    let held_back = |path: &str| {
+        [Source::Memory, Source::Wiki].into_iter().any(|source| {
+            matches!(
+                options.rules.action(path, source),
+                Some(Action::Off | Action::Skip)
+            )
+        })
+    };
+    let mut rows = Vec::new();
+    let mut query = statement
+        .query(rusqlite::params_from_iter(
+            statuses.iter().chain(options.roots),
+        ))
         .map_err(sql)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(sql)
+    while let Some(row) = query.next().map_err(sql)? {
+        let path: String = row.get(5).map_err(sql)?;
+        if held_back(&path) {
+            continue;
+        }
+        rows.push(Row {
+            key: RowKey {
+                id: row.get(0).map_err(sql)?,
+                sha: row.get(1).map_err(sql)?,
+                status: row.get(2).map_err(sql)?,
+            },
+            title: row.get(3).map_err(sql)?,
+            text: row.get(4).map_err(sql)?,
+        });
+    }
+    Ok(rows)
 }
 
 fn mark_failed(database: &Connection, row: &RowKey, embedder: &dyn Embedder) -> Result<(), String> {
@@ -1045,13 +1131,13 @@ fn advance_leased(
         } else {
             &["retry", "pending"]
         },
-        options.roots,
+        options,
     )?;
     if !embed_rows(database, embedder, &standard, options, &mut stats)? || !batching {
         return Ok(stats);
     }
 
-    let pending = rows_with_status(database, &["pending"], options.roots)?;
+    let pending = rows_with_status(database, &["pending"], options)?;
     let mut start = 0;
     while start < pending.len() {
         let mut end = start;
@@ -1400,7 +1486,7 @@ pub fn semantic_search(
 ) -> Result<(Vec<(MemoryMatch, f32)>, SemanticInfo), String> {
     let mut database = open_store(index_path)?;
     let wiki = options.wiki.as_deref();
-    sync(&mut database, root, wiki, store, now_ms)?;
+    sync(&mut database, root, wiki, &options.rules, store, now_ms)?;
     let roots: Vec<&str> = std::iter::once(root).chain(wiki).collect();
     // Before the pending-work gate: a model or size change with nothing
     // queued must still requeue the old vectors.
@@ -1423,6 +1509,7 @@ pub fn semantic_search(
                 rate_limit_wait: None,
                 progress: None,
                 roots: &roots,
+                rules: &options.rules,
             },
         )?;
         info.notes = advanced.notes;
@@ -1441,6 +1528,9 @@ pub fn semantic_search(
     let project = options.project.as_deref().map(str::to_lowercase);
     let decided: std::cell::RefCell<HashMap<String, bool>> = Default::default();
     let keep = |path: &str, source: Source| {
+        if options.rules.action(path, source) == Some(Action::Off) {
+            return false;
+        }
         if source == Source::Memory {
             if project.as_deref().is_some_and(|wanted| {
                 !memory::project_from_path(path)
@@ -1679,6 +1769,37 @@ mod tests {
         open_store(dir.path().join("index.sqlite").to_str().unwrap()).unwrap()
     }
 
+    static NO_RULES: std::sync::LazyLock<Rules> = std::sync::LazyLock::new(Rules::default);
+
+    #[test]
+    fn rows_an_off_or_skip_rule_covers_are_never_sent_whatever_requeued_them() {
+        let files = Files::default();
+        files.put("a.md", "The disk filled up.");
+        files.put("b.md", "Ship on Friday.");
+        files.put("c.md", "Pancakes for breakfast.");
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        // As a model change or --retry-failed would leave them.
+        database
+            .execute("UPDATE memory_chunks SET status = 'retry'", [])
+            .unwrap();
+        let rules = Rules::parse(
+            "off /mem/-proj/memory/a.md\nskip /mem/-proj/memory/b.md",
+            "/h",
+        )
+        .unwrap();
+        let fake = Fake::new(false);
+        let ruled = AdvanceOptions {
+            rules: &rules,
+            ..options(1, true)
+        };
+        assert_eq!(advance(&database, &fake, &ruled).unwrap().embedded, 1);
+        let sent = fake.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].ends_with("Pancakes for breakfast."));
+    }
+
     fn options(now_ms: i64, immediate: bool) -> AdvanceOptions<'static> {
         AdvanceOptions {
             now_ms,
@@ -1688,6 +1809,7 @@ mod tests {
             rate_limit_wait: Some(Duration::ZERO),
             progress: None,
             roots: &["/mem", "/wiki/pages"],
+            rules: &NO_RULES,
         }
     }
 
@@ -1778,7 +1900,7 @@ mod tests {
         );
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let fake = Fake::new(false);
         advance(&database, &fake, &options(1, true)).unwrap();
         let sent = fake.sent.borrow().join("\n");
@@ -1804,7 +1926,7 @@ mod tests {
         files.put("a.md", "The disk filled up.\n\n## Deploy\nShip on Friday.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let fake = Fake::new(true);
         let first = advance(&database, &fake, &options(1, false)).unwrap();
         assert_eq!((first.submitted, first.embedded), (2, 0));
@@ -1816,7 +1938,7 @@ mod tests {
             "a.md",
             "Pancakes for breakfast.\n\n## Deploy\nShip on Friday.",
         );
-        let synced = sync(&mut database, "/mem", None, &files, 2).unwrap();
+        let synced = sync(&mut database, "/mem", None, &Rules::default(), &files, 2).unwrap();
         assert_eq!((synced.chunks_added, synced.chunks_removed), (1, 1));
 
         fake.finish_batches();
@@ -1834,7 +1956,7 @@ mod tests {
         assert_eq!(paths(&database, &fake, "breakfast"), ["a.md"]);
 
         files.remove("a.md");
-        sync(&mut database, "/mem", None, &files, 4).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 4).unwrap();
         assert!(paths(&database, &fake, "breakfast").is_empty());
         assert_eq!(status(&database, &["/mem"]).unwrap().chunks, 0);
     }
@@ -1848,7 +1970,15 @@ mod tests {
         let mut database = open(&dir);
         let mut fake = Fake::new(false);
         for round in 1..=2 {
-            sync(&mut database, "/mem", None, &files, round).unwrap();
+            sync(
+                &mut database,
+                "/mem",
+                None,
+                &Rules::default(),
+                &files,
+                round,
+            )
+            .unwrap();
             advance(&database, &fake, &options(round, false)).unwrap();
         }
         assert_eq!(fake.sent.borrow().len(), 2);
@@ -1868,7 +1998,7 @@ mod tests {
         files.put("b.md", "POISON deploy text.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 0).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 0).unwrap();
         let mut fake = Fake::new(true);
         fake.reject = Some("POISON");
         assert_eq!(
@@ -1894,7 +2024,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let fake = Fake::new(false);
         fake.limited.set(1);
         let impatient = AdvanceOptions {
@@ -1981,6 +2111,13 @@ mod tests {
             ..all.clone()
         };
         assert!(search("storage is full", &other_type).is_empty());
+        // An `off` file keeps its vector but is not a result.
+        let off = SearchOptions {
+            rules: Rules::parse("off /mem/-proj/memory/space.md", "/h").unwrap(),
+            ..all.clone()
+        };
+        assert!(search("storage is full", &off).is_empty());
+        assert_eq!(search("storage is full", &all), ["space.md"]);
     }
 
     #[test]
@@ -2026,7 +2163,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let path = dir
             .path()
             .join("index.sqlite")
@@ -2063,7 +2200,7 @@ mod tests {
         let mut fake = Fake::new(false);
         {
             let mut database = open_store(index).unwrap();
-            sync(&mut database, "/mem", None, &files, 1).unwrap();
+            sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
             advance(&database, &fake, &options(1, false)).unwrap();
             assert_eq!(status(&database, &["/mem"]).unwrap().pending, 0);
         }
@@ -2084,7 +2221,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 0).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 0).unwrap();
         let mut fake = Fake::new(true);
         assert_eq!(
             advance(&database, &fake, &options(0, false))
@@ -2107,7 +2244,7 @@ mod tests {
 
         // A batch that is gone (HTTP 404) is released at once.
         files.put("b.md", "Deploy on Friday.");
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         fake.poll_error = None;
         let later = BATCH_PATIENCE_MS + 2;
         assert_eq!(
@@ -2132,7 +2269,7 @@ mod tests {
         files.put("a.md", "The disk filled up.");
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let fake = Fake::new(false);
         meta_set(
             &database,
@@ -2213,7 +2350,7 @@ mod tests {
         }
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let mut fake = Fake::new(true);
         fake.submit_error = Some(EmbedError {
             retryable: false,
@@ -2391,7 +2528,15 @@ mod tests {
             ),
         );
         let mut database = open(&dir);
-        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 3).unwrap();
+        sync(
+            &mut database,
+            "/mem",
+            Some("/wiki/pages"),
+            &Rules::default(),
+            &files,
+            3,
+        )
+        .unwrap();
         assert_eq!(status(&database, &["/wiki/pages"]).unwrap().chunks, 0);
         let (found, _) =
             semantic_search("storage is full", "/mem", &all, &files, index, &fake, 4, 10).unwrap();
@@ -2487,7 +2632,15 @@ mod tests {
         files.put_wiki("pages/disk.md", &open_page);
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 1).unwrap();
+        sync(
+            &mut database,
+            "/mem",
+            Some("/wiki/pages"),
+            &Rules::default(),
+            &files,
+            1,
+        )
+        .unwrap();
         assert_eq!(status(&database, &["/wiki/pages"]).unwrap().pending, 1);
 
         // Same length and the same version: the stat shortcut would skip it.
@@ -2497,7 +2650,15 @@ mod tests {
             .get_mut("/wiki/pages/disk.md")
             .unwrap()
             .0 = gated_page;
-        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 2).unwrap();
+        sync(
+            &mut database,
+            "/mem",
+            Some("/wiki/pages"),
+            &Rules::default(),
+            &files,
+            2,
+        )
+        .unwrap();
         let state = status(&database, &["/wiki/pages"]).unwrap();
         assert_eq!((state.chunks, state.skipped_files), (0, 1));
         let fake = Fake::new(false);
@@ -2507,7 +2668,15 @@ mod tests {
 
         // An unreadable page loses its rows too.
         files.put_wiki("pages/disk.md", &open_page);
-        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 4).unwrap();
+        sync(
+            &mut database,
+            "/mem",
+            Some("/wiki/pages"),
+            &Rules::default(),
+            &files,
+            4,
+        )
+        .unwrap();
         assert_eq!(status(&database, &["/wiki/pages"]).unwrap().pending, 1);
         struct Unreadable<'a>(&'a Files);
         impl MemoryStore for Unreadable<'_> {
@@ -2528,6 +2697,7 @@ mod tests {
             &mut database,
             "/mem",
             Some("/wiki/pages"),
+            &Rules::default(),
             &Unreadable(&files),
             5,
         )
@@ -2541,7 +2711,7 @@ mod tests {
         files.put("disk.md", &note("Disk", "The disk filled up."));
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", None, &files, 1).unwrap();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
         let fake = Fake::new(false);
         let elsewhere = AdvanceOptions {
             roots: &["/other"],
@@ -2608,7 +2778,15 @@ mod tests {
         let files = wiki_corpus();
         let dir = TempDir::new("dejavu-embed-").unwrap();
         let mut database = open(&dir);
-        sync(&mut database, "/mem", Some("/wiki/pages"), &files, 1).unwrap();
+        sync(
+            &mut database,
+            "/mem",
+            Some("/wiki/pages"),
+            &Rules::default(),
+            &files,
+            1,
+        )
+        .unwrap();
         let fake = Fake::new(true);
         let memory_only = AdvanceOptions {
             roots: &["/mem"],
@@ -2626,5 +2804,104 @@ mod tests {
             status(&database, &["/mem", "/wiki/pages"]).unwrap().batches,
             2
         );
+    }
+
+    fn texts_of(database: &Connection, name: &str) -> Vec<String> {
+        let mut statement = database
+            .prepare("SELECT text FROM memory_chunks WHERE path = ? ORDER BY chunk_no")
+            .unwrap();
+        statement
+            .query_map([format!("/mem/-proj/memory/{name}")], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn rules_keep_off_and_frozen_vectors_drop_skipped_ones_and_resync_when_removed() {
+        let files = Files::default();
+        files.put("a.md", "The disk filled up.");
+        files.put("b.md", "Ship on Friday.");
+        files.put("c.md", "Pancakes for breakfast.");
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        let fake = Fake::new(false);
+        assert_eq!(
+            advance(&database, &fake, &options(1, true))
+                .unwrap()
+                .embedded,
+            3
+        );
+
+        let rules = Rules::parse(
+            "off /mem/-proj/memory/a.md\nfreeze /mem/-proj/memory/b.md\nskip /mem/-proj/memory/c.md",
+            "/h",
+        )
+        .unwrap();
+        files.put("a.md", "The disk filled up again.");
+        files.put("b.md", "Ship on Monday.");
+        sync(&mut database, "/mem", None, &rules, &files, 2).unwrap();
+        assert_eq!(
+            advance(&database, &fake, &options(2, true))
+                .unwrap()
+                .embedded,
+            0
+        );
+        assert_eq!(texts_of(&database, "a.md"), ["The disk filled up."]);
+        assert_eq!(texts_of(&database, "b.md"), ["Ship on Friday."]);
+        assert!(texts_of(&database, "c.md").is_empty());
+        // A second sync under the same rules changes nothing.
+        let again = sync(&mut database, "/mem", None, &rules, &files, 3).unwrap();
+        assert_eq!((again.chunks_added, again.chunks_removed), (0, 0));
+
+        // Without the rules every file syncs again, the unedited one included.
+        fake.sent.borrow_mut().clear();
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 4).unwrap();
+        assert_eq!(
+            advance(&database, &fake, &options(4, true))
+                .unwrap()
+                .embedded,
+            3
+        );
+        let sent = fake.sent.borrow();
+        for text in [
+            "Pancakes for breakfast.",
+            "Ship on Monday.",
+            "The disk filled up again.",
+        ] {
+            assert!(
+                sent.iter().any(|line| line.ends_with(text)),
+                "{text} not sent"
+            );
+        }
+    }
+
+    #[test]
+    fn an_off_file_is_never_sent_and_a_frozen_file_that_becomes_gated_loses_its_rows() {
+        let files = Files::default();
+        files.put("a.md", "The disk filled up.");
+        files.put("b.md", "Ship on Friday.");
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        let rules = Rules::parse(
+            "off /mem/-proj/memory/a.md\nfreeze /mem/-proj/memory/b.md",
+            "/h",
+        )
+        .unwrap();
+        let fake = Fake::new(false);
+        sync(&mut database, "/mem", None, &rules, &files, 2).unwrap();
+        advance(&database, &fake, &options(2, true)).unwrap();
+        assert_eq!(fake.sent.borrow().len(), 1);
+        assert!(fake.sent.borrow()[0].ends_with("Ship on Friday."));
+        assert!(texts_of(&database, "a.md").is_empty());
+
+        files.put(
+            "b.md",
+            &note("Do not read unless the release is named", "Ship on Friday."),
+        );
+        sync(&mut database, "/mem", None, &rules, &files, 3).unwrap();
+        assert!(texts_of(&database, "b.md").is_empty());
     }
 }

@@ -6,6 +6,7 @@ use crate::index::default_index_path;
 use crate::js;
 use crate::memory::{self, Disk};
 use crate::memory_embed::{self, AdvanceOptions, RankedMatch};
+use crate::memory_rules::{Action, Rules};
 use crate::{Common, Outcome};
 
 fn now_ms() -> i64 {
@@ -104,7 +105,8 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
     let mut database = memory_embed::open_store(&default_index_path())?;
     let now = now_ms();
     let wiki = memory::default_wiki_pages();
-    let synced = memory_embed::sync(&mut database, root, Some(&wiki), &Disk, now)?;
+    let rules = Rules::load()?;
+    let synced = memory_embed::sync(&mut database, root, Some(&wiki), &rules, &Disk, now)?;
     let advanced = if status_only {
         None
     } else {
@@ -134,6 +136,7 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
                 rate_limit_wait: Some(Duration::from_secs(62)),
                 progress: Some(&progress),
                 roots: &[root, wiki.as_str()],
+                rules: &rules,
             },
         )?)
     };
@@ -178,15 +181,43 @@ fn embed_command(mut args: Args, root: &str, common: Common) -> Outcome {
             pages.pending,
             pages.withheld
         );
+        if !rules.is_empty() {
+            println!("{}", rules_summary(root, &wiki, &rules)?);
+        }
     }
     Ok(0)
+}
+
+/// How many files each rule action covers.
+fn rules_summary(root: &str, wiki: &str, rules: &Rules) -> Result<String, String> {
+    let mut counts = [0usize; 3];
+    for file in memory::corpus(root, Some(wiki), &Disk)? {
+        if let Some(action) = rules.action_for(&file) {
+            counts[action as usize] += 1;
+        }
+    }
+    let parts: Vec<String> = [Action::Off, Action::Skip, Action::Freeze]
+        .iter()
+        .map(|action| format!("{} {}", counts[*action as usize], action.name()))
+        .collect();
+    Ok(format!(
+        "rules ({}): {} files",
+        crate::memory_rules::rules_path().display(),
+        parts.join(", ")
+    ))
 }
 
 pub fn run(mut args: Args, common: Common) -> Outcome {
     args.shift();
     let verb = args.shift().unwrap_or_else(|| "list".into());
+    // Absolute, so path rules match files found under a relative --root.
     let root = args
         .value(&["--root"])
+        .map(|root| {
+            memory::absolute(std::path::Path::new(&root))
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_else(memory::default_memory_root);
     match verb.as_str() {
         "list" => {
@@ -231,6 +262,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
                 project: args.value(&["-p", "--project"]),
                 kind: args.value(&["--type"]),
                 wiki: Some(memory::default_wiki_pages()),
+                rules: Rules::load()?,
             };
             let semantic = !args.flag(&["--no-semantic"]);
             args.reject_unknown_flags();
