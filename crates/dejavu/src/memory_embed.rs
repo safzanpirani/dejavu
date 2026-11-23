@@ -259,7 +259,7 @@ fn chunk_body(title: String, body: &[&str], described: bool) -> Vec<Chunk> {
     let mut seen = HashSet::new();
     let mut chunks = Vec::new();
     for text in texts {
-        let sha = hex(&Sha256::digest(format!("{title}\n{text}").as_bytes()));
+        let sha = passage_sha(&title, &text);
         if seen.insert(sha.clone()) {
             let withheld = looks_secret(&text) || looks_secret(&title);
             chunks.push(Chunk {
@@ -325,7 +325,69 @@ CREATE TABLE IF NOT EXISTS memory_embed_batches (
   );",
         )
         .map_err(sql)?;
+    rehash_passages(&database)?;
     Ok(database)
+}
+
+/// A passage's identity within its file: the hash of its text alone, so a
+/// change to the file's title, summary or description re-embeds nothing (the
+/// passage keeps the vector made with the old one). A passage with no text
+/// is the description itself, so it hashes the title. The `text\0` and
+/// `title\0` prefixes keep the two kinds, and the title-and-text hashes of
+/// indexes written before 2026-11-23, from ever naming the same passage.
+fn passage_sha(title: &str, text: &str) -> String {
+    let keyed = if text.is_empty() {
+        format!("title\0{title}")
+    } else {
+        format!("text\0{text}")
+    };
+    hex(&Sha256::digest(keyed.as_bytes()))
+}
+
+/// Moves rows hashed with their title (before 2026-11-23) to [`passage_sha`]
+/// in place, so their vectors are kept instead of re-embedded. The new keys
+/// share no value with the old ones, so no update collides with a row not yet
+/// moved. Withheld rows store no text; the next sync replaces them, and they
+/// hold no vector. A row an older dejavu writes later keeps an old key, which
+/// no passage matches, so the next sync replaces it.
+fn rehash_passages(database: &Connection) -> Result<(), String> {
+    const DONE: &str = "passage_sha_text";
+    if meta_get(database, DONE)?.is_some() {
+        return Ok(());
+    }
+    database.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+    let moved = (|| -> Result<(), String> {
+        // Another process may have moved them while this one waited for the lock.
+        if meta_get(database, DONE)?.is_some() {
+            return Ok(());
+        }
+        let rows: Vec<(i64, String, String)> = {
+            let mut statement = database
+                .prepare("SELECT id, title, text FROM memory_chunks WHERE status != 'withheld'")
+                .map_err(sql)?;
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(sql)?
+                .collect::<Result<_, _>>()
+                .map_err(sql)?
+        };
+        let mut update = database
+            .prepare("UPDATE memory_chunks SET content_sha = ? WHERE id = ?")
+            .map_err(sql)?;
+        for (id, title, text) in rows {
+            update
+                .execute(params![passage_sha(&title, &text), id])
+                .map_err(sql)?;
+        }
+        meta_set(database, DONE, "1")
+    })();
+    match moved {
+        Ok(()) => database.execute_batch("COMMIT").map_err(sql),
+        Err(error) => {
+            let _ = database.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 pub fn meta_get(database: &Connection, key: &str) -> Result<Option<String>, String> {
@@ -568,11 +630,29 @@ fn sync_root(
         let mut touched = false;
         for (number, chunk) in chunks.iter().flatten().enumerate() {
             match existing.remove(&chunk.sha) {
+                Some(id) if chunk.withheld => {
+                    // Same text, but the title now looks like a credential: keep nothing of it.
+                    let changed = transaction
+                        .execute(
+                            "UPDATE memory_chunks SET chunk_no = ?, title = '', text = '', status = 'withheld',
+                             vec = NULL, model = NULL, dims = NULL, batch_id = NULL, batch_pos = NULL,
+                             updated_at = ? WHERE id = ? AND status != 'withheld'",
+                            params![number as i64, now_ms, id],
+                        )
+                        .map_err(sql)?;
+                    touched |= changed > 0;
+                }
                 Some(id) => {
+                    // Same text: the vector stays and the title is kept current for a later
+                    // re-embed. A row withheld for its old title gets its text back and queues.
                     transaction
                         .execute(
-                            "UPDATE memory_chunks SET chunk_no = ? WHERE id = ?",
-                            params![number as i64, id],
+                            "UPDATE memory_chunks SET chunk_no = ?, title = ?,
+                             text = CASE WHEN status = 'withheld' THEN ? ELSE text END,
+                             updated_at = CASE WHEN status = 'withheld' THEN ? ELSE updated_at END,
+                             status = CASE WHEN status = 'withheld' THEN 'pending' ELSE status END
+                             WHERE id = ?",
+                            params![number as i64, chunk.title, chunk.text, now_ms, id],
                         )
                         .map_err(sql)?;
                 }
@@ -2903,5 +2983,139 @@ mod tests {
         );
         sync(&mut database, "/mem", None, &rules, &files, 3).unwrap();
         assert!(texts_of(&database, "b.md").is_empty());
+    }
+
+    #[test]
+    fn a_new_summary_or_title_re_embeds_nothing_and_is_stored_for_later() {
+        let files = Files::default();
+        files.put_wiki(
+            "pages/disk.md",
+            &page(
+                "Disk",
+                "Root partition",
+                "",
+                "The disk filled up.\n\n## Ship\nDeploy on Friday.",
+            ),
+        );
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        let wiki = Some("/wiki/pages");
+        sync(&mut database, "/mem", wiki, &Rules::default(), &files, 1).unwrap();
+        let fake = Fake::new(false);
+        assert_eq!(
+            advance(&database, &fake, &options(1, true))
+                .unwrap()
+                .embedded,
+            2
+        );
+
+        files.put_wiki(
+            "pages/disk.md",
+            &page(
+                "Disks",
+                "Root partition, cleaned weekly",
+                "",
+                "The disk filled up.\n\n## Ship\nDeploy on Monday.",
+            ),
+        );
+        let synced = sync(&mut database, "/mem", wiki, &Rules::default(), &files, 2).unwrap();
+        assert_eq!((synced.chunks_added, synced.chunks_removed), (1, 1));
+        fake.sent.borrow_mut().clear();
+        assert_eq!(
+            advance(&database, &fake, &options(2, true))
+                .unwrap()
+                .embedded,
+            1
+        );
+        assert!(fake.sent.borrow()[0].ends_with("Deploy on Monday."));
+        let titles: Vec<String> = database
+            .prepare("SELECT DISTINCT title FROM memory_chunks")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            titles,
+            ["Disks [wiki:disk]: Root partition, cleaned weekly"]
+        );
+    }
+
+    #[test]
+    fn a_title_that_turns_secret_withholds_the_passage_and_queues_it_again_once_clean() {
+        let files = Files::default();
+        files.put("a.md", &note("Disk notes", "The disk filled up."));
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        let fake = Fake::new(false);
+        advance(&database, &fake, &options(1, true)).unwrap();
+
+        files.put(
+            "a.md",
+            &note(
+                "Disk notes ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+                "The disk filled up.",
+            ),
+        );
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 2).unwrap();
+        let (row_status, stored): (String, String) = database
+            .query_row(
+                "SELECT status, title || text FROM memory_chunks",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((row_status.as_str(), stored.as_str()), ("withheld", ""));
+
+        files.put("a.md", &note("Disk notes", "The disk filled up."));
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 3).unwrap();
+        assert_eq!(status(&database, &["/mem"]).unwrap().pending, 1);
+    }
+
+    #[test]
+    fn rows_hashed_with_their_title_keep_their_vectors_after_the_move() {
+        // One passage's text is another's old title-and-text key material:
+        // `T\nX` and `X`, apart because the first fills a chunk on its own.
+        let title = "a [-proj]: Disk notes";
+        let long = "disk ".repeat(330);
+        let body = format!("{title}\n{long}\n\n{long}\n\n## Ship\nDeploy on Friday.");
+        let files = Files::default();
+        files.put("a.md", &note("Disk notes", &body));
+        let dir = TempDir::new("dejavu-embed-").unwrap();
+        let mut database = open(&dir);
+        sync(&mut database, "/mem", None, &Rules::default(), &files, 1).unwrap();
+        let fake = Fake::new(false);
+        assert_eq!(
+            advance(&database, &fake, &options(1, true))
+                .unwrap()
+                .embedded,
+            3
+        );
+        // As an index written before 2026-11-23 holds them: sha256(title \n text).
+        let rows: Vec<(i64, String, String)> = database
+            .prepare("SELECT id, title, text FROM memory_chunks")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (id, title, text) in rows {
+            let old = hex(&Sha256::digest(format!("{title}\n{text}").as_bytes()));
+            database
+                .execute(
+                    "UPDATE memory_chunks SET content_sha = ? WHERE id = ?",
+                    params![old, id],
+                )
+                .unwrap();
+        }
+        database
+            .execute("DELETE FROM memory_meta WHERE key = 'passage_sha_text'", [])
+            .unwrap();
+        rehash_passages(&database).unwrap();
+        files.put("a.md", &note("Disk notes, edited", &body));
+        let synced = sync(&mut database, "/mem", None, &Rules::default(), &files, 2).unwrap();
+        assert_eq!((synced.chunks_added, synced.chunks_removed), (0, 0));
+        assert_eq!(status(&database, &["/mem"]).unwrap().done, 3);
     }
 }
