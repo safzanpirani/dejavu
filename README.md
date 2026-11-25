@@ -98,7 +98,7 @@ dejavu search --source codex session-recall.ts --max-parallel 4 --json
 
 The explicit `dejavu search PHRASE` command and bare `dejavu PHRASE` search the same phrase. Use `dejavu -- search` or `dejavu search search` to search for the literal word `search`. A quoted phrase such as `dejavu "search failed"` also stays literal.
 
-Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|omp|opencode|droid|openclaw|hermes|agy` to narrow the search.
+Search uses case-insensitive fixed-string matching. Spaces form one exact phrase. The default source is `all`. Use `--source claude|codex|pi|omp|opencode|droid|openclaw|hermes|agy` to narrow the search. `--project payments-api` (`-p`) keeps transcripts whose project path contains the text, matched as `find --project` matches it.
 
 The index preserves literal phrase semantics and excludes reasoning, developer instructions, and tool output. Match counts are occurrences in visible message text. Pass `--no-index` to use the direct filesystem and SQLite scanners, which count raw transcript lines and rank differently.
 

@@ -199,7 +199,9 @@ pub fn parse_since(value: &str, today_ms: Option<f64>) -> Result<String, String>
     iso_date_from_millis(today_ms.unwrap_or_else(now_ms) - days * 86_400_000.0)
 }
 
-fn matches_project(project: &str, needle: &str, source: TranscriptSource) -> bool {
+/// Whether a transcript's project contains `needle` without case sensitivity;
+/// `find`, `search`, `pack`, and `recall` share this `--project` test.
+pub(crate) fn matches_project(project: &str, needle: &str, source: TranscriptSource) -> bool {
     let haystack = js_lower(project);
     let query = js_lower(needle);
     if haystack.contains(query.as_ref()) {

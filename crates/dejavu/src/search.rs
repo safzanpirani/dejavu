@@ -187,6 +187,8 @@ pub struct SearchOptions {
     /// Also match tool-call inputs and tool results. The index holds only
     /// visible messages, so this scans JSONL transcripts directly.
     pub tools: bool,
+    /// Only transcripts whose project contains this text, as `find --project` matches.
+    pub project: Option<String>,
 }
 
 impl Default for SearchOptions {
@@ -199,6 +201,7 @@ impl Default for SearchOptions {
             no_index: false,
             since: None,
             tools: false,
+            project: None,
         }
     }
 }
@@ -284,6 +287,16 @@ pub fn search_sessions(
         .map(|since| crate::find::parse_since(since, None))
         .transpose()?;
     let since = since.as_deref();
+    let project = options.project.as_deref();
+    let in_project = |found: &str, source: TranscriptSource| {
+        project.is_none_or(|wanted| crate::find::matches_project(found, wanted, source))
+    };
+    // A project filter applies before each candidate cap, so it cannot starve the results.
+    let cap = if project.is_some() {
+        usize::MAX
+    } else {
+        limit.saturating_mul(4)
+    };
     let started = Instant::now();
     let mut indexed: HashMap<String, Vec<StoreSearchMatch>> = HashMap::new();
     let mut reader: Option<IndexReader> = None;
@@ -308,13 +321,14 @@ pub fn search_sessions(
                     .map(|store| (store.path.clone(), Vec::new()))
                     .collect();
                 let reader = IndexReader::open(&index_path)?;
-                let cap = limit
-                    .saturating_mul(4)
-                    .saturating_mul(indexed_stores.len().max(1));
+                let cap = cap.saturating_mul(indexed_stores.len().max(1));
                 for row in
                     reader.grouped_matches(needle, &indexed_stores, cap, TieBreak::Date, since)?
                 {
                     let found = row.into_match();
+                    if !in_project(&found.matched.project, found.matched.source) {
+                        continue;
+                    }
                     if let Some(list) = by_store.get_mut(&found.store) {
                         list.push(found.matched);
                     }
@@ -340,14 +354,12 @@ pub fn search_sessions(
             return scan(found.clone(), true, Vec::new(), None);
         }
         if store.kind == StoreKind::Sqlite {
-            return match backend.search_opencode(
-                needle,
-                &store.path,
-                limit.saturating_mul(4),
-                snippet_limit,
-            ) {
+            return match backend.search_opencode(needle, &store.path, cap, snippet_limit) {
                 Ok(mut direct) => {
-                    direct.retain(|found| on_or_after(Some(&found.date), since));
+                    direct.retain(|found| {
+                        on_or_after(Some(&found.date), since)
+                            && in_project(&found.project, found.source)
+                    });
                     scan(direct, false, Vec::new(), None)
                 }
                 Err(error) => scan(
@@ -375,7 +387,15 @@ pub fn search_sessions(
         if let Some(since) = since {
             counts.retain(|item| !written_before(&item.path, since));
         }
-        counts.truncate(limit.saturating_mul(4));
+        if project.is_some() {
+            counts.retain(|item| {
+                in_project(
+                    &backend.read_project(&item.path, store.source),
+                    store.source,
+                )
+            });
+        }
+        counts.truncate(cap);
         scan(Vec::new(), false, counts, None)
     })?;
 
@@ -906,6 +926,73 @@ mod tests {
         };
         assert_eq!(since("2026-09-01"), [1, 1]);
         assert_eq!(since("2026-09-02"), Vec::<usize>::new());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn project_filter_applies_before_the_result_limit() {
+        let root =
+            std::env::temp_dir().join(format!("dejavu-search-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store_path = root.join("claude");
+        let store_path = store_path.to_string_lossy().into_owned();
+        // The beta transcript outranks alpha, so a filter after the limit would drop alpha.
+        for (project, text) in [("alpha", "needle"), ("beta", "needle needle needle")] {
+            std::fs::create_dir_all(format!("{store_path}/-work-{project}")).unwrap();
+            std::fs::write(
+                format!("{store_path}/-work-{project}/s.jsonl"),
+                line(
+                    "user",
+                    "user",
+                    "2026-09-01T00:00:00Z",
+                    Some(&format!("/work/{project}")),
+                    text,
+                ),
+            )
+            .unwrap();
+        }
+        struct Indexed {
+            store: String,
+            index: String,
+        }
+        impl Backend for Indexed {
+            fn discover_stores(&self, _: SourceSelector) -> Vec<TranscriptStore> {
+                vec![jsonl(TranscriptSource::Claude, &self.store)]
+            }
+            fn index_path(&self) -> Option<String> {
+                Some(self.index.clone())
+            }
+        }
+        let backend = Indexed {
+            store: store_path.clone(),
+            index: root.join("index.sqlite").to_string_lossy().into_owned(),
+        };
+        for no_index in [false, true] {
+            let projects = |project: Option<&str>| {
+                search_sessions(
+                    "Needle",
+                    SearchOptions {
+                        limit: 1,
+                        no_index,
+                        project: project.map(str::to_string),
+                        ..SearchOptions::default()
+                    },
+                    &backend,
+                )
+                .unwrap()
+                .matches
+                .into_iter()
+                .map(|m| m.project)
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(projects(None), ["/work/beta"], "no_index={no_index}");
+            assert_eq!(
+                projects(Some("ALPHA")),
+                ["/work/alpha"],
+                "no_index={no_index}"
+            );
+            assert!(projects(Some("gamma")).is_empty(), "no_index={no_index}");
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

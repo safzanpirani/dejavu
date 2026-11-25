@@ -35,6 +35,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
     let no_index = args.flag(&["--no-index"]);
     let since = args.value(&["--since"]);
     let tools = args.flag(&["--tools"]);
+    let project = args.value(&["-p", "--project"]);
     let color = args::color_choice(&mut args, common.json);
     args.reject_unknown_flags();
     let query = args.items.join(" ");
@@ -50,6 +51,7 @@ pub fn run(mut args: Args, common: Common) -> Outcome {
         no_index,
         since,
         tools,
+        project,
     };
     let result = search::search_sessions(query, options, &Disk)?;
     if common.json {

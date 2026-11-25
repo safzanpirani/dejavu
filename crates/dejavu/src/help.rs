@@ -104,6 +104,7 @@ Help uses color only on a terminal; NO_COLOR or --no-color disables it."
 
 const SEARCH: &str = r#"  -s, --source NAME      all, claude, codex, pi, omp, opencode, droid, openclaw, hermes, or agy (default all)
   -n, --limit N          transcripts to return (default 10)
+  -p, --project SUBSTR   only transcripts whose project path contains SUBSTR
       --snippets N       snippets per transcript (integer >= 1; default 3)
       --since WHEN       only messages on or after WHEN: YYYY-MM-DD or 7d / 2w / 3m
       --tools            also match tool-call inputs and tool results (scans files directly; slower)
