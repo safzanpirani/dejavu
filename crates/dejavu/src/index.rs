@@ -1381,7 +1381,8 @@ impl IndexReader {
     /// in SQL so only one row per transcript is read. The trigram match already
     /// guarantees a case-folded substring hit, so a count that SQLite's ASCII-only
     /// lower() misses is floored at one instead of being dropped. With `since`,
-    /// only messages dated on or after it (or undated) count.
+    /// only messages dated on or after it (or undated) count; with `project`, only
+    /// messages in a project containing it, so the cap applies after that filter.
     pub fn grouped_matches(
         &self,
         query: &str,
@@ -1389,8 +1390,9 @@ impl IndexReader {
         limit: usize,
         tie_break: TieBreak,
         since: Option<&str>,
+        project: Option<&str>,
     ) -> Result<Vec<GroupedRow>, String> {
-        self.grouped_filtered(query, stores, limit, tie_break, since, None)
+        self.grouped_filtered(query, stores, limit, tie_break, since, project, None)
     }
 
     /// Find applies project/activity eligibility before any candidate cap.
@@ -1407,10 +1409,12 @@ impl IndexReader {
             usize::MAX,
             TieBreak::Date,
             None,
-            Some((project, since)),
+            project,
+            Some(since),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn grouped_filtered(
         &self,
         query: &str,
@@ -1418,7 +1422,9 @@ impl IndexReader {
         limit: usize,
         tie_break: TieBreak,
         message_since: Option<&str>,
-        filters: Option<(Option<&str>, Option<&str>)>,
+        project: Option<&str>,
+        // Find's eligibility rules (no subagents or injected user turns) and its activity cutoff.
+        find_since: Option<Option<&str>>,
     ) -> Result<Vec<GroupedRow>, String> {
         if js::len(query) < 3 || stores.is_empty() {
             return Ok(Vec::new());
@@ -1434,13 +1440,14 @@ impl IndexReader {
             conditions.push_str(" AND (r.date >= ? OR r.date IN ('', 'unknown'))");
             filter_values.push(SqlValue::Text(since.to_string()));
         }
-        if let Some((project, since)) = filters {
+        // SQLite's lower() folds only ASCII; callers recheck with `find::matches_project`.
+        if let Some(project) = project.filter(|p| p.is_ascii()) {
+            conditions.push_str(" AND (instr(lower(r.project), ?) > 0 OR (r.source IN ('claude','pi','omp','droid') AND instr(replace(lower(r.project), '-', '/'), replace(?, '-', '/')) > 0))");
+            let project = js_lower(compact_home(project)).into_owned();
+            filter_values.extend([SqlValue::Text(project.clone()), SqlValue::Text(project)]);
+        }
+        if let Some(since) = find_since {
             conditions.push_str(" AND instr(replace(r.path, char(92), '/'), '/subagents/') = 0");
-            if let Some(project) = project.filter(|p| p.is_ascii()) {
-                conditions.push_str(" AND (instr(lower(r.project), ?) > 0 OR (r.source IN ('claude','pi','droid') AND instr(replace(lower(r.project), '-', '/'), replace(?, '-', '/')) > 0))");
-                let project = js_lower(compact_home(project)).into_owned();
-                filter_values.extend([SqlValue::Text(project.clone()), SqlValue::Text(project)]);
-            }
             if let Some(since) = since {
                 conditions.push_str(" AND EXISTS (SELECT 1 FROM message_rows activity WHERE activity.path = r.path AND (activity.date >= ? OR activity.date = ''))");
                 filter_values.push(SqlValue::Text(since.to_string()));
@@ -1460,7 +1467,7 @@ impl IndexReader {
             }
             conditions.push_str("))");
         }
-        let date_aggregate = if filters.is_some() { "MAX" } else { "MIN" };
+        let date_aggregate = if find_since.is_some() { "MAX" } else { "MIN" };
         let sql = format!(
             "
     SELECT store, path, source, SUM(MAX(1, occurrences)) AS count, {date_aggregate}(date) AS date, MIN(project) AS project
@@ -1584,7 +1591,7 @@ pub fn search_transcript_index(
     }
     let reader = IndexReader::open(path)?;
     Ok(reader
-        .grouped_matches(query, stores, limit, TieBreak::Path, None)?
+        .grouped_matches(query, stores, limit, TieBreak::Path, None, None)?
         .into_iter()
         .map(|row| IndexedFileMatch {
             store: row.store,
@@ -1609,7 +1616,7 @@ pub fn search_transcript_index_matches(
     }
     let reader = IndexReader::open(path)?;
     let mut found: Vec<IndexedStoreMatch> = reader
-        .grouped_matches(query, stores, limit, TieBreak::Date, None)?
+        .grouped_matches(query, stores, limit, TieBreak::Date, None, None)?
         .into_iter()
         .map(GroupedRow::into_match)
         .collect();

@@ -287,16 +287,12 @@ pub fn search_sessions(
         .map(|since| crate::find::parse_since(since, None))
         .transpose()?;
     let since = since.as_deref();
-    let project = options.project.as_deref();
+    // Results report home-compacted projects, so the wanted text is compacted to match.
+    let project = options.project.as_deref().map(compact_home);
     let in_project = |found: &str, source: TranscriptSource| {
         project.is_none_or(|wanted| crate::find::matches_project(found, wanted, source))
     };
-    // A project filter applies before each candidate cap, so it cannot starve the results.
-    let cap = if project.is_some() {
-        usize::MAX
-    } else {
-        limit.saturating_mul(4)
-    };
+    let cap = limit.saturating_mul(4);
     let started = Instant::now();
     let mut indexed: HashMap<String, Vec<StoreSearchMatch>> = HashMap::new();
     let mut reader: Option<IndexReader> = None;
@@ -322,9 +318,14 @@ pub fn search_sessions(
                     .collect();
                 let reader = IndexReader::open(&index_path)?;
                 let cap = cap.saturating_mul(indexed_stores.len().max(1));
-                for row in
-                    reader.grouped_matches(needle, &indexed_stores, cap, TieBreak::Date, since)?
-                {
+                for row in reader.grouped_matches(
+                    needle,
+                    &indexed_stores,
+                    cap,
+                    TieBreak::Date,
+                    since,
+                    project,
+                )? {
                     let found = row.into_match();
                     if !in_project(&found.matched.project, found.matched.source) {
                         continue;
@@ -354,12 +355,15 @@ pub fn search_sessions(
             return scan(found.clone(), true, Vec::new(), None);
         }
         if store.kind == StoreKind::Sqlite {
-            return match backend.search_opencode(needle, &store.path, cap, snippet_limit) {
+            // OpenCode reads every matching row anyway; only its result list is capped.
+            let uncapped = if project.is_some() { usize::MAX } else { cap };
+            return match backend.search_opencode(needle, &store.path, uncapped, snippet_limit) {
                 Ok(mut direct) => {
                     direct.retain(|found| {
                         on_or_after(Some(&found.date), since)
                             && in_project(&found.project, found.source)
                     });
+                    direct.truncate(cap);
                     scan(direct, false, Vec::new(), None)
                 }
                 Err(error) => scan(
@@ -387,24 +391,14 @@ pub fn search_sessions(
         if let Some(since) = since {
             counts.retain(|item| !written_before(&item.path, since));
         }
-        if project.is_some() {
-            counts.retain(|item| {
-                in_project(
-                    &backend.read_project(&item.path, store.source),
-                    store.source,
-                )
-            });
+        if project.is_none() {
+            counts.truncate(cap);
         }
-        counts.truncate(cap);
         scan(Vec::new(), false, counts, None)
     })?;
 
-    let file_tasks: Vec<(&TranscriptStore, &FileMatchCount)> = scans
-        .iter()
-        .flat_map(|scan| scan.counts.iter().map(move |item| (&scan.store, item)))
-        .collect();
     let lowered = js_lower(needle).into_owned();
-    let file_matches = map_pool(&file_tasks, max_parallel, |(store, item), _| {
+    let file_match = |store: &TranscriptStore, item: &FileMatchCount| {
         let mut visible = Vec::new();
         backend.visit_lines(
             needle,
@@ -449,6 +443,9 @@ pub fn search_sessions(
             Some(project) => compact_home(project).to_string(),
             None => compact_home(&backend.read_project(&item.path, store.source)).to_string(),
         };
+        if !in_project(&project, store.source) {
+            return None;
+        }
         Some(StoreSearchMatch {
             source: store.source,
             path: item.path.clone(),
@@ -466,19 +463,42 @@ pub fn search_sessions(
                 })
                 .collect(),
         })
-    })?;
+    };
+    // Each store's files in rank order until `cap` of them match. A project is known only
+    // after reading a file, so with --project later files are read in rounds until the
+    // store has `cap` matches or runs out; without it, one round covers the capped list.
+    let mut file_matches: Vec<Vec<StoreSearchMatch>> = scans.iter().map(|_| Vec::new()).collect();
+    let mut next = vec![0usize; scans.len()];
+    loop {
+        let mut tasks = Vec::new();
+        for (at, scan) in scans.iter().enumerate() {
+            let wanted = cap.saturating_sub(file_matches[at].len());
+            let end = next[at].saturating_add(wanted).min(scan.counts.len());
+            tasks.extend(
+                scan.counts[next[at]..end]
+                    .iter()
+                    .map(|item| (at, &scan.store, item)),
+            );
+            next[at] = end;
+        }
+        if tasks.is_empty() {
+            break;
+        }
+        let found = map_pool(&tasks, max_parallel, |(_, store, item), _| {
+            file_match(store, item)
+        })?;
+        for ((at, _, _), found) in tasks.iter().zip(found) {
+            file_matches[*at].extend(found);
+        }
+        if project.is_none() {
+            break;
+        }
+    }
 
     let mut candidates: Vec<(StoreSearchMatch, bool)> = Vec::new();
-    let mut file_matches = file_matches.into_iter();
-    for scan in &scans {
+    for (scan, files) in scans.iter().zip(file_matches) {
         candidates.extend(scan.direct.iter().cloned().map(|m| (m, scan.from_index)));
-        candidates.extend(
-            file_matches
-                .by_ref()
-                .take(scan.counts.len())
-                .flatten()
-                .map(|m| (m, false)),
-        );
+        candidates.extend(files.into_iter().map(|m| (m, false)));
     }
     candidates.sort_by(|(a, _), (b, _)| rank(a, b));
     candidates.truncate(limit);
@@ -951,6 +971,28 @@ mod tests {
             )
             .unwrap();
         }
+        // This session started in alpha and matched after moving to delta: it is a delta hit.
+        std::fs::write(
+            format!("{store_path}/-work-alpha/moved.jsonl"),
+            [
+                line(
+                    "user",
+                    "user",
+                    "2026-09-01T00:00:00Z",
+                    Some("/work/alpha"),
+                    "hi",
+                ),
+                line(
+                    "user",
+                    "user",
+                    "2026-09-01T00:00:00Z",
+                    Some("/work/delta"),
+                    "needle",
+                ),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
         struct Indexed {
             store: String,
             index: String,
@@ -992,8 +1034,70 @@ mod tests {
                 "no_index={no_index}"
             );
             assert!(projects(Some("gamma")).is_empty(), "no_index={no_index}");
+            assert_eq!(
+                projects(Some("delta")),
+                ["/work/delta"],
+                "no_index={no_index}"
+            );
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn project_filter_reads_files_in_rounds_until_the_cap_fills() {
+        let visits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = visits.clone();
+        let fake = Fake {
+            stores: vec![jsonl(TranscriptSource::Claude, "/claude")],
+            // Twelve files ranked f00..f11; the first six are in another project.
+            counts: Box::new(|_, _| {
+                (0..12)
+                    .map(|i| FileMatchCount {
+                        path: format!("/claude/f{i:02}.jsonl"),
+                        count: 12 - i,
+                    })
+                    .collect()
+            }),
+            lines: Box::new(move |_, path| {
+                counter.fetch_add(1, AtomicOrdering::SeqCst);
+                let index: usize = path[9..11].parse().unwrap();
+                let cwd = if index < 6 {
+                    "/work/other"
+                } else {
+                    "/work/want"
+                };
+                vec![line(
+                    "user",
+                    "user",
+                    "2026-08-01T00:00:00Z",
+                    Some(cwd),
+                    "Needle",
+                )]
+            }),
+            opencode: Box::new(|_| Ok(Vec::new())),
+        };
+        let run = |project: Option<&str>| {
+            visits.store(0, AtomicOrdering::SeqCst);
+            let result = search_sessions(
+                "Needle",
+                SearchOptions {
+                    limit: 1,
+                    project: project.map(str::to_string),
+                    ..SearchOptions::default()
+                },
+                &fake,
+            )
+            .unwrap();
+            let found: Vec<String> = result.matches.into_iter().map(|m| m.path).collect();
+            (found, visits.load(AtomicOrdering::SeqCst))
+        };
+        // The cap is 4 files per store (limit x 4); without a project one round reads them.
+        assert_eq!(run(None), (vec!["/claude/f00.jsonl".to_string()], 4));
+        // Rounds read f00-f03 (no match), f04-f07 (2), then f08-f09 (4 matches) and stop.
+        assert_eq!(
+            run(Some("want")),
+            (vec!["/claude/f06.jsonl".to_string()], 10)
+        );
     }
 
     #[test]
